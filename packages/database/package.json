@@ -1,0 +1,25 @@
+{
+    "name": "@fieldio/database",
+    "version": "0.0.0",
+    "private": true,
+    "main": "index.ts",
+    "types": "index.ts",
+    "scripts": {
+        "db:generate": "prisma generate",
+        "db:push": "prisma db push",
+        "db:migrate": "prisma migrate dev",
+        "db:seed": "tsx prisma/seed.ts",
+        "test": "node -e \"console.log('database: no automated tests configured yet')\"",
+        "lint": "node -e \"console.log('database: no lint step configured')\""
+    },
+    "dependencies": {
+        "@prisma/client": "5.10.2"
+    },
+    "devDependencies": {
+        "@types/bcryptjs": "^2.4.6",
+        "bcryptjs": "^3.0.3",
+        "prisma": "5.10.2",
+        "tsx": "^4.7.0",
+        "typescript": "^5.0.0"
+    }
+}

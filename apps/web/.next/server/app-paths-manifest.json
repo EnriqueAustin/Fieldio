@@ -1,0 +1,20 @@
+{
+  "/_not-found": "app/_not-found.js",
+  "/pay/[token]/page": "app/pay/[token]/page.js",
+  "/book/[companyId]/page": "app/book/[companyId]/page.js",
+  "/(dashboard)/customers/page": "app/(dashboard)/customers/page.js",
+  "/(dashboard)/inventory/page": "app/(dashboard)/inventory/page.js",
+  "/(auth)/register/page": "app/(auth)/register/page.js",
+  "/(dashboard)/jobs/page": "app/(dashboard)/jobs/page.js",
+  "/(dashboard)/customers/new/page": "app/(dashboard)/customers/new/page.js",
+  "/(auth)/login/page": "app/(auth)/login/page.js",
+  "/(dashboard)/page": "app/(dashboard)/page.js",
+  "/(dashboard)/jobs/[id]/page": "app/(dashboard)/jobs/[id]/page.js",
+  "/(dashboard)/settings/price-book/page": "app/(dashboard)/settings/price-book/page.js",
+  "/(dashboard)/schedule/page": "app/(dashboard)/schedule/page.js",
+  "/(dashboard)/customers/[id]/page": "app/(dashboard)/customers/[id]/page.js",
+  "/(dashboard)/settings/business-hours/page": "app/(dashboard)/settings/business-hours/page.js",
+  "/(dashboard)/settings/company/page": "app/(dashboard)/settings/company/page.js",
+  "/(dashboard)/settings/users/page": "app/(dashboard)/settings/users/page.js",
+  "/(dashboard)/settings/notifications/page": "app/(dashboard)/settings/notifications/page.js"
+}

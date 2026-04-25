@@ -1,0 +1,182 @@
+**Excellent foundation**—your Field Service Web App research document (based on Housecall Pro, Jobber, FieldEdge, Knowify) captures 90%+ of core needs for a competitive plumbing-focused FSM tool. I've refined it with latest 2025 insights from competitor help centers, dashboards, best practices (mobile-first, AI-assisted quoting/scheduling, hyper-automation, real-time GPS/maps, PWA for initial "field worker web"), and UI patterns.
+
+**Refined Scope for Production-Ready v1 (Web-Only MVP)**:
+
+- **Fully web-based** (desktop admin/dispatcher/office + responsive/PWA for field technicians on phones/tablets). Native mobile (React Native) in Phase 2+.
+- Roles & RBAC: Admin/Owner (full), Dispatcher (scheduling focus), Office (CRM/invoicing), Technician (limited: my schedule/jobs, time/expenses/photos/signatures, status updates).
+- Core MVP: Auth, Dashboard, Scheduling/Calendar (drag-drop), Job/Estimate/Invoice workflow, Basic CRM, Time/Inventory, Notifications (email/SMS/push via service worker), Reporting, Settings. Integrations (Stripe, QuickBooks webhooks placeholder, Google Maps/Leaflet).
+- Real-time: Socket.io (job updates, locations, notifications).
+- Offline/PWA: Service workers + IndexedDB sync for technicians.
+- Scalable/Secure from day 1: Stateless APIs, connection pooling, rate limiting, input sanitization (Zod), JWT + refresh (httpOnly), bcrypt/Argon2, audit logs, encryption (sensitive fields), GDPR-compliant (consent, data export/delete), HTTPS, OWASP top 10 mitigations.
+- Pricing: Multi-tenant (company isolation), subscription tiers later (Stripe).
+- Start **local** (Docker Compose full stack), then cloud (Vercel FE + Fly.io/Railway/DO backend + Neon/Supabase Postgres + Redis + AWS S3 files).
+
+**Recommended Tech Stack** (Modern, TypeScript everywhere, developer velocity + scale):
+
+- **Frontend**: Next.js 15 (App Router, Server Components/Actions, RSC), TypeScript, Tailwind + Shadcn/ui + Radix, TanStack Query + React Query Devtools, Zustand (or Context), FullCalendar (drag/drop/resizing out-of-box, superior to react-big-calendar for prod), React Hook Form + Zod, Lucide icons, Leaflet + react-leaflet (maps/GPS), next-pwa, Recharts/Chart.js.
+- **Backend**: expressJS (modular, guards, interceptors, TypeScript-first) or Express + ts-rest/OpenAPI, Prisma ORM + PostgreSQL (PostGIS for geo), Socket.io, BullMQ + Redis (queues/jobs), Stripe Node, Resend/Twilio, JWT + jose, Helmet/CORS/rate-limiter-flexible, class-validator + class-transformer.
+- **DB**: PostgreSQL (Neon serverless or local).
+- **DevOps**: Docker Compose (local dev/prod-like), GitHub Actions (lint/test/build/deploy), ESLint/Prettier/Husky, Sentry (errors), Prometheus/Grafana later, Terraform for infra.
+- Folder structure: Monorepo (Turborepo/Nx) or separate FE/BE repos. Strict conventions: feature folders, domain-driven.
+
+**Example UI Inspiration** (from competitors):
+
+**Housecall Pro Dispatching/Calendar** (drag-drop, employee coloring, map toggle, real-time feel):
+
+![Best Field Service Dispatch Software With Real-Time GPS Map](https://www.housecallpro.com/wp-content/uploads/2025/05/Dispatching.webp)
+
+[housecallpro.com](https://www.housecallpro.com/features/dispatching-software/)
+
+![Drag and Drop Scheduling Calendar Software for Field Service](https://www.housecallpro.com/wp-content/uploads/2025/09/drag-and-drop-scheduling-software-hero.webp)
+
+[housecallpro.com](https://www.housecallpro.com/features/drag-drop-calendar/)
+
+**Jobber Dashboard** (recommended actions, assignments, balances, upcoming jobs, today's hours—highly actionable):
+
+![Jobber Review: A CRM for Service Based Industries | SmallBizCRM](https://smallbizcrm.com/wp-content/uploads/2020/07/Jobber-3-Screenshot-View-your-daily-activities.jpg)
+
+[smallbizcrm.com](https://smallbizcrm.com/blog/smallbizcrm-review-jobber-crm/)
+
+Jobber Review: A CRM for Service Based Industries | SmallBizCRM
+
+**Modern Drag-Drop Scheduling** (employee sidebar, availability, shift blocks):
+
+![image.png](attachment:5c267e89-e2c0-4446-a169-f92c54460f92:image.png)
+
+[akiflow.com](https://akiflow.com/blog/drag-drop-scheduling-software)
+
+Best Drag and Drop Calendar Software for Smarter Scheduling (2025 ...
+
+**High-Level Architecture**:
+
+- FE → API Gateway/Direct to expressJS (REST + WS).
+- Backend services: Auth, Users, Customers, Jobs, Scheduling (calendar logic + optimization stub), Billing, Inventory, Notifications, Reports.
+- DB: Normalized with soft deletes, timestamps, companyId scoping, indexes on status/date/techId.
+- File storage: Local/uploads → S3.
+- Real-time: WS rooms per company/job/tech.
+- Scaling: Horizontal pods, DB read replicas, Redis cache, queue workers.
+
+**Key Database Entities** (Prisma schema outline):
+
+- Company (tenant), User (role, permissions JSON or separate), Customer (address, history), Property (multiple per customer), Job (status enum: requested/assigned/enroute/onsite/completed, techId, scheduledAt, duration, priority), JobLineItem/Phase/Checklist, Estimate (linked to Job), Invoice (payments via Stripe), TimeEntry (clock in/out, geofence), InventoryItem (stock, van allocation), Notification, AuditLog.
+
+**Detailed Page-by-Page / Route Specification** (Next.js /app routes, role-gated via middleware/guards):
+
+1. **/login, /register, /forgot-password**: Form, OAuth (Google), magic links. Post-login redirect by role.
+2. **/dashboard** (role-specific):
+    - Admin/Dispatcher: Widgets - Today's jobs summary, Upcoming/unscheduled count, Revenue pipeline, Technician status (GPS map small), Recommended actions (overdue quotes, past-due invoices), Quick create job/estimate.
+    - Technician: My today's jobs list, Quick clock-in, Notifications feed.
+3. **/schedule** (main view: FullCalendar month/week/day/agenda + list toggle + map sidebar):
+    - Drag-drop assign/reschedule (onEventDrop), resize, color by tech/job-type/status.
+    - Filters: Tech, status, priority, date range. Auto-routing stub (nearest + skills). "Dispatch" button → assign + notify.
+    - Sidebar: Available techs, unassigned jobs pool. Real-time tech locations (dots on map).
+4. **/jobs** (table: DataTable TanStack, filters, pagination, export CSV).
+    - Columns: ID, Customer, Address, Status, Tech, Scheduled, Value, Actions.
+5. **/jobs/[id]** (tabs: Overview, Checklist/forms (dynamic fields), Photos/videos (upload + before/after), Notes/timeline, Time entries, Expenses/receipts, Change orders, Invoice preview, History/audit).
+    - Buttons: Status update (enroute/onsite/complete), "On my way" (SMS ETA), Digital signature (react-signature-canvas), Camera access.
+6. **/customers** (list + search) → **/customers/[id]** (profile: contact, properties, service history, jobs/estimates/invoices list, notes, portal link).
+7. **/estimates** (list) → create/edit (templates, line items Good/Better/Best, markup calc, PDF preview, digital sign, follow-up automation).
+8. **/invoices** (similar to estimates, batch, partial payments, Stripe checkout/link, QuickBooks sync hook).
+9. **/inventory** (list, low-stock alerts, purchase orders, assign to job/van, mobile scan stub).
+10. **/reports** (dash: Revenue, Profit per job/tech, Utilization, CSAT, Custom builder with filters/charts. AI query stub later).
+11. **/settings** (company profile/logo, users/roles/permissions editor, price book/services/materials, business hours, integrations config, notifications templates).
+12. Technician mobile-optimized: Collapsed sidebar, large buttons, bottom nav (Schedule, My Jobs, Clock, More).
+
+**API Examples** (expressJS controllers/services):
+
+- GET/POST /jobs, /jobs/:id/status (WS emit), /jobs/assign, /schedule/events (calendar feed).
+- Protected with @Roles, @UseGuards(JwtAuthGuard, RolesGuard).
+- Webhooks: /stripe, /qb-sync.
+
+**Phased Checklist** (AI-executable, sequential, granular; include tests per feature, PR/merge criteria, acceptance: manual + Playwright E2E + unit Jest):
+**Phase 0: Planning/Setup (1-2 days)**
+
+- Repo setup (Turborepo), .env, Docker Compose (postgres, redis, backend, frontend, pgadmin).
+- Prisma init/schema migrate (core models + seeds: demo company/users).
+- Coding standards, lint/test CI.
+- Figma/Wireframes (or code-first).
+
+**Phase 1: Infrastructure & DevEnv (2-3 days)**
+
+- Docker full stack working locally.
+- Basic health checks, logging (Pino).
+
+**Phase 2: Auth & RBAC (4-6 days)**
+
+- User/Company models, Prisma relations.
+- Register/login (email verify, password strength), JWT refresh (httpOnly cookie), logout.
+- Role/permission middleware (e.g., PERMISSIONS: 'job:read', 'schedule:write').
+- Protected routes (middleware), profile page. Tests: auth flows.
+
+**Phase 3: Company/User/Team Mgmt (3-5 days)**
+
+- Settings pages, user CRUD/invite (email), role editor.
+- Company scoping on all queries.
+
+**Phase 4: Customer CRM (5-7 days)**
+
+- Models, list/detail forms (address autocomplete), history tabs.
+- Embeddable booking widget stub.
+
+**Phase 5: Scheduling & Calendar (7-10 days)**
+
+- FullCalendar integration (views, drag/drop/resizing handlers → API calls).
+- Events fetch (jobs/estimates), real-time WS updates.
+- Tech location tracking (geolocation + WS). Map integration.
+- Filters, auto-assign stub (nearest available).
+
+**Phase 6: Job Management Core (8-12 days)**
+
+- Job CRUD, status transitions (enum + workflow), checklist dynamic, attachments (S3), time/expense logging (geofence validation).
+- Technician job detail page (mobile-first).
+- Photos, signatures, notes.
+
+**Phase 7: Estimates, Invoices, Payments (7-10 days)**
+
+- Templates/price book, line items (labor/materials/flat), markup/profit calc.
+- PDF generation (pdf-lib or server), digital sign.
+- Stripe: checkout, webhooks (payment success → status update), saved methods.
+- Batch/follow-ups.
+
+**Phase 8: Inventory & Expenses (4-6 days)**
+
+- Stock tracking, alerts, job allocation, receipt upload.
+
+**Phase 9: Notifications & Real-time (4-6 days)**
+
+- Socket.io (job updates, new assign, status change).
+- Email (Resend templates), SMS (Twilio), push (PWA). Reminders (queues).
+
+**Phase 10: Reporting & Analytics (5-8 days)**
+
+- Dashboards/widgets (reusable charts), filters, exports.
+
+**Phase 11: Admin/Settings, Polish, PWA (5-7 days)**
+
+- Full settings, branding, multi-lang stub (i18next).
+- PWA manifest, offline service worker (basic job view/sync).
+
+**Phase 12: Testing & Security (7-10 days)**
+
+- Unit (services), integration (Prisma), E2E (Playwright: login→create job→assign→complete).
+- Security: OWASP scan, auth tests, rate limit, input validation everywhere, file type/size, CORS, helmet. Penetration basics.
+- Performance: Lighthouse.
+
+**Phase 13: Documentation, Onboarding, Demo Data (3-5 days)**
+
+- README, API docs (Swagger), user guides, demo seeds.
+
+**Phase 14: Local Deployment & Review**
+
+- Production Docker build, seed data, full end-to-end test as admin + technician.
+
+**Phase 15+: Cloud Migration, Integrations (QB full, AI scheduling), Mobile Native, Advanced (subcontractors, financing, AR diagnostics).**
+
+**Next Steps for You/AI**:
+
+1. Set up the monorepo + Docker (I can provide sample docker-compose.yml if requested).
+2. Implement Phase 2 first (auth is foundational).
+3. After each phase: Test thoroughly, review UI on mobile, gather feedback.
+4. Budget: MVP ~3-6 months solo senior dev (or team parallelization); use AI for boilerplate/code gen per task.
+
+This plan is **complete, executable, and expandable**—nothing major omitted. Prioritize core job flow for plumbers (emergency repairs → quotes → dispatch → onsite → invoice → payment). Iterate with real users post-MVP. Questions on any phase, sample code, schema, or docker files? Let's build it!
