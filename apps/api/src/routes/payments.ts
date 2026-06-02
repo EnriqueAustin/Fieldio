@@ -14,6 +14,14 @@ publicPaymentsRouter.post(
     '/invoices/:token/checkout',
     catchAsync(paymentsController.createCheckoutSession)
 );
+publicPaymentsRouter.post(
+    '/invoices/:token/payfast',
+    catchAsync(paymentsController.createPayFastCheckout)
+);
+publicPaymentsRouter.post(
+    '/payfast/notify',
+    catchAsync(paymentsController.handlePayFastITN)
+);
 
 /**
  * Stripe webhook — must use raw body. Mounted directly on the app.

@@ -6,8 +6,8 @@
         "dev": "next dev",
         "build": "next build",
         "start": "next start",
-        "lint": "tsc --noEmit",
-        "test": "node -e \"console.log('web: no automated tests configured yet')\""
+        "lint": "tsc --noEmit -p tsconfig.typecheck.json",
+        "test": "node --experimental-strip-types scripts/test.ts"
     },
     "dependencies": {
         "@fieldio/database": "*",

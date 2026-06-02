@@ -29,11 +29,15 @@ import { Plus } from "lucide-react";
 interface User {
     id: string;
     email: string;
+    firstName?: string | null;
+    lastName?: string | null;
     role: string;
     status: string;
 }
 
 const inviteSchema = z.object({
+    firstName: z.string().optional(),
+    lastName: z.string().optional(),
     email: z.string().email(),
     password: z.string().min(8),
     role: z.enum(['ADMIN', 'DISPATCHER', 'OFFICE', 'TECHNICIAN']),
@@ -103,6 +107,14 @@ export default function UsersPage() {
                         </DialogHeader>
                         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
                             <div className="space-y-2">
+                                <Label htmlFor="firstName">First Name</Label>
+                                <Input id="firstName" {...register("firstName")} />
+                            </div>
+                            <div className="space-y-2">
+                                <Label htmlFor="lastName">Last Name</Label>
+                                <Input id="lastName" {...register("lastName")} />
+                            </div>
+                            <div className="space-y-2">
                                 <Label htmlFor="email">Email</Label>
                                 <Input id="email" type="email" {...register("email")} />
                             </div>
@@ -131,6 +143,7 @@ export default function UsersPage() {
                 <Table>
                     <TableHeader>
                         <TableRow>
+                            <TableHead>Name</TableHead>
                             <TableHead>Email</TableHead>
                             <TableHead>Role</TableHead>
                             <TableHead>Status</TableHead>
@@ -140,6 +153,9 @@ export default function UsersPage() {
                     <TableBody>
                         {users.map((user) => (
                             <TableRow key={user.id}>
+                                <TableCell>
+                                    {[user.firstName, user.lastName].filter(Boolean).join(" ") || "-"}
+                                </TableCell>
                                 <TableCell>{user.email}</TableCell>
                                 <TableCell className="font-medium">{user.role}</TableCell>
                                 <TableCell>{user.status}</TableCell>

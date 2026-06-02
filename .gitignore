@@ -5,6 +5,9 @@ node_modules/
 dist/
 build/
 coverage/
+.next/
+.turbo/
+*.tsbuildinfo
 
 # Environment files
 .env
@@ -23,4 +26,3 @@ pnpm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
-

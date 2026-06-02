@@ -10,6 +10,11 @@ const createEstimateSchema = z.object({
     validUntil: z.string().optional(),
 });
 
+const approveEstimateSchema = z.object({
+    signerName: z.string().min(2),
+    signatureUrl: z.string().min(1),
+});
+
 export const estimateService = {
     create: async (companyId: string, input: z.infer<typeof createEstimateSchema>) => {
         return prisma.estimate.create({
@@ -39,6 +44,30 @@ export const estimateService = {
         });
         if (!estimate) throw new AppError('Estimate not found', StatusCodes.NOT_FOUND);
         return estimate;
+    },
+
+    approveWithSignature: async (
+        id: string,
+        companyId: string,
+        input: z.infer<typeof approveEstimateSchema>
+    ) => {
+        const parsed = approveEstimateSchema.parse(input);
+        const estimate = await prisma.estimate.findFirst({ where: { id, companyId } });
+        if (!estimate) throw new AppError('Estimate not found', StatusCodes.NOT_FOUND);
+        if (estimate.status === 'DECLINED' || estimate.status === 'EXPIRED') {
+            throw new AppError('Estimate cannot be approved', StatusCodes.BAD_REQUEST);
+        }
+
+        return prisma.estimate.update({
+            where: { id: estimate.id },
+            data: {
+                status: 'APPROVED',
+                signerName: parsed.signerName,
+                signatureUrl: parsed.signatureUrl,
+                signedAt: new Date(),
+                approvedAt: new Date(),
+            },
+        });
     },
 
     convertToJob: async (id: string, companyId: string) => {

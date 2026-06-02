@@ -155,4 +155,24 @@ export const emailService = {
                  <p><a href="${estimate.viewUrl}">View estimate</a></p>`
             ),
         }),
+
+    sendReviewRequest: (
+        email: string,
+        companyName: string,
+        reviewUrl: string,
+        companyId?: string
+    ) =>
+        send({
+            to: email,
+            subject: `How was your experience with ${companyName}?`,
+            template: 'review_request',
+            companyId,
+            html: wrap(
+                'We value your feedback',
+                `<p>Thank you for choosing <strong>${companyName}</strong>. We hope everything went well!</p>
+                 <p>If you have a moment, we'd really appreciate a review:</p>
+                 <p><a href="${reviewUrl}" style="display:inline-block; background:#111827; color:#fff; padding:12px 20px; border-radius:8px; text-decoration:none;">Leave a review</a></p>
+                 <p style="color:#6b7280; font-size:14px;">Your feedback helps us improve and helps others find quality service.</p>`
+            ),
+        }),
 };

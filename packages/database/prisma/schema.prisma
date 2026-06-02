@@ -36,6 +36,10 @@ model Company {
   notificationLogs NotificationLog[]
   recurringPlans RecurringPlan[]
   bookingRequests BookingRequest[]
+  xeroConnections XeroConnection[]
+  priceBookItems  PriceBookItem[]
+  suppliers       Supplier[]
+  purchaseOrders  PurchaseOrder[]
 }
 
 enum UserRole {
@@ -56,6 +60,8 @@ model User {
   companyId    String
   email        String     @unique
   passwordHash String
+  firstName    String?
+  lastName     String?
   role         UserRole   @default(TECHNICIAN)
   permissions  Json?      // Specific capabilities e.g., 'job:read'
   avatarUrl    String?
@@ -105,6 +111,7 @@ model Customer {
   phone     String?
   notes     String?
   status    CustomerStatus @default(ACTIVE)
+  deletedAt DateTime?
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
 
@@ -113,6 +120,7 @@ model Customer {
   jobs       Job[]
   estimates  Estimate[]
   bookingRequests BookingRequest[]
+  portalTokens CustomerPortalToken[]
 
   @@index([companyId])
 }
@@ -132,9 +140,39 @@ model Property {
   customer Customer @relation(fields: [customerId], references: [id])
   company  Company  @relation(fields: [companyId], references: [id])
   jobs     Job[]
+  assets   PropertyAsset[]
 
   @@index([companyId])
   @@index([customerId])
+}
+
+enum AssetStatus {
+  ACTIVE
+  NEEDS_SERVICE
+  RETIRED
+}
+
+model PropertyAsset {
+  id             String      @id @default(uuid())
+  propertyId     String
+  companyId      String
+  name           String
+  category       String?
+  manufacturer   String?
+  model          String?
+  serialNumber   String?
+  installedAt    DateTime?
+  lastServicedAt DateTime?
+  warrantyUntil  DateTime?
+  notes          String?
+  status         AssetStatus @default(ACTIVE)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  property Property @relation(fields: [propertyId], references: [id])
+
+  @@index([companyId])
+  @@index([propertyId])
 }
 
 // -----------------------------------------------------------------------------
@@ -175,6 +213,8 @@ model Job {
   updatedAt      DateTime    @updatedAt
 
   recurringPlanId String?
+  deletedAt      DateTime?
+  reviewRequestSentAt DateTime?
   company   Company        @relation(fields: [companyId], references: [id])
   customer  Customer       @relation(fields: [customerId], references: [id])
   property  Property       @relation(fields: [propertyId], references: [id])
@@ -187,6 +227,7 @@ model Job {
   photos    JobPhoto[]
   signatures JobSignature[]
   recurringPlan RecurringPlan? @relation(fields: [recurringPlanId], references: [id])
+  purchaseOrders PurchaseOrder[]
 
   @@index([companyId])
   @@index([techId])
@@ -215,7 +256,8 @@ model JobSignature {
   id        String   @id @default(uuid())
   jobId     String
   signerName String
-  signatureDataUrl String
+  signatureDataUrl String?
+  signatureUrl     String?
   signedAt  DateTime @default(now())
 
   job Job @relation(fields: [jobId], references: [id])
@@ -278,6 +320,10 @@ model Estimate {
   total      Decimal
   validUntil DateTime?
   pdfUrl     String?
+  signerName String?
+  signatureUrl String?
+  signedAt   DateTime?
+  approvedAt DateTime?
   createdAt  DateTime       @default(now())
   updatedAt  DateTime       @updatedAt
 
@@ -301,17 +347,25 @@ model Invoice {
   id              String        @id @default(uuid())
   companyId       String
   jobId           String        @unique
+  invoiceNumber   String?
   status          InvoiceStatus @default(DRAFT)
   items           Json?         // Snapshot of line items at time of invoice
   subtotal        Decimal
   tax             Decimal
   total           Decimal
   balance         Decimal
+  taxLabel        String        @default("VAT")
+  taxRate         Decimal       @default(15)
+  taxNumber       String?
+  supplierName    String?
+  supplierCompanyRegistration String?
+  paymentReference String?
   dueDate         DateTime?
   stripePaymentId String?
   stripeCheckoutSessionId String?
   publicToken     String?       @unique
   paidAt          DateTime?
+  deletedAt       DateTime?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
@@ -320,6 +374,7 @@ model Invoice {
   payments Payment[]
 
   @@index([companyId])
+  @@unique([companyId, invoiceNumber])
 }
 
 enum PaymentMethod {
@@ -327,6 +382,8 @@ enum PaymentMethod {
   ACH
   CASH
   CHECK
+  EFT
+  PAYFAST
   OTHER
 }
 
@@ -355,6 +412,29 @@ model Payment {
   invoice Invoice @relation(fields: [invoiceId], references: [id])
 
   @@index([invoiceId])
+  @@index([companyId])
+}
+
+enum IntegrationStatus {
+  DISCONNECTED
+  CONNECTED
+  SYNC_ERROR
+}
+
+model XeroConnection {
+  id           String            @id @default(uuid())
+  companyId    String
+  tenantId     String
+  tenantName   String?
+  status       IntegrationStatus @default(CONNECTED)
+  lastSyncedAt DateTime?
+  metadata     Json?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, tenantId])
   @@index([companyId])
 }
 
@@ -447,6 +527,7 @@ model Expense {
 enum NotificationChannel {
   EMAIL
   SMS
+  WHATSAPP
 }
 
 enum NotificationDeliveryStatus {
@@ -543,4 +624,102 @@ model BookingRequest {
   customer Customer? @relation(fields: [customerId], references: [id])
 
   @@index([companyId, status])
+}
+
+// -----------------------------------------------------------------------------
+// Price Book
+// -----------------------------------------------------------------------------
+
+model PriceBookItem {
+  id          String       @id @default(uuid())
+  companyId   String
+  name        String
+  description String?
+  unitPrice   Decimal
+  type        LineItemType @default(SERVICE)
+  category    String?
+  sku         String?
+  active      Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId])
+}
+
+// -----------------------------------------------------------------------------
+// Suppliers & Purchase Orders
+// -----------------------------------------------------------------------------
+
+model Supplier {
+  id             String   @id @default(uuid())
+  companyId      String
+  name           String
+  contactName    String?
+  email          String?
+  phone          String?
+  accountNumber  String?
+  notes          String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  company        Company         @relation(fields: [companyId], references: [id])
+  purchaseOrders PurchaseOrder[]
+
+  @@index([companyId])
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  SENT
+  RECEIVED
+  PARTIAL
+  CANCELED
+}
+
+model PurchaseOrder {
+  id           String              @id @default(uuid())
+  companyId    String
+  supplierId   String
+  jobId        String?
+  orderNumber  String?
+  status       PurchaseOrderStatus @default(DRAFT)
+  items        Json
+  subtotal     Decimal
+  tax          Decimal             @default(0)
+  total        Decimal
+  notes        String?
+  expectedDate DateTime?
+  receivedAt   DateTime?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  company  Company  @relation(fields: [companyId], references: [id])
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+  job      Job?     @relation(fields: [jobId], references: [id])
+
+  @@index([companyId])
+  @@index([supplierId])
+  @@index([jobId])
+  @@unique([companyId, orderNumber])
+}
+
+// -----------------------------------------------------------------------------
+// Customer Self-Service Portal
+// -----------------------------------------------------------------------------
+
+model CustomerPortalToken {
+  id         String   @id @default(uuid())
+  companyId  String
+  customerId String
+  token      String   @unique
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([token])
+  @@index([customerId])
 }

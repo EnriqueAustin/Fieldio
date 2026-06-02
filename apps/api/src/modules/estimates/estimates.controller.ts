@@ -18,6 +18,15 @@ export const estimateController = {
         res.status(StatusCodes.OK).json({ status: 'success', data: { estimate } });
     },
 
+    approveWithSignature: async (req: Request, res: Response) => {
+        const estimate = await estimateService.approveWithSignature(
+            req.params.id,
+            req.user!.companyId,
+            req.body
+        );
+        res.status(StatusCodes.OK).json({ status: 'success', data: { estimate } });
+    },
+
     convertToJob: async (req: Request, res: Response) => {
         const job = await estimateService.convertToJob(req.params.id, req.user!.companyId);
         res.status(StatusCodes.OK).json({ status: 'success', data: { job } });

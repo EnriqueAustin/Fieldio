@@ -6,7 +6,7 @@
         "build": "tsc",
         "dev": "tsx --watch src/server.ts",
         "lint": "tsc --noEmit",
-        "test": "node -e \"console.log('api: no automated tests configured yet')\"",
+        "test": "node --experimental-strip-types scripts/test.ts",
         "start": "node dist/server.js"
     },
     "dependencies": {

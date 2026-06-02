@@ -91,4 +91,31 @@ export const storageService = {
         const client = getClient();
         await client.send(new DeleteObjectCommand({ Bucket: config.S3_BUCKET!, Key: key }));
     },
+
+    uploadSignature: async (params: {
+        companyId: string;
+        entityType: 'job' | 'estimate';
+        entityId: string;
+        dataUrl: string;
+    }) => {
+        const client = getClient();
+        const matches = params.dataUrl.match(/^data:image\/(png|jpeg|webp);base64,(.+)$/);
+        if (!matches) throw new Error('Invalid signature data URL format');
+
+        const ext = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+        const buffer = Buffer.from(matches[2], 'base64');
+        const id = crypto.randomBytes(8).toString('hex');
+        const key = `companies/${params.companyId}/signatures/${params.entityType}/${params.entityId}/${id}.${ext}`;
+
+        await client.send(
+            new PutObjectCommand({
+                Bucket: config.S3_BUCKET!,
+                Key: key,
+                Body: buffer,
+                ContentType: `image/${matches[1]}`,
+            })
+        );
+
+        return { url: publicUrl(key), key };
+    },
 };

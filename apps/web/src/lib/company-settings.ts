@@ -9,11 +9,14 @@ export type CompanySettings = {
         taxLabel: string;
         taxRate: number;
         taxNumber?: string;
+        invoiceHeading: string;
+        companyRegistrationNumber?: string;
         paymentTermsDays: number;
         paymentMethods: {
             cardEnabled: boolean;
             eftEnabled: boolean;
             cashEnabled: boolean;
+            payFastEnabled: boolean;
         };
         eftDetails: {
             bankName?: string;
@@ -23,6 +26,25 @@ export type CompanySettings = {
             accountType?: string;
             referencePrefix?: string;
             paymentInstructions?: string;
+        };
+        payFast: {
+            merchantId?: string;
+            merchantKey?: string;
+            passphrase?: string;
+            sandbox: boolean;
+        };
+    };
+    integrations: {
+        xero: {
+            enabled: boolean;
+            tenantId?: string;
+            tenantName?: string;
+            syncContacts: boolean;
+            syncInvoices: boolean;
+        };
+        whatsapp: {
+            enabled: boolean;
+            businessNumber?: string;
         };
     };
     contact: {
@@ -43,11 +65,14 @@ export const defaultCompanySettings: CompanySettings = {
         taxLabel: 'VAT',
         taxRate: 15,
         taxNumber: '',
+        invoiceHeading: 'Tax Invoice',
+        companyRegistrationNumber: '',
         paymentTermsDays: 7,
         paymentMethods: {
             cardEnabled: true,
             eftEnabled: true,
             cashEnabled: true,
+            payFastEnabled: false,
         },
         eftDetails: {
             bankName: '',
@@ -57,6 +82,25 @@ export const defaultCompanySettings: CompanySettings = {
             accountType: '',
             referencePrefix: '',
             paymentInstructions: 'Use your invoice number as the payment reference.',
+        },
+        payFast: {
+            merchantId: '',
+            merchantKey: '',
+            passphrase: '',
+            sandbox: true,
+        },
+    },
+    integrations: {
+        xero: {
+            enabled: false,
+            tenantId: '',
+            tenantName: '',
+            syncContacts: true,
+            syncInvoices: true,
+        },
+        whatsapp: {
+            enabled: false,
+            businessNumber: '',
         },
     },
     contact: {
@@ -93,6 +137,12 @@ export const normalizeCompanySettings = (input: unknown): CompanySettings => {
         billing: {
             ...merged.billing,
             taxNumber: merged.billing.taxNumber ?? '',
+            invoiceHeading: merged.billing.invoiceHeading ?? defaultCompanySettings.billing.invoiceHeading,
+            companyRegistrationNumber: merged.billing.companyRegistrationNumber ?? '',
+            paymentMethods: {
+                ...defaultCompanySettings.billing.paymentMethods,
+                ...merged.billing.paymentMethods,
+            },
             eftDetails: {
                 ...merged.billing.eftDetails,
                 bankName: merged.billing.eftDetails.bankName ?? '',
@@ -104,6 +154,27 @@ export const normalizeCompanySettings = (input: unknown): CompanySettings => {
                 paymentInstructions:
                     merged.billing.eftDetails.paymentInstructions ??
                     defaultCompanySettings.billing.eftDetails.paymentInstructions,
+            },
+            payFast: {
+                ...defaultCompanySettings.billing.payFast,
+                ...merged.billing.payFast,
+                merchantId: merged.billing.payFast?.merchantId ?? '',
+                merchantKey: merged.billing.payFast?.merchantKey ?? '',
+                passphrase: merged.billing.payFast?.passphrase ?? '',
+                sandbox: merged.billing.payFast?.sandbox ?? true,
+            },
+        },
+        integrations: {
+            xero: {
+                ...defaultCompanySettings.integrations.xero,
+                ...merged.integrations?.xero,
+                tenantId: merged.integrations?.xero?.tenantId ?? '',
+                tenantName: merged.integrations?.xero?.tenantName ?? '',
+            },
+            whatsapp: {
+                ...defaultCompanySettings.integrations.whatsapp,
+                ...merged.integrations?.whatsapp,
+                businessNumber: merged.integrations?.whatsapp?.businessNumber ?? '',
             },
         },
         contact: {

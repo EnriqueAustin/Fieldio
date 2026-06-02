@@ -8,3 +8,6 @@ export const analyticsRouter = Router();
 analyticsRouter.use(requireUser);
 
 analyticsRouter.get('/dashboard', catchAsync(analyticsController.getDashboard));
+analyticsRouter.get('/job-costing', catchAsync(analyticsController.getJobCosting));
+analyticsRouter.get('/timesheet', catchAsync(analyticsController.getTimesheet));
+analyticsRouter.get('/tech-earnings', catchAsync(analyticsController.getTechEarnings));

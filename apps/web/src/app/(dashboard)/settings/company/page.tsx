@@ -24,11 +24,14 @@ const companySchema = z.object({
             taxLabel: z.string().min(1),
             taxRate: z.coerce.number().min(0).max(100),
             taxNumber: z.string().optional(),
+            invoiceHeading: z.string().min(1),
+            companyRegistrationNumber: z.string().optional(),
             paymentTermsDays: z.coerce.number().int().min(0).max(365),
             paymentMethods: z.object({
                 cardEnabled: z.boolean(),
                 eftEnabled: z.boolean(),
                 cashEnabled: z.boolean(),
+                payFastEnabled: z.boolean(),
             }),
             eftDetails: z.object({
                 bankName: z.string().optional(),
@@ -38,6 +41,25 @@ const companySchema = z.object({
                 accountType: z.string().optional(),
                 referencePrefix: z.string().optional(),
                 paymentInstructions: z.string().optional(),
+            }),
+            payFast: z.object({
+                merchantId: z.string().optional(),
+                merchantKey: z.string().optional(),
+                passphrase: z.string().optional(),
+                sandbox: z.boolean(),
+            }),
+        }),
+        integrations: z.object({
+            xero: z.object({
+                enabled: z.boolean(),
+                tenantId: z.string().optional(),
+                tenantName: z.string().optional(),
+                syncContacts: z.boolean(),
+                syncInvoices: z.boolean(),
+            }),
+            whatsapp: z.object({
+                enabled: z.boolean(),
+                businessNumber: z.string().optional(),
             }),
         }),
         contact: z.object({
@@ -167,6 +189,17 @@ export default function CompanySettingsPage() {
                             </div>
                         </div>
 
+                        <div className="grid gap-4 md:grid-cols-2">
+                            <div className="space-y-2">
+                                <Label htmlFor="invoiceHeading">Invoice Heading</Label>
+                                <Input id="invoiceHeading" {...register("settings.billing.invoiceHeading")} />
+                            </div>
+                            <div className="space-y-2">
+                                <Label htmlFor="companyRegistrationNumber">Company Registration Number</Label>
+                                <Input id="companyRegistrationNumber" {...register("settings.billing.companyRegistrationNumber")} />
+                            </div>
+                        </div>
+
                         <div className="space-y-3">
                             <div>
                                 <h4 className="text-sm font-semibold">Accepted payment methods</h4>
@@ -184,6 +217,10 @@ export default function CompanySettingsPage() {
                                 <label className="flex items-center gap-3 rounded-xl border border-border px-4 py-3">
                                     <input type="checkbox" {...register("settings.billing.paymentMethods.cashEnabled")} />
                                     <span>Cash accepted</span>
+                                </label>
+                                <label className="flex items-center gap-3 rounded-xl border border-border px-4 py-3">
+                                    <input type="checkbox" {...register("settings.billing.paymentMethods.payFastEnabled")} />
+                                    <span>PayFast</span>
                                 </label>
                             </div>
                         </div>
@@ -226,6 +263,68 @@ export default function CompanySettingsPage() {
                                     className="min-h-[110px] w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
                                     placeholder="Use your invoice number as the payment reference."
                                 />
+                            </div>
+                        </div>
+
+                        <div className="space-y-4 rounded-2xl border border-border/80 bg-white p-5">
+                            <div>
+                                <h4 className="text-sm font-semibold">PayFast</h4>
+                                <p className="text-xs text-muted-foreground">Enable a South Africa-first card/EFT gateway handoff from customer pay pages.</p>
+                            </div>
+                            <div className="grid gap-4 md:grid-cols-3">
+                                <div className="space-y-2">
+                                    <Label>Merchant ID</Label>
+                                    <Input {...register("settings.billing.payFast.merchantId")} />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label>Merchant Key</Label>
+                                    <Input {...register("settings.billing.payFast.merchantKey")} />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label>Passphrase</Label>
+                                    <Input type="password" {...register("settings.billing.payFast.passphrase")} />
+                                </div>
+                            </div>
+                            <label className="flex items-center gap-3 text-sm">
+                                <input type="checkbox" {...register("settings.billing.payFast.sandbox")} />
+                                <span>Use PayFast sandbox</span>
+                            </label>
+                        </div>
+
+                        <div className="space-y-4 rounded-2xl border border-border/80 bg-slate-50/70 p-5">
+                            <div>
+                                <h4 className="text-sm font-semibold">Accounting and WhatsApp</h4>
+                                <p className="text-xs text-muted-foreground">Store integration state for Xero sync and WhatsApp Business rollout.</p>
+                            </div>
+                            <div className="grid gap-4 md:grid-cols-3">
+                                <label className="flex items-center gap-3 rounded-xl border border-border bg-background px-4 py-3">
+                                    <input type="checkbox" {...register("settings.integrations.xero.enabled")} />
+                                    <span>Xero enabled</span>
+                                </label>
+                                <div className="space-y-2">
+                                    <Label>Xero Tenant ID</Label>
+                                    <Input {...register("settings.integrations.xero.tenantId")} />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label>Xero Tenant Name</Label>
+                                    <Input {...register("settings.integrations.xero.tenantName")} />
+                                </div>
+                                <label className="flex items-center gap-3 rounded-xl border border-border bg-background px-4 py-3">
+                                    <input type="checkbox" {...register("settings.integrations.xero.syncContacts")} />
+                                    <span>Sync contacts</span>
+                                </label>
+                                <label className="flex items-center gap-3 rounded-xl border border-border bg-background px-4 py-3">
+                                    <input type="checkbox" {...register("settings.integrations.xero.syncInvoices")} />
+                                    <span>Sync invoices</span>
+                                </label>
+                                <label className="flex items-center gap-3 rounded-xl border border-border bg-background px-4 py-3">
+                                    <input type="checkbox" {...register("settings.integrations.whatsapp.enabled")} />
+                                    <span>WhatsApp enabled</span>
+                                </label>
+                            </div>
+                            <div className="space-y-2">
+                                <Label>WhatsApp Business Number</Label>
+                                <Input {...register("settings.integrations.whatsapp.businessNumber")} />
                             </div>
                         </div>
 

@@ -7,7 +7,18 @@ import { Button } from "../../../../components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../../../components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../../components/ui/card";
 import { Avatar, AvatarFallback } from "../../../../components/ui/avatar";
-import { MapPin, Phone, Mail } from "lucide-react";
+import { MapPin, Phone, Mail, Wrench } from "lucide-react";
+
+interface Asset {
+    id: string;
+    name: string;
+    category: string | null;
+    manufacturer: string | null;
+    model: string | null;
+    serialNumber: string | null;
+    lastServicedAt: string | null;
+    status: string;
+}
 
 interface Property {
     id: string;
@@ -15,6 +26,7 @@ interface Property {
     city: string;
     state: string;
     zip: string;
+    assets: Asset[];
 }
 
 interface Customer {
@@ -83,6 +95,26 @@ export default function CustomerDetailPage() {
                                 <CardContent>
                                     <div className="text-xl font-bold pt-2">{prop.addressLine1}</div>
                                     <p className="text-sm text-muted-foreground">{prop.city}, {prop.state} {prop.zip}</p>
+                                    <div className="mt-4 space-y-2">
+                                        {prop.assets?.length ? (
+                                            prop.assets.map((asset) => (
+                                                <div key={asset.id} className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <span className="font-medium">{asset.name}</span>
+                                                        <span className="text-xs text-muted-foreground">{asset.status}</span>
+                                                    </div>
+                                                    <div className="mt-1 text-xs text-muted-foreground">
+                                                        {[asset.manufacturer, asset.model, asset.serialNumber].filter(Boolean).join(" / ") || asset.category || "Tracked asset"}
+                                                    </div>
+                                                </div>
+                                            ))
+                                        ) : (
+                                            <div className="flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                                                <Wrench className="h-3 w-3" />
+                                                No equipment tracked yet
+                                            </div>
+                                        )}
+                                    </div>
                                     <div className="pt-4">
                                         <Button variant="outline" size="sm" className="w-full">Create Job Here</Button>
                                     </div>

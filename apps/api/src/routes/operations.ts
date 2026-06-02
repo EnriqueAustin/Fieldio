@@ -20,3 +20,6 @@ operationsRouter.get('/jobs/:jobId/expenses', catchAsync(expensesController.getB
 
 // Properties
 operationsRouter.get('/properties', catchAsync(propertyController.list));
+operationsRouter.get('/property-assets', catchAsync(propertyController.listAssets));
+operationsRouter.post('/properties/:propertyId/assets', catchAsync(propertyController.createAsset));
+operationsRouter.patch('/property-assets/:assetId', catchAsync(propertyController.updateAsset));

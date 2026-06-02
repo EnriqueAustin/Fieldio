@@ -13,21 +13,36 @@ const createUserSchema = z.object({
 });
 
 const updateUserSchema = z.object({
+    firstName: z.string().optional(),
+    lastName: z.string().optional(),
     role: z.enum(['ADMIN', 'DISPATCHER', 'OFFICE', 'TECHNICIAN']).optional(),
     status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
 });
+
+const userListSelect = {
+    id: true,
+    email: true,
+    firstName: true,
+    lastName: true,
+    role: true,
+    status: true,
+    createdAt: true,
+};
+
+const userSummarySelect = {
+    id: true,
+    email: true,
+    firstName: true,
+    lastName: true,
+    role: true,
+    status: true,
+};
 
 export const userService = {
     findAll: async (companyId: string) => {
         return prisma.user.findMany({
             where: { companyId },
-            select: {
-                id: true,
-                email: true,
-                role: true,
-                status: true,
-                createdAt: true,
-            },
+            select: userListSelect,
         });
     },
 
@@ -46,16 +61,13 @@ export const userService = {
             data: {
                 email: input.email,
                 passwordHash: hashedPassword,
+                firstName: input.firstName,
+                lastName: input.lastName,
                 role: input.role,
                 companyId,
                 status: 'ACTIVE',
             },
-            select: {
-                id: true,
-                email: true,
-                role: true,
-                status: true,
-            },
+            select: userSummarySelect,
         });
     },
 
@@ -72,12 +84,7 @@ export const userService = {
         return prisma.user.update({
             where: { id: userId },
             data: input,
-            select: {
-                id: true,
-                email: true,
-                role: true,
-                status: true,
-            },
+            select: userSummarySelect,
         });
     },
 

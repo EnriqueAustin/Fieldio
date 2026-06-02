@@ -8,7 +8,6 @@ const createCustomerSchema = z.object({
     email: z.string().email().optional().or(z.literal('')),
     phone: z.string().optional(),
     notes: z.string().optional(),
-    // Optional initial property
     property: z.object({
         addressLine1: z.string(),
         addressLine2: z.string().optional(),
@@ -29,8 +28,7 @@ const updateCustomerSchema = z.object({
 export const customerService = {
     findAll: async (companyId: string, page = 1, limit = 20, search?: string) => {
         const skip = (page - 1) * limit;
-
-        const where: any = { companyId };
+        const where: any = { companyId, deletedAt: null };
 
         if (search) {
             where.OR = [
@@ -46,7 +44,7 @@ export const customerService = {
                 skip,
                 take: limit,
                 orderBy: { updatedAt: 'desc' },
-                include: { _count: { select: { properties: true, jobs: true } } }
+                include: { _count: { select: { properties: true, jobs: true } } },
             }),
             prisma.customer.count({ where }),
         ]);
@@ -56,20 +54,22 @@ export const customerService = {
 
     findOne: async (id: string, companyId: string) => {
         const customer = await prisma.customer.findFirst({
-            where: { id, companyId },
+            where: { id, companyId, deletedAt: null },
             include: {
-                properties: true,
+                properties: { include: { assets: true } },
                 jobs: {
+                    where: { deletedAt: null },
                     orderBy: { createdAt: 'desc' },
-                    take: 5
-                }
+                    take: 10,
+                    include: {
+                        tech: { select: { id: true, firstName: true, lastName: true, email: true } },
+                        invoice: { select: { id: true, status: true, total: true } },
+                    },
+                },
             },
         });
 
-        if (!customer) {
-            throw new AppError('Customer not found', StatusCodes.NOT_FOUND);
-        }
-
+        if (!customer) throw new AppError('Customer not found', StatusCodes.NOT_FOUND);
         return customer;
     },
 
@@ -82,16 +82,12 @@ export const customerService = {
                     email: input.email || null,
                     phone: input.phone,
                     notes: input.notes,
-                }
+                },
             });
 
             if (input.property) {
                 await tx.property.create({
-                    data: {
-                        companyId,
-                        customerId: customer.id,
-                        ...input.property
-                    }
+                    data: { companyId, customerId: customer.id, ...input.property },
                 });
             }
 
@@ -100,12 +96,15 @@ export const customerService = {
     },
 
     update: async (id: string, companyId: string, input: z.infer<typeof updateCustomerSchema>) => {
-        const customer = await prisma.customer.findFirst({ where: { id, companyId } });
+        const customer = await prisma.customer.findFirst({ where: { id, companyId, deletedAt: null } });
         if (!customer) throw new AppError('Customer not found', StatusCodes.NOT_FOUND);
+        return prisma.customer.update({ where: { id }, data: input });
+    },
 
-        return prisma.customer.update({
-            where: { id },
-            data: input,
-        });
+    softDelete: async (id: string, companyId: string) => {
+        const customer = await prisma.customer.findFirst({ where: { id, companyId, deletedAt: null } });
+        if (!customer) throw new AppError('Customer not found', StatusCodes.NOT_FOUND);
+        await prisma.customer.update({ where: { id }, data: { deletedAt: new Date() } });
+        return { deleted: true };
     },
 };

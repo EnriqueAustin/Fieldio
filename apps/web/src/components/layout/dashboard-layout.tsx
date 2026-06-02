@@ -19,6 +19,9 @@ import {
     Search,
     ChevronsUpDown,
     Zap,
+    Inbox,
+    Truck,
+    BarChart3,
 } from "lucide-react";
 import { useAuthStore } from "../../store/auth";
 import { Avatar, AvatarFallback } from "../ui/avatar";
@@ -34,6 +37,7 @@ const navGroups: NavGroup[] = [
             { label: "Dashboard", href: "/", icon: LayoutDashboard },
             { label: "Schedule", href: "/schedule", icon: Calendar },
             { label: "Jobs", href: "/jobs", icon: Briefcase },
+            { label: "Bookings", href: "/bookings", icon: Inbox },
             { label: "Customers", href: "/customers", icon: Users },
         ],
     },
@@ -41,7 +45,9 @@ const navGroups: NavGroup[] = [
         label: "Operations",
         items: [
             { label: "Inventory", href: "/inventory", icon: Package },
+            { label: "Suppliers", href: "/suppliers", icon: Truck },
             { label: "Price Book", href: "/settings/price-book", icon: BookOpen },
+            { label: "Reports", href: "/reports", icon: BarChart3 },
             { label: "Hours", href: "/settings/business-hours", icon: Clock },
         ],
     },
@@ -51,6 +57,20 @@ const navGroups: NavGroup[] = [
             { label: "Team", href: "/settings/users", icon: UserCog },
             { label: "Notifications", href: "/settings/notifications", icon: Bell },
             { label: "Company", href: "/settings/company", icon: Building2 },
+        ],
+    },
+];
+
+const techNavGroups: NavGroup[] = [
+    {
+        items: [
+            { label: "My Jobs", href: "/", icon: Briefcase },
+        ],
+    },
+    {
+        label: "Settings",
+        items: [
+            { label: "Notifications", href: "/settings/notifications", icon: Bell },
         ],
     },
 ];
@@ -91,7 +111,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
                 {/* Nav */}
                 <div className="flex-1 overflow-y-auto scrollbar-thin px-3 py-4">
-                    {navGroups.map((group, gi) => (
+                    {(user?.role === "TECHNICIAN" ? techNavGroups : navGroups).map((group, gi) => (
                         <div key={gi} className={gi > 0 ? "mt-6" : ""}>
                             {group.label && (
                                 <div className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
@@ -176,7 +196,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                                     </AvatarFallback>
                                 </Avatar>
                                 <div className="flex flex-col leading-tight">
-                                    <span className="text-xs font-medium">{user?.email?.split("@")[0]}</span>
+                                    <span className="text-xs font-medium">{user?.name || user?.email?.split("@")[0]}</span>
                                     <span className="text-[10px] text-muted-foreground capitalize">
                                         {user?.role?.toLowerCase()}
                                     </span>

@@ -8,10 +8,20 @@ const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 type Invoice = {
     id: string;
+    invoiceNumber: string | null;
     status: string;
+    subtotal: string | number;
+    tax: string | number;
     total: string | number;
     balance: string | number;
+    taxLabel?: string;
+    taxRate?: string | number;
+    taxNumber?: string | null;
+    supplierName?: string | null;
+    supplierCompanyRegistration?: string | null;
+    paymentReference?: string | null;
     dueDate: string | null;
+    items?: any;
     company: { name: string; settings?: unknown };
     job: {
         title: string;
@@ -57,6 +67,22 @@ export default function PayPage() {
         }
     };
 
+    const startPayFast = async () => {
+        setPaying(true);
+        setError(null);
+        try {
+            const res = await fetch(`${API}/public/payments/invoices/${token}/payfast`, {
+                method: 'POST',
+            });
+            const data = await res.json();
+            if (data.status !== 'success') throw new Error(data.message ?? 'PayFast checkout failed');
+            window.location.href = data.data.session.url;
+        } catch (e: any) {
+            setError(e.message);
+            setPaying(false);
+        }
+    };
+
     if (loading) return <Center>Loading…</Center>;
     if (error || !invoice) return <Center>{error ?? 'Invoice not found'}</Center>;
 
@@ -65,10 +91,14 @@ export default function PayPage() {
     const settings = normalizeCompanySettings(invoice.company.settings);
     const canPayByCard = settings.billing.paymentMethods.cardEnabled;
     const canPayByEft = settings.billing.paymentMethods.eftEnabled;
+    const canPayByPayFast = settings.billing.paymentMethods.payFastEnabled;
     const money = (value: string | number) => formatCurrency(Number(value), settings);
-    const reference = settings.billing.eftDetails.referencePrefix
-        ? `${settings.billing.eftDetails.referencePrefix}-${invoice.id.slice(0, 8).toUpperCase()}`
-        : invoice.id.slice(0, 8).toUpperCase();
+    const reference =
+        invoice.paymentReference ||
+        invoice.invoiceNumber ||
+        (settings.billing.eftDetails.referencePrefix
+            ? `${settings.billing.eftDetails.referencePrefix}-${invoice.id.slice(0, 8).toUpperCase()}`
+            : invoice.id.slice(0, 8).toUpperCase());
 
     return (
         <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.16),_transparent_32%),linear-gradient(180deg,_#f8fafc_0%,_#eef2ff_100%)] py-12 px-4">
@@ -81,28 +111,74 @@ export default function PayPage() {
 
                 <div className="px-8 py-6 space-y-4">
                     <Row label="Service">{invoice.job.title}</Row>
+                    <Row label="Invoice">{invoice.invoiceNumber || invoice.id.slice(0, 8).toUpperCase()}</Row>
+                    <Row label="Supplier">{invoice.supplierName || invoice.company.name}</Row>
+                    {invoice.supplierCompanyRegistration && (
+                        <Row label="Reg. No.">{invoice.supplierCompanyRegistration}</Row>
+                    )}
+                    {invoice.taxNumber && (
+                        <Row label="VAT No.">{invoice.taxNumber}</Row>
+                    )}
                     <Row label="Customer">{invoice.job.customer.name}</Row>
                     <Row label="Address">
                         {invoice.job.property.addressLine1}, {invoice.job.property.city}{' '}
                         {invoice.job.property.state} {invoice.job.property.zip}
                     </Row>
                     {invoice.dueDate && (
-                        <Row label="Due">{new Date(invoice.dueDate).toLocaleDateString()}</Row>
+                        <Row label="Due">{new Date(invoice.dueDate).toLocaleDateString('en-ZA')}</Row>
                     )}
                 </div>
 
+                {/* Line items breakdown */}
+                {Array.isArray(invoice.items) && invoice.items.length > 0 && (
+                    <div className="px-8 py-4 border-t border-slate-200">
+                        <table className="w-full text-sm">
+                            <thead>
+                                <tr className="text-xs text-slate-500 uppercase tracking-wider">
+                                    <th className="text-left py-2">Item</th>
+                                    <th className="text-right py-2">Qty</th>
+                                    <th className="text-right py-2">Price</th>
+                                    <th className="text-right py-2">Total</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                                {(invoice.items as any[]).map((item: any, idx: number) => (
+                                    <tr key={idx}>
+                                        <td className="py-2 text-slate-700">{item.name}</td>
+                                        <td className="py-2 text-right text-slate-600">{item.quantity}</td>
+                                        <td className="py-2 text-right text-slate-600">{money(item.unitPrice)}</td>
+                                        <td className="py-2 text-right font-medium">{money(item.total)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+
                 <div className="px-8 py-6 border-t border-slate-200 bg-slate-50">
-                    <div className="flex items-baseline justify-between">
-                        <span className="text-sm text-slate-600">Total</span>
-                        <span className="text-lg">{money(invoice.total)}</span>
+                    <div className="space-y-2">
+                        <div className="flex items-baseline justify-between">
+                            <span className="text-sm text-slate-600">Subtotal (excl. {settings.billing.taxLabel})</span>
+                            <span>{money(invoice.subtotal ?? 0)}</span>
+                        </div>
+                        <div className="flex items-baseline justify-between">
+                            <span className="text-sm text-slate-600">{settings.billing.taxLabel} ({settings.billing.taxRate}%)</span>
+                            <span>{money(invoice.tax ?? 0)}</span>
+                        </div>
+                        <div className="flex items-baseline justify-between pt-2 border-t border-slate-200">
+                            <span className="text-sm text-slate-600">Total (incl. {settings.billing.taxLabel})</span>
+                            <span className="text-lg">{money(invoice.total)}</span>
+                        </div>
+                        <div className="flex items-baseline justify-between">
+                            <span className="font-medium">Balance due</span>
+                            <span className="text-2xl font-semibold">{money(balance)}</span>
+                        </div>
                     </div>
-                    <div className="flex items-baseline justify-between mt-2">
-                        <span className="font-medium">Balance due</span>
-                        <span className="text-2xl font-semibold">{money(balance)}</span>
-                    </div>
-                    <div className="mt-3 text-xs text-slate-500">
-                        {settings.billing.taxLabel} {settings.billing.taxRate}% included where applicable.
-                    </div>
+                    {invoice.taxNumber && (
+                        <div className="mt-3 text-xs text-slate-500">
+                            {settings.billing.taxLabel} Registration: {invoice.taxNumber}
+                        </div>
+                    )}
                 </div>
 
                 <div className="px-8 py-6 border-t border-slate-200">
@@ -133,6 +209,15 @@ export default function PayPage() {
                                     className="w-full bg-slate-900 hover:bg-slate-800 text-white font-medium py-3 rounded-xl transition disabled:opacity-60"
                                 >
                                     {paying ? 'Redirecting…' : `Pay by card ${money(balance)}`}
+                                </button>
+                            )}
+                            {canPayByPayFast && (
+                                <button
+                                    onClick={startPayFast}
+                                    disabled={paying}
+                                    className="w-full border border-slate-300 bg-white hover:bg-slate-50 text-slate-900 font-medium py-3 rounded-xl transition disabled:opacity-60"
+                                >
+                                    {paying ? 'Redirecting...' : `Pay with PayFast ${money(balance)}`}
                                 </button>
                             )}
                             {!canPayByCard && (

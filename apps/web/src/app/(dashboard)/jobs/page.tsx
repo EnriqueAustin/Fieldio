@@ -7,7 +7,7 @@ import { Button } from "../../../components/ui/button";
 import { format } from "date-fns";
 import { Avatar, AvatarFallback } from "../../../components/ui/avatar";
 import { StatusPill } from "../../../components/ui/status-pill";
-import { Briefcase, Plus, Search, Filter, Calendar as CalIcon } from "lucide-react";
+import { Briefcase, Plus, Search, Filter, Calendar as CalIcon, Zap } from "lucide-react";
 import { cn } from "../../../lib/utils";
 
 interface Job {
@@ -62,6 +62,13 @@ export default function JobsPage() {
                     <p className="page-subtitle">Manage all service requests and operations.</p>
                 </div>
                 <div className="flex items-center gap-2">
+                    <Link
+                        href="/jobs/quick"
+                        className="inline-flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100 transition"
+                    >
+                        <Zap className="h-4 w-4" />
+                        Quick Job
+                    </Link>
                     <Link
                         href="/schedule"
                         className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 transition"

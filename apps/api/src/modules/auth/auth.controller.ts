@@ -14,12 +14,17 @@ const COOKIE_OPTIONS = {
 const toSessionUser = (user: {
     id: string;
     email: string;
+    firstName?: string | null;
+    lastName?: string | null;
     role: string;
     companyId: string;
     company: { name: string };
 }) => ({
     id: user.id,
     email: user.email,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    name: [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email.split('@')[0],
     role: user.role,
     companyId: user.companyId,
     companyName: user.company.name,
@@ -32,7 +37,13 @@ export const authController = {
             status: 'success',
             data: {
                 company: { id: company.id, name: company.name },
-                user: { id: user.id, email: user.email, role: user.role },
+                user: {
+                    id: user.id,
+                    email: user.email,
+                    firstName: user.firstName,
+                    lastName: user.lastName,
+                    role: user.role,
+                },
             },
         });
     },

@@ -10,6 +10,7 @@ import { errorHandler } from './middleware/error';
 import { deserializeUser } from './middleware/auth';
 import { socketService } from './services/socket.service';
 import { startRecurringScheduler } from './modules/recurring/recurring.service';
+import { startReviewScheduler } from './modules/reviews/review.service';
 
 // Routes
 import { healthRouter } from './routes/health';
@@ -27,6 +28,9 @@ import { jobPhotosRouter } from './routes/jobPhotos';
 import { trackingRouter } from './routes/tracking';
 import { publicBookingsRouter, bookingsRouter } from './routes/bookings';
 import { recurringRouter } from './routes/recurring';
+import { supplierRouter } from './routes/suppliers';
+import { priceBookRouter } from './routes/priceBook';
+import { publicPortalRouter, portalRouter } from './routes/portal';
 
 const app = express();
 const httpServer = createServer(app);
@@ -79,6 +83,7 @@ app.use(cookieParser());
 // Public (no-auth) routes
 app.use('/public/payments', publicPaymentsRouter);
 app.use('/public/bookings', publicBookingsRouter);
+app.use('/public/portal', publicPortalRouter);
 
 // Auth deserialization for everything below
 app.use(deserializeUser);
@@ -99,11 +104,15 @@ app.use('/media', jobPhotosRouter);
 app.use('/tracking', trackingRouter);
 app.use('/bookings', bookingsRouter);
 app.use('/recurring', recurringRouter);
+app.use('/suppliers', supplierRouter);
+app.use('/price-book', priceBookRouter);
+app.use('/portal', portalRouter);
 
 // Error handling
 app.use(errorHandler);
 
 httpServer.listen(config.PORT, () => {
-  logger.info(`🚀 API running on port ${config.PORT} in ${config.NODE_ENV} mode`);
+  logger.info(`API running on port ${config.PORT} in ${config.NODE_ENV} mode`);
   startRecurringScheduler();
+  startReviewScheduler();
 });

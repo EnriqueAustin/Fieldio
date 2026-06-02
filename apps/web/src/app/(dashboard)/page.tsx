@@ -191,17 +191,19 @@ export default function DashboardPage() {
                     icon={Briefcase}
                     accent="bg-blue-50 text-blue-600"
                 />
-                <StatCard
-                    label="Customers"
-                    value={String(stats.customers.total)}
-                    sub="Lifetime clients"
-                    icon={Users}
-                    accent="bg-violet-50 text-violet-600"
-                    delta={{
-                        value: `${stats.invoices.overdue} overdue`,
-                        positive: stats.invoices.overdue === 0,
-                    }}
-                />
+                <Link href="/invoices/overdue">
+                    <StatCard
+                        label="Customers"
+                        value={String(stats.customers.total)}
+                        sub="Lifetime clients"
+                        icon={Users}
+                        accent="bg-violet-50 text-violet-600"
+                        delta={{
+                            value: `${stats.invoices.overdue} overdue`,
+                            positive: stats.invoices.overdue === 0,
+                        }}
+                    />
+                </Link>
                 <StatCard
                     label="Technician Utilization"
                     value={`${stats.technicians.utilizationRate}%`}

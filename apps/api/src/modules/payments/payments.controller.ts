@@ -15,6 +15,17 @@ export const paymentsController = {
         res.status(StatusCodes.OK).json({ status: 'success', data: { session } });
     },
 
+    createPayFastCheckout: async (req: Request, res: Response) => {
+        const session = await paymentsService.createPayFastCheckout(req.params.token);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { session } });
+    },
+
+    handlePayFastITN: async (req: Request, res: Response) => {
+        const result = await paymentsService.handlePayFastITN(req.body);
+        res.status(result.received ? StatusCodes.OK : StatusCodes.BAD_REQUEST)
+            .send(result.received ? 'OK' : 'FAIL');
+    },
+
     // --- Authenticated ---
     getPayLink: async (req: Request, res: Response) => {
         const url = await paymentsService.getPayLinkForInvoice(
@@ -28,7 +39,7 @@ export const paymentsController = {
         const body = z
             .object({
                 amount: z.number().positive(),
-                method: z.enum(['CASH', 'CHECK', 'OTHER']),
+                method: z.enum(['CASH', 'CHECK', 'EFT', 'OTHER']),
                 note: z.string().optional(),
             })
             .parse(req.body);

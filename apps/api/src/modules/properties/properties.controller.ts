@@ -17,6 +17,27 @@ export const propertyController = {
         res.status(StatusCodes.CREATED).json({ status: 'success', data: { property } });
     },
 
+    listAssets: async (req: Request, res: Response) => {
+        const propertyId =
+            typeof req.query.propertyId === 'string' ? req.query.propertyId : undefined;
+        const assets = await propertyService.listAssets(req.user!.companyId, propertyId);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { assets } });
+    },
+
+    createAsset: async (req: Request, res: Response) => {
+        const propertyId = req.params.propertyId || req.body.propertyId;
+        const asset = await propertyService.createAsset(req.user!.companyId, {
+            ...req.body,
+            propertyId,
+        });
+        res.status(StatusCodes.CREATED).json({ status: 'success', data: { asset } });
+    },
+
+    updateAsset: async (req: Request, res: Response) => {
+        const asset = await propertyService.updateAsset(req.params.assetId, req.user!.companyId, req.body);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { asset } });
+    },
+
     delete: async (req: Request, res: Response) => {
         await propertyService.delete(req.params.id, req.user!.companyId);
         res.status(StatusCodes.OK).json({ status: 'success' });

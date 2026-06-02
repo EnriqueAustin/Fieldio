@@ -131,6 +131,52 @@
   }
 }
 
+/* FullCalendar theme overrides — match Fieldio surface */
+.fc {
+  --fc-border-color: hsl(var(--border));
+  --fc-page-bg-color: transparent;
+  --fc-neutral-bg-color: hsl(var(--background));
+  --fc-list-event-hover-bg-color: rgb(241 245 249 / 0.7);
+  --fc-today-bg-color: rgb(219 234 254 / 0.25);
+  --fc-button-bg-color: hsl(var(--card));
+  --fc-button-border-color: hsl(var(--border));
+  --fc-button-text-color: hsl(var(--foreground));
+  --fc-button-hover-bg-color: rgb(241 245 249);
+  --fc-button-hover-border-color: hsl(var(--border));
+  --fc-button-active-bg-color: hsl(var(--primary));
+  --fc-button-active-border-color: hsl(var(--primary));
+  font-size: 0.85rem;
+}
+.fc .fc-toolbar-title { font-size: 1rem; font-weight: 600; }
+.fc .fc-button {
+  border-radius: 0.5rem !important;
+  padding: 0.4rem 0.75rem !important;
+  font-size: 0.8rem !important;
+  font-weight: 500 !important;
+  box-shadow: none !important;
+  text-transform: capitalize;
+}
+.fc .fc-button-primary:not(:disabled).fc-button-active,
+.fc .fc-button-primary:not(:disabled):active {
+  color: white;
+}
+.fc .fc-col-header-cell-cushion {
+  font-weight: 600;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: hsl(var(--muted-foreground));
+  padding: 0.5rem 0;
+}
+.fc-event {
+  border-radius: 0.5rem !important;
+  border: none !important;
+  padding: 2px 4px !important;
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(15,23,42,0.08);
+}
+.fc-timegrid-slot { height: 2.4em !important; }
+
 /* Subtle scrollbar */
 @layer utilities {
   .scrollbar-thin::-webkit-scrollbar {

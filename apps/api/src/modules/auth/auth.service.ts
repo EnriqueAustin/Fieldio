@@ -35,7 +35,9 @@ export const authService = {
         refreshToken: signRefreshToken(payload),
     }),
 
-    register: async (input: z.infer<typeof registerSchema>) => {
+    register: async (raw: unknown) => {
+        const input = registerSchema.parse(raw);
+
         const existingUser = await prisma.user.findUnique({
             where: { email: input.email },
         });
@@ -58,6 +60,8 @@ export const authService = {
                 data: {
                     email: input.email,
                     passwordHash: hashedPassword,
+                    firstName: input.firstName,
+                    lastName: input.lastName,
                     companyId: company.id,
                     role: 'ADMIN',
                     status: 'ACTIVE',
@@ -70,7 +74,7 @@ export const authService = {
         return result;
     },
 
-    login: async (input: z.infer<typeof loginSchema>) => {
+    login: async (input: unknown) => {
         const parsed = loginSchema.parse(input);
 
         const user = await prisma.user.findUnique({

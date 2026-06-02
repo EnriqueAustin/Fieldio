@@ -12,6 +12,11 @@ customerRouter.get('/', catchAsync(customerController.getAll));
 customerRouter.post('/', catchAsync(customerController.create));
 customerRouter.get('/:id', catchAsync(customerController.getOne));
 customerRouter.patch('/:id', catchAsync(customerController.update));
+customerRouter.delete('/:id', catchAsync(customerController.softDelete));
 
 // Nested Property Routes
 customerRouter.post('/:customerId/properties', catchAsync(propertyController.create));
+customerRouter.post(
+    '/:customerId/properties/:propertyId/assets',
+    catchAsync(propertyController.createAsset)
+);

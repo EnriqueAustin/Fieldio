@@ -5,6 +5,34 @@ import { z } from 'zod';
 import { socketService } from '../../services/socket.service';
 import { notificationService } from '../../services/notifications/notification.service';
 
+const createJobSchema = z.object({
+    customerId: z.string().uuid(),
+    propertyId: z.string().uuid(),
+    techId: z.string().uuid().optional(),
+    title: z.string().min(1),
+    description: z.string().optional(),
+    priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'EMERGENCY']).optional(),
+    scheduledStart: z.string().datetime().optional(),
+    scheduledEnd: z.string().datetime().optional(),
+    lineItems: z.array(z.object({
+        name: z.string().min(1),
+        description: z.string().optional(),
+        quantity: z.number().positive().default(1),
+        unitPrice: z.number().min(0),
+        type: z.enum(['SERVICE', 'MATERIAL', 'LABOR']).default('SERVICE'),
+    })).optional(),
+    checklist: z.array(z.string().min(1)).optional(),
+});
+
+const updateJobSchema = z.object({
+    title: z.string().min(1).optional(),
+    description: z.string().optional(),
+    priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'EMERGENCY']).optional(),
+    techId: z.string().uuid().nullable().optional(),
+    scheduledStart: z.string().datetime().nullable().optional(),
+    scheduledEnd: z.string().datetime().nullable().optional(),
+});
+
 const updateStatusSchema = z.object({
     status: z.enum(['REQUESTED', 'ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'COMPLETED', 'CANCELED']),
 });
@@ -13,35 +41,384 @@ const addNoteSchema = z.object({
     message: z.string().min(1),
 });
 
-export const jobsService = {
-    getOne: async (id: string, companyId: string) => {
-        const job = await prisma.job.findFirst({
-            where: { id, companyId },
-            include: {
-                customer: true,
-                property: true,
-                tech: { select: { id: true, email: true, avatarUrl: true } },
-                lineItems: true,
-                checklist: { orderBy: { id: 'asc' } }, // Assuming we want them ordered
-                estimate: true,
-                invoice: true,
+const addSignatureSchema = z.object({
+    signerName: z.string().min(1),
+    signatureDataUrl: z.string().optional(),
+    signatureUrl: z.string().optional(),
+});
+
+const addLineItemSchema = z.object({
+    name: z.string().min(1),
+    description: z.string().optional(),
+    quantity: z.number().positive().default(1),
+    unitPrice: z.number().min(0),
+    type: z.enum(['SERVICE', 'MATERIAL', 'LABOR']).default('SERVICE'),
+    priceBookItemId: z.string().uuid().optional(),
+});
+
+const addChecklistSchema = z.object({
+    label: z.string().min(1),
+});
+
+const quickCreateSchema = z.object({
+    customerName: z.string().min(1),
+    customerPhone: z.string().optional(),
+    customerEmail: z.string().email().optional().or(z.literal('')),
+    addressLine1: z.string().min(1),
+    addressLine2: z.string().optional(),
+    city: z.string().min(1),
+    state: z.string().optional().default(''),
+    zip: z.string().optional().default(''),
+    title: z.string().min(1),
+    description: z.string().optional(),
+    priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'EMERGENCY']).optional(),
+    techId: z.string().uuid().optional(),
+    scheduledStart: z.string().datetime().optional(),
+    scheduledEnd: z.string().datetime().optional(),
+    existingCustomerId: z.string().uuid().optional(),
+});
+
+const JOB_NOTE_ACTION = 'JOB_NOTE_ADDED';
+
+async function getJobNotes(companyId: string, jobIds: string[]) {
+    if (jobIds.length === 0) return [];
+
+    const notes = await prisma.auditLog.findMany({
+        where: {
+            companyId,
+            entityType: 'JOB',
+            entityId: { in: jobIds },
+            action: JOB_NOTE_ACTION,
+        },
+        orderBy: { createdAt: 'desc' },
+        include: {
+            user: {
+                select: { id: true, email: true, firstName: true, lastName: true, avatarUrl: true },
             },
+        },
+    });
+
+    return notes.map((note) => ({
+        id: note.id,
+        jobId: note.entityId,
+        message: typeof note.metadata === 'object' && note.metadata && 'message' in note.metadata
+            ? String((note.metadata as Record<string, unknown>).message ?? '')
+            : '',
+        createdAt: note.createdAt,
+        author: {
+            ...note.user,
+            name: [note.user.firstName, note.user.lastName].filter(Boolean).join(' ') || note.user.email,
+        },
+    }));
+}
+
+export const jobsService = {
+    create: async (companyId: string, userId: string, input: z.infer<typeof createJobSchema>) => {
+        const parsed = createJobSchema.parse(input);
+
+        const customer = await prisma.customer.findFirst({
+            where: { id: parsed.customerId, companyId, deletedAt: null },
+        });
+        if (!customer) throw new AppError('Customer not found', StatusCodes.NOT_FOUND);
+
+        const property = await prisma.property.findFirst({
+            where: { id: parsed.propertyId, companyId, customerId: parsed.customerId },
+        });
+        if (!property) throw new AppError('Property not found', StatusCodes.NOT_FOUND);
+
+        if (parsed.techId) {
+            const tech = await prisma.user.findFirst({
+                where: { id: parsed.techId, companyId, role: 'TECHNICIAN', status: 'ACTIVE' },
+            });
+            if (!tech) throw new AppError('Technician not found', StatusCodes.NOT_FOUND);
+        }
+
+        const job = await prisma.$transaction(async (tx) => {
+            const created = await tx.job.create({
+                data: {
+                    companyId,
+                    customerId: parsed.customerId,
+                    propertyId: parsed.propertyId,
+                    techId: parsed.techId,
+                    title: parsed.title,
+                    description: parsed.description,
+                    priority: parsed.priority ?? 'MEDIUM',
+                    status: parsed.techId ? 'ASSIGNED' : 'REQUESTED',
+                    scheduledStart: parsed.scheduledStart ? new Date(parsed.scheduledStart) : null,
+                    scheduledEnd: parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null,
+                },
+                include: { customer: true, property: true, tech: true },
+            });
+
+            if (parsed.lineItems?.length) {
+                await tx.jobLineItem.createMany({
+                    data: parsed.lineItems.map((item) => ({
+                        jobId: created.id,
+                        name: item.name,
+                        description: item.description,
+                        quantity: item.quantity,
+                        unitPrice: item.unitPrice,
+                        total: item.quantity * item.unitPrice,
+                        type: item.type,
+                    })),
+                });
+            }
+
+            if (parsed.checklist?.length) {
+                await tx.jobChecklist.createMany({
+                    data: parsed.checklist.map((label) => ({
+                        jobId: created.id,
+                        label,
+                    })),
+                });
+            }
+
+            await tx.auditLog.create({
+                data: {
+                    companyId,
+                    userId,
+                    action: 'JOB_CREATED',
+                    entityId: created.id,
+                    entityType: 'JOB',
+                    metadata: { title: parsed.title },
+                },
+            });
+
+            return created;
         });
 
-        if (!job) {
-            throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+        socketService.emitToCompany(companyId, 'job:created', job);
+
+        if (job.techId) {
+            const tech = await prisma.user.findUnique({ where: { id: job.techId } });
+            if (tech) {
+                await notificationService.notifyUser(
+                    tech.id, companyId, 'JOB_ASSIGNED',
+                    'New job assigned', `You have been assigned to: ${job.title}`
+                );
+                const techName = [tech.firstName, tech.lastName].filter(Boolean).join(' ') || tech.email;
+                await notificationService.notifyCustomer(job.customerId, companyId, 'APPOINTMENT_REMINDER', {
+                    when: job.scheduledStart
+                        ? new Date(job.scheduledStart).toLocaleString('en-ZA')
+                        : `soon (technician: ${techName})`,
+                });
+            }
         }
 
         return job;
     },
 
+    update: async (id: string, companyId: string, userId: string, input: z.infer<typeof updateJobSchema>) => {
+        const parsed = updateJobSchema.parse(input);
+        const job = await prisma.job.findFirst({ where: { id, companyId, deletedAt: null } });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        if (parsed.techId) {
+            const tech = await prisma.user.findFirst({
+                where: { id: parsed.techId, companyId, role: 'TECHNICIAN', status: 'ACTIVE' },
+            });
+            if (!tech) throw new AppError('Technician not found', StatusCodes.NOT_FOUND);
+        }
+
+        const wasUnassigned = !job.techId;
+        const updated = await prisma.job.update({
+            where: { id },
+            data: {
+                ...parsed,
+                scheduledStart: parsed.scheduledStart !== undefined
+                    ? (parsed.scheduledStart ? new Date(parsed.scheduledStart) : null)
+                    : undefined,
+                scheduledEnd: parsed.scheduledEnd !== undefined
+                    ? (parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null)
+                    : undefined,
+                status: wasUnassigned && parsed.techId ? 'ASSIGNED' : undefined,
+            },
+            include: { customer: true, property: true, tech: true },
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                companyId, userId,
+                action: 'JOB_UPDATED',
+                entityId: id,
+                entityType: 'JOB',
+                metadata: parsed as any,
+            },
+        });
+
+        if (wasUnassigned && parsed.techId) {
+            await notificationService.notifyUser(
+                parsed.techId, companyId, 'JOB_ASSIGNED',
+                'New job assigned', `You have been assigned to: ${updated.title}`
+            );
+            const tech = await prisma.user.findUnique({ where: { id: parsed.techId } });
+            if (tech) {
+                const techName = [tech.firstName, tech.lastName].filter(Boolean).join(' ') || tech.email;
+                await notificationService.notifyCustomer(updated.customerId, companyId, 'APPOINTMENT_REMINDER', {
+                    when: updated.scheduledStart
+                        ? new Date(updated.scheduledStart).toLocaleString('en-ZA')
+                        : `soon (technician: ${techName})`,
+                });
+            }
+        }
+
+        socketService.emitToCompany(companyId, 'job:updated', updated);
+        return updated;
+    },
+
+    addLineItem: async (jobId: string, companyId: string, input: z.infer<typeof addLineItemSchema>) => {
+        const parsed = addLineItemSchema.parse(input);
+        const job = await prisma.job.findFirst({ where: { id: jobId, companyId, deletedAt: null } });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        if (parsed.priceBookItemId) {
+            const pbItem = await prisma.priceBookItem.findFirst({
+                where: { id: parsed.priceBookItemId, companyId, active: true },
+            });
+            if (pbItem) {
+                parsed.name = pbItem.name;
+                parsed.unitPrice = Number(pbItem.unitPrice);
+                parsed.type = pbItem.type as any;
+                if (pbItem.description) parsed.description = pbItem.description;
+            }
+        }
+
+        const item = await prisma.jobLineItem.create({
+            data: {
+                jobId,
+                name: parsed.name,
+                description: parsed.description,
+                quantity: parsed.quantity,
+                unitPrice: parsed.unitPrice,
+                total: parsed.quantity * parsed.unitPrice,
+                type: parsed.type,
+            },
+        });
+
+        if (parsed.type === 'MATERIAL') {
+            const techId = job.techId;
+            const inventoryItem = await prisma.inventoryItem.findFirst({
+                where: {
+                    companyId,
+                    name: { equals: parsed.name, mode: 'insensitive' },
+                    ...(techId ? { assignedUserId: techId, location: 'VAN' } : {}),
+                },
+            });
+
+            if (inventoryItem && inventoryItem.quantity >= parsed.quantity) {
+                await prisma.inventoryItem.update({
+                    where: { id: inventoryItem.id },
+                    data: { quantity: { decrement: Math.floor(parsed.quantity) } },
+                });
+                socketService.emitToCompany(companyId, 'inventory:deducted', {
+                    itemId: inventoryItem.id,
+                    name: inventoryItem.name,
+                    deducted: parsed.quantity,
+                    remaining: inventoryItem.quantity - parsed.quantity,
+                });
+            }
+        }
+
+        socketService.emitToCompany(companyId, 'job:lineitem:added', { jobId, item });
+        return item;
+    },
+
+    removeLineItem: async (jobId: string, itemId: string, companyId: string) => {
+        const job = await prisma.job.findFirst({ where: { id: jobId, companyId, deletedAt: null } });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        const item = await prisma.jobLineItem.findFirst({ where: { id: itemId, jobId } });
+        if (!item) throw new AppError('Line item not found', StatusCodes.NOT_FOUND);
+
+        await prisma.jobLineItem.delete({ where: { id: itemId } });
+        socketService.emitToCompany(companyId, 'job:lineitem:removed', { jobId, itemId });
+        return { deleted: true };
+    },
+
+    addChecklistItem: async (jobId: string, companyId: string, input: z.infer<typeof addChecklistSchema>) => {
+        const parsed = addChecklistSchema.parse(input);
+        const job = await prisma.job.findFirst({ where: { id: jobId, companyId, deletedAt: null } });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        const item = await prisma.jobChecklist.create({
+            data: { jobId, label: parsed.label },
+        });
+
+        socketService.emitToCompany(companyId, 'job:checklist:added', { jobId, item });
+        return item;
+    },
+
+    removeChecklistItem: async (jobId: string, checkId: string, companyId: string) => {
+        const job = await prisma.job.findFirst({ where: { id: jobId, companyId, deletedAt: null } });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        const item = await prisma.jobChecklist.findFirst({ where: { id: checkId, jobId } });
+        if (!item) throw new AppError('Checklist item not found', StatusCodes.NOT_FOUND);
+
+        await prisma.jobChecklist.delete({ where: { id: checkId } });
+        socketService.emitToCompany(companyId, 'job:checklist:removed', { jobId, checkId });
+        return { deleted: true };
+    },
+
+    getOne: async (id: string, companyId: string) => {
+        const job = await prisma.job.findFirst({
+            where: { id, companyId, deletedAt: null },
+            include: {
+                customer: true,
+                property: { include: { assets: true } },
+                tech: { select: { id: true, email: true, firstName: true, lastName: true, avatarUrl: true } },
+                lineItems: true,
+                checklist: { orderBy: { id: 'asc' } },
+                estimate: true,
+                invoice: true,
+                photos: { orderBy: { createdAt: 'desc' } },
+                signatures: { orderBy: { signedAt: 'desc' } },
+                expenses: { orderBy: { createdAt: 'desc' } },
+                purchaseOrders: { include: { supplier: { select: { name: true } } } },
+            },
+        });
+
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        const notes = await getJobNotes(companyId, [job.id]);
+
+        return { ...job, notes };
+    },
+
+    getAssignedToTech: async (companyId: string, userId: string) => {
+        const jobs = await prisma.job.findMany({
+            where: {
+                companyId,
+                techId: userId,
+                deletedAt: null,
+                status: { notIn: ['COMPLETED', 'CANCELED'] },
+            },
+            orderBy: [{ scheduledStart: 'asc' }, { updatedAt: 'desc' }],
+            include: {
+                customer: { select: { id: true, name: true, phone: true, email: true } },
+                property: true,
+                checklist: { orderBy: { id: 'asc' } },
+                photos: { orderBy: { createdAt: 'desc' } },
+                signatures: { orderBy: { signedAt: 'desc' } },
+                lineItems: true,
+            },
+        });
+
+        const notes = await getJobNotes(companyId, jobs.map((j) => j.id));
+        const notesByJobId = new Map<string, typeof notes>();
+        for (const note of notes) {
+            const existing = notesByJobId.get(note.jobId) ?? [];
+            existing.push(note);
+            notesByJobId.set(note.jobId, existing);
+        }
+
+        return jobs.map((job) => ({ ...job, notes: notesByJobId.get(job.id) ?? [] }));
+    },
+
     getAll: async (companyId: string, page = 1, limit = 20, status?: string) => {
         const skip = (page - 1) * limit;
-        const where: any = { companyId };
-
-        if (status) {
-            where.status = status;
-        }
+        const where: any = { companyId, deletedAt: null };
+        if (status) where.status = status;
 
         const [items, total] = await Promise.all([
             prisma.job.findMany({
@@ -51,8 +428,8 @@ export const jobsService = {
                 orderBy: { updatedAt: 'desc' },
                 include: {
                     customer: { select: { name: true } },
-                    tech: { select: { email: true } }
-                }
+                    tech: { select: { id: true, email: true, firstName: true, lastName: true } },
+                },
             }),
             prisma.job.count({ where }),
         ]);
@@ -61,47 +438,66 @@ export const jobsService = {
     },
 
     updateStatus: async (id: string, companyId: string, status: string, userId: string) => {
-        const job = await prisma.job.findFirst({ where: { id, companyId } });
+        const job = await prisma.job.findFirst({
+            where: { id, companyId, deletedAt: null },
+            include: { checklist: true },
+        });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
 
-        // Initial Status Transition Logic could go here (e.g. valid next states)
+        if (status === 'COMPLETED' && job.checklist.length > 0) {
+            const incomplete = job.checklist.filter(c => !c.isCompleted);
+            if (incomplete.length > 0) {
+                throw new AppError(
+                    `Cannot complete job: ${incomplete.length} checklist item${incomplete.length > 1 ? 's' : ''} not done`,
+                    StatusCodes.BAD_REQUEST
+                );
+            }
+        }
 
-        // Update Job & Add Audit Log (Stub for log)
         const updatedJob = await prisma.job.update({
             where: { id },
             data: {
                 status: status as any,
-                // Capture timestamps based on status
-                ...(status === 'EN_ROUTE' && !job.actualStart ? { actualStart: new Date() } : {}), // Maybe start tracking here?
+                ...(status === 'EN_ROUTE' && !job.actualStart ? { actualStart: new Date() } : {}),
                 ...(status === 'ON_SITE' && !job.actualStart ? { actualStart: new Date() } : {}),
                 ...(status === 'COMPLETED' ? { actualEnd: new Date() } : {}),
             },
-            include: { tech: true, customer: true }
+            include: {
+                tech: { select: { id: true, email: true, firstName: true, lastName: true } },
+                customer: true,
+            },
         });
 
-        // Create Audit Log
         await prisma.auditLog.create({
             data: {
-                companyId,
-                userId,
+                companyId, userId,
                 action: 'JOB_STATUS_CHANGE',
                 entityId: id,
                 entityType: 'JOB',
-                metadata: { oldStatus: job.status, newStatus: status }
-            }
+                metadata: { oldStatus: job.status, newStatus: status },
+            },
         });
 
-        // Notifications Logic
-        if (status === 'EN_ROUTE' && updatedJob.tech && updatedJob.customer) {
-            // Notify Customer
+        const techName = updatedJob.tech
+            ? [updatedJob.tech.firstName, updatedJob.tech.lastName].filter(Boolean).join(' ') || updatedJob.tech.email
+            : 'Your technician';
+
+        if (status === 'EN_ROUTE' && updatedJob.customer) {
             await notificationService.notifyCustomer(updatedJob.customerId, companyId, 'JOB_EN_ROUTE', {
-                techName: updatedJob.tech.email // Using email as name for now
+                techName,
+                trackingUrl: `${process.env.WEB_URL || ''}/track/${id}`,
+            });
+        }
+
+        if (status === 'ON_SITE' && updatedJob.customer) {
+            await notificationService.notifyCustomer(updatedJob.customerId, companyId, 'JOB_STARTED', {
+                techName,
             });
         }
 
         if (status === 'COMPLETED' && updatedJob.customer) {
             await notificationService.notifyCustomer(updatedJob.customerId, companyId, 'JOB_COMPLETED', {
-                jobTitle: updatedJob.title
+                jobTitle: updatedJob.title,
             });
         }
 
@@ -110,19 +506,201 @@ export const jobsService = {
     },
 
     toggleChecklist: async (jobId: string, checklistId: string, companyId: string, isCompleted: boolean) => {
-        // Verify ownership via Job
-        const count = await prisma.job.count({ where: { id: jobId, companyId } });
+        const count = await prisma.job.count({ where: { id: jobId, companyId, deletedAt: null } });
         if (count === 0) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
 
         const item = await prisma.jobChecklist.update({
             where: { id: checklistId },
-            data: {
-                isCompleted,
-                completedAt: isCompleted ? new Date() : null
-            }
+            data: { isCompleted, completedAt: isCompleted ? new Date() : null },
         });
 
         socketService.emitToCompany(companyId, 'job:checklist_updated', { jobId, checklistId, isCompleted });
         return item;
-    }
+    },
+
+    addNote: async (jobId: string, companyId: string, userId: string, message: string) => {
+        const parsed = addNoteSchema.parse({ message });
+        const job = await prisma.job.findFirst({
+            where: { id: jobId, companyId, deletedAt: null },
+            select: { id: true },
+        });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        const note = await prisma.auditLog.create({
+            data: {
+                companyId, userId,
+                action: JOB_NOTE_ACTION,
+                entityId: jobId,
+                entityType: 'JOB',
+                metadata: { message: parsed.message, kind: 'internal_note' },
+            },
+            include: {
+                user: { select: { id: true, email: true, firstName: true, lastName: true, avatarUrl: true } },
+            },
+        });
+
+        const payload = {
+            id: note.id,
+            jobId,
+            message: parsed.message,
+            createdAt: note.createdAt,
+            author: {
+                ...note.user,
+                name: [note.user.firstName, note.user.lastName].filter(Boolean).join(' ') || note.user.email,
+            },
+        };
+
+        socketService.emitToCompany(companyId, 'job:note:added', payload);
+        return payload;
+    },
+
+    addSignature: async (
+        jobId: string,
+        companyId: string,
+        userId: string,
+        signerName: string,
+        signatureDataUrl?: string,
+        signatureUrl?: string,
+    ) => {
+        const parsed = addSignatureSchema.parse({ signerName, signatureDataUrl, signatureUrl });
+        if (!parsed.signatureDataUrl && !parsed.signatureUrl) {
+            throw new AppError('Either signatureDataUrl or signatureUrl is required', StatusCodes.BAD_REQUEST);
+        }
+
+        const job = await prisma.job.findFirst({
+            where: { id: jobId, companyId, deletedAt: null },
+            select: { id: true },
+        });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        const signature = await prisma.jobSignature.create({
+            data: {
+                jobId,
+                signerName: parsed.signerName,
+                signatureDataUrl: parsed.signatureDataUrl,
+                signatureUrl: parsed.signatureUrl,
+            },
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                companyId, userId,
+                action: 'JOB_SIGNATURE_CAPTURED',
+                entityId: jobId,
+                entityType: 'JOB',
+                metadata: { signerName: parsed.signerName, signatureId: signature.id },
+            },
+        });
+
+        socketService.emitToCompany(companyId, 'job:signature:added', { jobId, signature });
+        return signature;
+    },
+
+    quickCreate: async (companyId: string, userId: string, input: z.infer<typeof quickCreateSchema>) => {
+        const parsed = quickCreateSchema.parse(input);
+
+        if (parsed.techId) {
+            const tech = await prisma.user.findFirst({
+                where: { id: parsed.techId, companyId, role: 'TECHNICIAN', status: 'ACTIVE' },
+            });
+            if (!tech) throw new AppError('Technician not found', StatusCodes.NOT_FOUND);
+        }
+
+        const result = await prisma.$transaction(async (tx) => {
+            let customerId = parsed.existingCustomerId;
+
+            if (!customerId) {
+                const customer = await tx.customer.create({
+                    data: {
+                        companyId,
+                        name: parsed.customerName,
+                        email: parsed.customerEmail || null,
+                        phone: parsed.customerPhone,
+                    },
+                });
+                customerId = customer.id;
+            }
+
+            const property = await tx.property.create({
+                data: {
+                    companyId,
+                    customerId,
+                    addressLine1: parsed.addressLine1,
+                    addressLine2: parsed.addressLine2,
+                    city: parsed.city,
+                    state: parsed.state || '',
+                    zip: parsed.zip || '',
+                },
+            });
+
+            const job = await tx.job.create({
+                data: {
+                    companyId,
+                    customerId,
+                    propertyId: property.id,
+                    techId: parsed.techId,
+                    title: parsed.title,
+                    description: parsed.description,
+                    priority: parsed.priority ?? 'MEDIUM',
+                    status: parsed.techId ? 'ASSIGNED' : 'REQUESTED',
+                    scheduledStart: parsed.scheduledStart ? new Date(parsed.scheduledStart) : null,
+                    scheduledEnd: parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null,
+                },
+                include: { customer: true, property: true, tech: true },
+            });
+
+            await tx.auditLog.create({
+                data: {
+                    companyId, userId,
+                    action: 'JOB_CREATED',
+                    entityId: job.id,
+                    entityType: 'JOB',
+                    metadata: { title: parsed.title, quickCreate: true },
+                },
+            });
+
+            return job;
+        });
+
+        socketService.emitToCompany(companyId, 'job:created', result);
+
+        if (result.techId) {
+            await notificationService.notifyUser(
+                result.techId, companyId, 'JOB_ASSIGNED',
+                'New job assigned', `You have been assigned to: ${result.title}`
+            );
+        }
+
+        if (result.customer && result.customerId) {
+            const techName = result.tech
+                ? [result.tech.firstName, result.tech.lastName].filter(Boolean).join(' ') || result.tech.email
+                : undefined;
+            if (techName) {
+                await notificationService.notifyCustomer(result.customerId, companyId, 'JOB_EN_ROUTE', {
+                    techName,
+                    trackingUrl: `${process.env.WEB_URL || ''}/track/${result.id}`,
+                });
+            }
+        }
+
+        return result;
+    },
+
+    softDelete: async (id: string, companyId: string, userId: string) => {
+        const job = await prisma.job.findFirst({ where: { id, companyId, deletedAt: null } });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        await prisma.job.update({ where: { id }, data: { deletedAt: new Date() } });
+
+        await prisma.auditLog.create({
+            data: {
+                companyId, userId,
+                action: 'JOB_DELETED',
+                entityId: id,
+                entityType: 'JOB',
+            },
+        });
+
+        return { deleted: true };
+    },
 };

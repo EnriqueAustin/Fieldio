@@ -12,10 +12,15 @@ financeRouter.use(requireUser);
 financeRouter.post('/estimates', catchAsync(estimateController.create));
 financeRouter.get('/estimates', catchAsync(estimateController.getAll));
 financeRouter.get('/estimates/:id', catchAsync(estimateController.getOne));
+financeRouter.post('/estimates/:id/approve', catchAsync(estimateController.approveWithSignature));
 financeRouter.post('/estimates/:id/convert', catchAsync(estimateController.convertToJob));
 
 // Invoices
 financeRouter.post('/jobs/:jobId/invoice', catchAsync(invoiceController.createFromJob));
 financeRouter.get('/invoices', catchAsync(invoiceController.getAll));
 financeRouter.get('/invoices/:id', catchAsync(invoiceController.getOne));
+financeRouter.get('/invoices/overdue', catchAsync(invoiceController.getOverdue));
 financeRouter.post('/invoices/:id/send', catchAsync(invoiceController.send));
+financeRouter.post('/invoices/:id/reminder', catchAsync(invoiceController.sendReminder));
+financeRouter.post('/invoices/bulk-reminder', catchAsync(invoiceController.sendBulkReminders));
+financeRouter.delete('/invoices/:id', catchAsync(invoiceController.softDelete));
