@@ -40,4 +40,28 @@ export const analyticsController = {
         const report = await analyticsService.getTechEarningsReport(req.user!.companyId, range);
         res.status(StatusCodes.OK).json({ status: 'success', data: { report } });
     },
+
+    getTechScorecards: async (req: Request, res: Response) => {
+        const range = parseRange(req.query);
+        const report = await analyticsService.getTechScorecards(req.user!.companyId, range);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { report } });
+    },
+
+    getRevenueByServiceType: async (req: Request, res: Response) => {
+        const range = parseRange(req.query);
+        const report = await analyticsService.getRevenueByServiceType(req.user!.companyId, range);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { report } });
+    },
+
+    getEstimateConversion: async (req: Request, res: Response) => {
+        const range = parseRange(req.query);
+        const report = await analyticsService.getEstimateConversionReport(req.user!.companyId, range);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { report } });
+    },
+
+    getAvgTicketTrend: async (req: Request, res: Response) => {
+        const months = Number(req.query.months) || 6;
+        const report = await analyticsService.getAvgTicketTrend(req.user!.companyId, months);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { report } });
+    },
 };

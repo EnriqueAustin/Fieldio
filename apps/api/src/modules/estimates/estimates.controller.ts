@@ -30,5 +30,20 @@ export const estimateController = {
     convertToJob: async (req: Request, res: Response) => {
         const job = await estimateService.convertToJob(req.params.id, req.user!.companyId);
         res.status(StatusCodes.OK).json({ status: 'success', data: { job } });
+    },
+
+    addOption: async (req: Request, res: Response) => {
+        const option = await estimateService.addOption(req.params.id, req.user!.companyId, req.body);
+        res.status(StatusCodes.CREATED).json({ status: 'success', data: { option } });
+    },
+
+    getOptions: async (req: Request, res: Response) => {
+        const options = await estimateService.getOptions(req.params.id, req.user!.companyId);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { options } });
+    },
+
+    acceptOption: async (req: Request, res: Response) => {
+        const option = await estimateService.acceptOption(req.params.optionId, req.params.id, req.user!.companyId);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { option } });
     }
 };

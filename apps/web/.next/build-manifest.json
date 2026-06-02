@@ -1,19 +1,48 @@
 {
-  "polyfillFiles": [
-    "static/chunks/polyfills.js"
-  ],
+  "pages": {
+    "/_app": [
+      "static/chunks/08b5e_next_730006._.js",
+      "static/chunks/08b5e_react_b2385d._.js",
+      "static/chunks/08b5e_react-dom_cjs_react-dom_development_ab7e07.js",
+      "static/chunks/08b5e_react-dom_f14d04._.js",
+      "static/chunks/08b5e_633750._.js",
+      "static/chunks/[root of the server]__272bc4._.js",
+      "static/chunks/08b5e_next_dist_pages_a43a81._.js",
+      "static/chunks/[next]_entry_page-loader_ts_d03583._.js",
+      "static/chunks/[next]_entry_page-loader_ts_3bd6ce._.js",
+      "static/chunks/pages/_app.js"
+    ],
+    "/_error": [
+      "static/chunks/08b5e_next_5f6c28._.js",
+      "static/chunks/08b5e_react_b2385d._.js",
+      "static/chunks/08b5e_react-dom_cjs_react-dom_development_ab7e07.js",
+      "static/chunks/08b5e_react-dom_f14d04._.js",
+      "static/chunks/08b5e_633750._.js",
+      "static/chunks/[root of the server]__2d61be._.js",
+      "static/chunks/08b5e_next_dist_pages_9253aa._.js",
+      "static/chunks/[next]_entry_page-loader_ts_1851b7._.js",
+      "static/chunks/[next]_entry_page-loader_ts_17a9c3._.js",
+      "static/chunks/pages/_error.js"
+    ]
+  },
   "devFiles": [],
   "ampDevFiles": [],
+  "polyfillFiles": [],
   "lowPriorityFiles": [
-    "static/development/_buildManifest.js",
-    "static/development/_ssgManifest.js"
+    "static/development/_ssgManifest.js",
+    "static/development/_buildManifest.js"
   ],
   "rootMainFiles": [
-    "static/chunks/webpack.js",
-    "static/chunks/main-app.js"
+    "static/chunks/08b5e_next_dist_compiled_react_a1d82d._.js",
+    "static/chunks/08b5e_next_dist_compiled_react-dom_cjs_react-dom_development_c9a189.js",
+    "static/chunks/08b5e_next_dist_compiled_react-dom_87a050._.js",
+    "static/chunks/08b5e_next_dist_compiled_e13b54._.js",
+    "static/chunks/08b5e_next_dist_client_93f294._.js",
+    "static/chunks/08b5e_next_dist_5313b6._.js",
+    "static/chunks/08b5e_@swc_helpers_f2490a._.js",
+    "static/chunks/[turbopack]_dev_client_hmr-client_ts_e38d9a._.js",
+    "static/chunks/08b5e_next_dist_esm_build_templates_app-page_dd45aa.js",
+    "static/chunks/08b5e_next_dist_esm_build_templates_app-page_5b3829.js"
   ],
-  "pages": {
-    "/_app": []
-  },
   "ampFirstPages": []
 }

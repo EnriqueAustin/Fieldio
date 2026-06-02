@@ -11,6 +11,7 @@ import { deserializeUser } from './middleware/auth';
 import { socketService } from './services/socket.service';
 import { startRecurringScheduler } from './modules/recurring/recurring.service';
 import { startReviewScheduler } from './modules/reviews/review.service';
+import { startCampaignScheduler } from './modules/campaigns/campaigns.service';
 
 // Routes
 import { healthRouter } from './routes/health';
@@ -31,7 +32,20 @@ import { recurringRouter } from './routes/recurring';
 import { supplierRouter } from './routes/suppliers';
 import { priceBookRouter } from './routes/priceBook';
 import { publicPortalRouter, portalRouter } from './routes/portal';
-
+import { projectsRouter } from './routes/projects';
+import { timeTrackingRouter } from './routes/timeTracking';
+import { digitalFormsRouter } from './routes/digitalForms';
+import { inventoryTransfersRouter } from './routes/inventoryTransfers';
+import { membershipRouter } from './routes/memberships';
+import { campaignRouter } from './routes/campaigns';
+import { permitRouter } from './routes/permits';
+import { subcontractorRouter } from './routes/subcontractors';
+import { financingRouter } from './routes/financing';
+import { flatRateRouter } from './routes/flatRate';
+import { customerNoteRouter } from './routes/customerNotes';
+import { warrantyClaimRouter } from './routes/warrantyClaims';
+import { certificationRouter } from './routes/certifications';
+import { markupRuleRouter } from './routes/markupRules';
 const app = express();
 const httpServer = createServer(app);
 
@@ -107,6 +121,20 @@ app.use('/recurring', recurringRouter);
 app.use('/suppliers', supplierRouter);
 app.use('/price-book', priceBookRouter);
 app.use('/portal', portalRouter);
+app.use('/projects', projectsRouter);
+app.use('/time-tracking', timeTrackingRouter);
+app.use('/digital-forms', digitalFormsRouter);
+app.use('/inventory-transfers', inventoryTransfersRouter);
+app.use('/memberships', membershipRouter);
+app.use('/campaigns', campaignRouter);
+app.use('/permits', permitRouter);
+app.use('/subcontractors', subcontractorRouter);
+app.use('/financing', financingRouter);
+app.use('/flat-rate', flatRateRouter);
+app.use('/customer-notes', customerNoteRouter);
+app.use('/warranty-claims', warrantyClaimRouter);
+app.use('/certifications', certificationRouter);
+app.use('/markup-rules', markupRuleRouter);
 
 // Error handling
 app.use(errorHandler);
@@ -115,4 +143,5 @@ httpServer.listen(config.PORT, () => {
   logger.info(`API running on port ${config.PORT} in ${config.NODE_ENV} mode`);
   startRecurringScheduler();
   startReviewScheduler();
+  startCampaignScheduler();
 });

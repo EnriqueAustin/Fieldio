@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import api from "../../../lib/api";
 import { Plus, Search, Users, Mail, Phone, Building, ArrowUpRight } from "lucide-react";
@@ -17,25 +18,15 @@ interface Customer {
 }
 
 export default function CustomersPage() {
-    const [customers, setCustomers] = useState<Customer[]>([]);
     const [search, setSearch] = useState("");
-    const [loading, setLoading] = useState(true);
+    const [submittedSearch, setSubmittedSearch] = useState("");
 
-    const fetchCustomers = async (searchQuery = "") => {
-        setLoading(true);
-        try {
-            const res = await api.get(`/customers?search=${encodeURIComponent(searchQuery)}`);
-            setCustomers(res.data.data.items ?? []);
-        } catch (e) {
-            console.error(e);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        fetchCustomers();
-    }, []);
+    const { data, isLoading: loading } = useQuery({
+        queryKey: ["customers", submittedSearch],
+        queryFn: () =>
+            api.get(`/customers?search=${encodeURIComponent(submittedSearch)}`).then((res) => res.data.data.items ?? []),
+    });
+    const customers: Customer[] = data ?? [];
 
     return (
         <div className="space-y-6">
@@ -57,7 +48,7 @@ export default function CustomersPage() {
                 <form
                     onSubmit={(e) => {
                         e.preventDefault();
-                        fetchCustomers(search);
+                        setSubmittedSearch(search);
                     }}
                     className="relative"
                 >

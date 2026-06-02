@@ -26,6 +26,7 @@ export const invoiceService = {
             const invoice = await tx.invoice.create({
                 data: {
                     companyId,
+                    projectId: job.projectId,
                     jobId: job.id,
                     invoiceNumber,
                     items: job.lineItems as any,

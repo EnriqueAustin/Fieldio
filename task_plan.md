@@ -44,6 +44,10 @@
 - [x] **Authorization (RBAC)**
     - [x] Create Roles Guard (`restrictTo`) and Auth Guard (`requireUser`)
     - [x] Create Protected Route wrapper (`ProtectedRoute`)
+- [x] **New Features Backend**
+    - [x] Implement Digital Forms API
+    - [x] Implement Estimate Options API
+    - [x] Implement Inventory Transfers API
 - [ ] **Testing**
     - [ ] Write Auth flow integration tests
 

@@ -17,29 +17,46 @@ datasource db {
 model Company {
   id        String   @id @default(uuid())
   name      String
-  settings  Json?    // Branding, Modules, Localization
+  settings  Json? // Branding, Modules, Localization
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users         User[]
-  customers     Customer[]
-  jobs          Job[]
-  estimates     Estimate[]
-  invoices      Invoice[]
-  inventory     InventoryItem[]
-  notifications Notification[]
-  auditLogs     AuditLog[]
-  properties    Property[]
-  expenses      Expense[]
-  payments      Payment[]
-  jobPhotos     JobPhoto[]
-  notificationLogs NotificationLog[]
-  recurringPlans RecurringPlan[]
-  bookingRequests BookingRequest[]
-  xeroConnections XeroConnection[]
-  priceBookItems  PriceBookItem[]
-  suppliers       Supplier[]
-  purchaseOrders  PurchaseOrder[]
+  users                 User[]
+  customers             Customer[]
+  jobs                  Job[]
+  estimates             Estimate[]
+  invoices              Invoice[]
+  inventory             InventoryItem[]
+  notifications         Notification[]
+  auditLogs             AuditLog[]
+  properties            Property[]
+  expenses              Expense[]
+  payments              Payment[]
+  jobPhotos             JobPhoto[]
+  notificationLogs      NotificationLog[]
+  recurringPlans        RecurringPlan[]
+  bookingRequests       BookingRequest[]
+  xeroConnections       XeroConnection[]
+  priceBookItems        PriceBookItem[]
+  suppliers             Supplier[]
+  purchaseOrders        PurchaseOrder[]
+  DigitalFormTemplate   DigitalFormTemplate[]
+  DigitalFormSubmission DigitalFormSubmission[]
+  Project               Project[]
+  TimeEntry             TimeEntry[]
+  InventoryTransfer     InventoryTransfer[]
+  MembershipTier        MembershipTier[]
+  Membership            Membership[]
+  Campaign              Campaign[]
+  Permit                Permit[]
+  Subcontractor         Subcontractor[]
+  FinancingOption       FinancingOption[]
+  FinancingApplication  FinancingApplication[]
+  FlatRateBundle        FlatRateBundle[]
+  MarkupRule            MarkupRule[]
+  TechCertification     TechCertification[]
+  CustomerNote          CustomerNote[]
+  WarrantyClaim         WarrantyClaim[]
 }
 
 enum UserRole {
@@ -63,17 +80,22 @@ model User {
   firstName    String?
   lastName     String?
   role         UserRole   @default(TECHNICIAN)
-  permissions  Json?      // Specific capabilities e.g., 'job:read'
+  permissions  Json? // Specific capabilities e.g., 'job:read'
   avatarUrl    String?
   status       UserStatus @default(ACTIVE)
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  company      Company    @relation(fields: [companyId], references: [id])
-  assignedJobs Job[]
-  notifications Notification[]
-  auditLogs    AuditLog[]
-  locationPings UserLocationPing[]
+  company               Company                 @relation(fields: [companyId], references: [id])
+  assignedJobs          Job[]
+  notifications         Notification[]
+  auditLogs             AuditLog[]
+  locationPings         UserLocationPing[]
+  DigitalFormSubmission DigitalFormSubmission[]
+  TimeEntry             TimeEntry[]
+  InventoryTransfer     InventoryTransfer[]
+  TechCertification     TechCertification[]
+  CustomerNote          CustomerNote[]
 
   @@index([companyId])
 }
@@ -115,18 +137,23 @@ model Customer {
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
 
-  company    Company    @relation(fields: [companyId], references: [id])
-  properties Property[]
-  jobs       Job[]
-  estimates  Estimate[]
-  bookingRequests BookingRequest[]
-  portalTokens CustomerPortalToken[]
+  company               Company                 @relation(fields: [companyId], references: [id])
+  properties            Property[]
+  jobs                  Job[]
+  estimates             Estimate[]
+  bookingRequests       BookingRequest[]
+  portalTokens          CustomerPortalToken[]
+  DigitalFormSubmission DigitalFormSubmission[]
+  Project               Project[]
+  Membership            Membership[]
+  FinancingApplication  FinancingApplication[]
+  CustomerNote          CustomerNote[]
 
   @@index([companyId])
 }
 
 model Property {
-  id           String @id @default(uuid())
+  id           String  @id @default(uuid())
   customerId   String
   companyId    String
   addressLine1 String
@@ -137,10 +164,11 @@ model Property {
   geoLat       Float?
   geoLng       Float?
 
-  customer Customer @relation(fields: [customerId], references: [id])
-  company  Company  @relation(fields: [companyId], references: [id])
+  customer Customer        @relation(fields: [customerId], references: [id])
+  company  Company         @relation(fields: [companyId], references: [id])
   jobs     Job[]
   assets   PropertyAsset[]
+  Project  Project[]
 
   @@index([companyId])
   @@index([customerId])
@@ -169,7 +197,9 @@ model PropertyAsset {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
-  property Property @relation(fields: [propertyId], references: [id])
+  property              Property                @relation(fields: [propertyId], references: [id])
+  DigitalFormSubmission DigitalFormSubmission[]
+  WarrantyClaim         WarrantyClaim[]
 
   @@index([companyId])
   @@index([propertyId])
@@ -198,6 +228,7 @@ enum JobPriority {
 model Job {
   id             String      @id @default(uuid())
   companyId      String
+  projectId      String?
   customerId     String
   propertyId     String
   techId         String?
@@ -212,22 +243,27 @@ model Job {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
-  recurringPlanId String?
-  deletedAt      DateTime?
-  reviewRequestSentAt DateTime?
-  company   Company        @relation(fields: [companyId], references: [id])
-  customer  Customer       @relation(fields: [customerId], references: [id])
-  property  Property       @relation(fields: [propertyId], references: [id])
-  tech      User?          @relation(fields: [techId], references: [id])
-  lineItems JobLineItem[]
-  checklist JobChecklist[]
-  estimate  Estimate?
-  invoice   Invoice?
-  expenses  Expense[]
-  photos    JobPhoto[]
-  signatures JobSignature[]
-  recurringPlan RecurringPlan? @relation(fields: [recurringPlanId], references: [id])
-  purchaseOrders PurchaseOrder[]
+  recurringPlanId       String?
+  deletedAt             DateTime?
+  reviewRequestSentAt   DateTime?
+  company               Company                 @relation(fields: [companyId], references: [id])
+  project               Project?                @relation(fields: [projectId], references: [id])
+  customer              Customer                @relation(fields: [customerId], references: [id])
+  property              Property                @relation(fields: [propertyId], references: [id])
+  tech                  User?                   @relation(fields: [techId], references: [id])
+  lineItems             JobLineItem[]
+  checklist             JobChecklist[]
+  estimate              Estimate?
+  invoice               Invoice?
+  expenses              Expense[]
+  photos                JobPhoto[]
+  signatures            JobSignature[]
+  recurringPlan         RecurringPlan?          @relation(fields: [recurringPlanId], references: [id])
+  purchaseOrders            PurchaseOrder[]
+  DigitalFormSubmission     DigitalFormSubmission[]
+  TimeEntry                 TimeEntry[]
+  permits                   Permit[]
+  subcontractorAssignments  SubcontractorAssignment[]
 
   @@index([companyId])
   @@index([techId])
@@ -236,14 +272,14 @@ model Job {
 }
 
 model JobPhoto {
-  id        String   @id @default(uuid())
-  jobId     String
-  companyId String
-  url       String
+  id           String   @id @default(uuid())
+  jobId        String
+  companyId    String
+  url          String
   thumbnailUrl String?
-  caption   String?
+  caption      String?
   uploadedById String?
-  createdAt DateTime @default(now())
+  createdAt    DateTime @default(now())
 
   job     Job     @relation(fields: [jobId], references: [id])
   company Company @relation(fields: [companyId], references: [id])
@@ -253,12 +289,12 @@ model JobPhoto {
 }
 
 model JobSignature {
-  id        String   @id @default(uuid())
-  jobId     String
-  signerName String
+  id               String   @id @default(uuid())
+  jobId            String
+  signerName       String
   signatureDataUrl String?
   signatureUrl     String?
-  signedAt  DateTime @default(now())
+  signedAt         DateTime @default(now())
 
   job Job @relation(fields: [jobId], references: [id])
 
@@ -287,10 +323,10 @@ model JobLineItem {
 }
 
 model JobChecklist {
-  id          String   @id @default(uuid())
+  id          String    @id @default(uuid())
   jobId       String
   label       String
-  isCompleted Boolean  @default(false)
+  isCompleted Boolean   @default(false)
   completedAt DateTime?
 
   job Job @relation(fields: [jobId], references: [id])
@@ -311,25 +347,28 @@ enum EstimateStatus {
 }
 
 model Estimate {
-  id         String         @id @default(uuid())
-  companyId  String
-  customerId String
-  jobId      String?        @unique
-  status     EstimateStatus @default(DRAFT)
-  items      Json           // Snapshot of line items
-  total      Decimal
-  validUntil DateTime?
-  pdfUrl     String?
-  signerName String?
+  id           String         @id @default(uuid())
+  companyId    String
+  projectId    String?
+  customerId   String
+  jobId        String?        @unique
+  status       EstimateStatus @default(DRAFT)
+  items        Json? // Snapshot of line items
+  total        Decimal
+  validUntil   DateTime?
+  pdfUrl       String?
+  signerName   String?
   signatureUrl String?
-  signedAt   DateTime?
-  approvedAt DateTime?
-  createdAt  DateTime       @default(now())
-  updatedAt  DateTime       @updatedAt
+  signedAt     DateTime?
+  approvedAt   DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
-  company  Company  @relation(fields: [companyId], references: [id])
-  customer Customer @relation(fields: [customerId], references: [id])
-  job      Job?     @relation(fields: [jobId], references: [id])
+  company        Company          @relation(fields: [companyId], references: [id])
+  project        Project?         @relation(fields: [projectId], references: [id])
+  customer       Customer         @relation(fields: [customerId], references: [id])
+  job            Job?             @relation(fields: [jobId], references: [id])
+  EstimateOption EstimateOption[]
 
   @@index([companyId])
 }
@@ -344,37 +383,39 @@ enum InvoiceStatus {
 }
 
 model Invoice {
-  id              String        @id @default(uuid())
-  companyId       String
-  jobId           String        @unique
-  invoiceNumber   String?
-  status          InvoiceStatus @default(DRAFT)
-  items           Json?         // Snapshot of line items at time of invoice
-  subtotal        Decimal
-  tax             Decimal
-  total           Decimal
-  balance         Decimal
-  taxLabel        String        @default("VAT")
-  taxRate         Decimal       @default(15)
-  taxNumber       String?
-  supplierName    String?
+  id                          String        @id @default(uuid())
+  companyId                   String
+  projectId                   String?
+  jobId                       String        @unique
+  invoiceNumber               String?
+  status                      InvoiceStatus @default(DRAFT)
+  items                       Json? // Snapshot of line items at time of invoice
+  subtotal                    Decimal
+  tax                         Decimal
+  total                       Decimal
+  balance                     Decimal
+  taxLabel                    String        @default("VAT")
+  taxRate                     Decimal       @default(15)
+  taxNumber                   String?
+  supplierName                String?
   supplierCompanyRegistration String?
-  paymentReference String?
-  dueDate         DateTime?
-  stripePaymentId String?
-  stripeCheckoutSessionId String?
-  publicToken     String?       @unique
-  paidAt          DateTime?
-  deletedAt       DateTime?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  paymentReference            String?
+  dueDate                     DateTime?
+  stripePaymentId             String?
+  stripeCheckoutSessionId     String?
+  publicToken                 String?       @unique
+  paidAt                      DateTime?
+  deletedAt                   DateTime?
+  createdAt                   DateTime      @default(now())
+  updatedAt                   DateTime      @updatedAt
 
   company  Company   @relation(fields: [companyId], references: [id])
+  project  Project?  @relation(fields: [projectId], references: [id])
   job      Job       @relation(fields: [jobId], references: [id])
   payments Payment[]
 
-  @@index([companyId])
   @@unique([companyId, invoiceNumber])
+  @@index([companyId])
 }
 
 enum PaymentMethod {
@@ -395,18 +436,18 @@ enum PaymentStatus {
 }
 
 model Payment {
-  id        String        @id @default(uuid())
-  companyId String
-  invoiceId String
-  amount    Decimal
-  method    PaymentMethod @default(CARD)
-  status    PaymentStatus @default(PENDING)
-  stripePaymentIntentId String? @unique
-  stripeChargeId String?
-  failureReason String?
-  metadata  Json?
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
+  id                    String        @id @default(uuid())
+  companyId             String
+  invoiceId             String
+  amount                Decimal
+  method                PaymentMethod @default(CARD)
+  status                PaymentStatus @default(PENDING)
+  stripePaymentIntentId String?       @unique
+  stripeChargeId        String?
+  failureReason         String?
+  metadata              Json?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
 
   company Company @relation(fields: [companyId], references: [id])
   invoice Invoice @relation(fields: [invoiceId], references: [id])
@@ -457,7 +498,8 @@ model InventoryItem {
   location       InventoryLocation @default(WAREHOUSE)
   assignedUserId String?
 
-  company Company @relation(fields: [companyId], references: [id])
+  company           Company             @relation(fields: [companyId], references: [id])
+  InventoryTransfer InventoryTransfer[]
 
   @@index([companyId])
 }
@@ -486,14 +528,14 @@ model Notification {
 }
 
 model AuditLog {
-  id        String   @id @default(uuid())
-  companyId String
-  userId    String
-  action    String
-  entityId  String
+  id         String   @id @default(uuid())
+  companyId  String
+  userId     String
+  action     String
+  entityId   String
   entityType String
-  metadata  Json?
-  createdAt DateTime @default(now())
+  metadata   Json?
+  createdAt  DateTime @default(now())
 
   company Company @relation(fields: [companyId], references: [id])
   user    User    @relation(fields: [userId], references: [id])
@@ -538,17 +580,17 @@ enum NotificationDeliveryStatus {
 }
 
 model NotificationLog {
-  id        String                     @id @default(uuid())
-  companyId String
-  channel   NotificationChannel
-  toAddress String
-  template  String
-  payload   Json?
-  status    NotificationDeliveryStatus @default(QUEUED)
+  id         String                     @id @default(uuid())
+  companyId  String
+  channel    NotificationChannel
+  toAddress  String
+  template   String
+  payload    Json?
+  status     NotificationDeliveryStatus @default(QUEUED)
   providerId String?
-  error     String?
-  createdAt DateTime                   @default(now())
-  updatedAt DateTime                   @updatedAt
+  error      String?
+  createdAt  DateTime                   @default(now())
+  updatedAt  DateTime                   @updatedAt
 
   company Company @relation(fields: [companyId], references: [id])
 
@@ -580,7 +622,7 @@ model RecurringPlan {
   endDate     DateTime?
   nextRunAt   DateTime
   active      Boolean            @default(true)
-  template    Json?              // line items snapshot
+  template    Json? // line items snapshot
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 
@@ -603,22 +645,22 @@ enum BookingStatus {
 }
 
 model BookingRequest {
-  id          String        @id @default(uuid())
-  companyId   String
-  customerId  String?
-  name        String
-  email       String?
-  phone       String?
-  addressLine1 String?
-  city         String?
-  state        String?
-  zip          String?
-  serviceType String?
-  description String
+  id            String        @id @default(uuid())
+  companyId     String
+  customerId    String?
+  name          String
+  email         String?
+  phone         String?
+  addressLine1  String?
+  city          String?
+  state         String?
+  zip           String?
+  serviceType   String?
+  description   String
   preferredDate DateTime?
-  status      BookingStatus @default(NEW)
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  status        BookingStatus @default(NEW)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 
   company  Company   @relation(fields: [companyId], references: [id])
   customer Customer? @relation(fields: [customerId], references: [id])
@@ -653,17 +695,17 @@ model PriceBookItem {
 // -----------------------------------------------------------------------------
 
 model Supplier {
-  id             String   @id @default(uuid())
-  companyId      String
-  name           String
-  contactName    String?
-  email          String?
-  phone          String?
-  accountNumber  String?
-  notes          String?
-  active         Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id            String   @id @default(uuid())
+  companyId     String
+  name          String
+  contactName   String?
+  email         String?
+  phone         String?
+  accountNumber String?
+  notes         String?
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   company        Company         @relation(fields: [companyId], references: [id])
   purchaseOrders PurchaseOrder[]
@@ -700,10 +742,10 @@ model PurchaseOrder {
   supplier Supplier @relation(fields: [supplierId], references: [id])
   job      Job?     @relation(fields: [jobId], references: [id])
 
+  @@unique([companyId, orderNumber])
   @@index([companyId])
   @@index([supplierId])
   @@index([jobId])
-  @@unique([companyId, orderNumber])
 }
 
 // -----------------------------------------------------------------------------
@@ -722,4 +764,602 @@ model CustomerPortalToken {
 
   @@index([token])
   @@index([customerId])
+}
+
+// -----------------------------------------------------------------------------
+// Digital Forms & Compliance
+// -----------------------------------------------------------------------------
+
+model DigitalFormTemplate {
+  id          String   @id @default(uuid())
+  companyId   String
+  name        String
+  description String?
+  schema      Json // Defines fields, types, required, etc.
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company     Company                 @relation(fields: [companyId], references: [id])
+  submissions DigitalFormSubmission[]
+
+  @@index([companyId])
+}
+
+model DigitalFormSubmission {
+  id              String   @id @default(uuid())
+  companyId       String
+  templateId      String
+  jobId           String?
+  customerId      String?
+  propertyAssetId String?
+  userId          String // Technician who submitted it
+  data            Json // Filled form data
+  signatureUrl    String?
+  pdfUrl          String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  company       Company             @relation(fields: [companyId], references: [id])
+  template      DigitalFormTemplate @relation(fields: [templateId], references: [id])
+  job           Job?                @relation(fields: [jobId], references: [id])
+  customer      Customer?           @relation(fields: [customerId], references: [id])
+  propertyAsset PropertyAsset?      @relation(fields: [propertyAssetId], references: [id])
+  user          User                @relation(fields: [userId], references: [id])
+
+  @@index([companyId])
+  @@index([jobId])
+  @@index([propertyAssetId])
+}
+
+// -----------------------------------------------------------------------------
+// Multi-Option Estimates
+// -----------------------------------------------------------------------------
+
+model EstimateOption {
+  id          String   @id @default(uuid())
+  estimateId  String
+  name        String // e.g., "Basic", "Premium"
+  description String?
+  items       Json // Line items for this specific option
+  total       Decimal
+  accepted    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  estimate Estimate @relation(fields: [estimateId], references: [id])
+
+  @@index([estimateId])
+}
+
+// -----------------------------------------------------------------------------
+// Projects
+// -----------------------------------------------------------------------------
+
+enum ProjectStatus {
+  PLANNING
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+  CANCELED
+}
+
+model Project {
+  id          String        @id @default(uuid())
+  companyId   String
+  customerId  String
+  propertyId  String
+  name        String
+  description String?
+  status      ProjectStatus @default(PLANNING)
+  budget      Decimal?
+  startDate   DateTime?
+  endDate     DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  company   Company    @relation(fields: [companyId], references: [id])
+  customer  Customer   @relation(fields: [customerId], references: [id])
+  property  Property   @relation(fields: [propertyId], references: [id])
+  jobs      Job[]
+  estimates Estimate[]
+  invoices  Invoice[]
+
+  @@index([companyId])
+  @@index([customerId])
+}
+
+// -----------------------------------------------------------------------------
+// Time Tracking
+// -----------------------------------------------------------------------------
+
+enum TimeEntryType {
+  TRAVEL
+  WRENCH
+  ADMIN
+  BREAK
+}
+
+model TimeEntry {
+  id          String        @id @default(uuid())
+  companyId   String
+  userId      String
+  jobId       String?
+  type        TimeEntryType @default(WRENCH)
+  startTime   DateTime
+  endTime     DateTime?
+  duration    Int? // Duration in seconds
+  description String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+  job     Job?    @relation(fields: [jobId], references: [id])
+
+  @@index([companyId])
+  @@index([userId])
+  @@index([jobId])
+}
+
+// -----------------------------------------------------------------------------
+// Inventory Transfers
+// -----------------------------------------------------------------------------
+
+enum TransferStatus {
+  PENDING
+  COMPLETED
+  CANCELED
+}
+
+model InventoryTransfer {
+  id              String            @id @default(uuid())
+  companyId       String
+  inventoryItemId String
+  userId          String // User performing transfer
+  fromLocation    InventoryLocation
+  toLocation      InventoryLocation
+  quantity        Int
+  status          TransferStatus    @default(PENDING)
+  notes           String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  company       Company       @relation(fields: [companyId], references: [id])
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id])
+  user          User          @relation(fields: [userId], references: [id])
+
+  @@index([companyId])
+  @@index([inventoryItemId])
+}
+
+// -----------------------------------------------------------------------------
+// Membership / Service Agreements
+// -----------------------------------------------------------------------------
+
+enum MembershipTierInterval {
+  MONTHLY
+  QUARTERLY
+  ANNUAL
+}
+
+model MembershipTier {
+  id          String                 @id @default(uuid())
+  companyId   String
+  name        String // e.g., "Gold", "Silver", "Bronze"
+  description String?
+  price       Decimal
+  interval    MembershipTierInterval @default(MONTHLY)
+  laborDiscountPct   Float          @default(0)
+  materialDiscountPct Float         @default(0)
+  priorityBooking    Boolean        @default(false)
+  includedVisits     Int            @default(0) // Free maintenance visits per year
+  benefits    Json? // Additional benefit descriptions
+  active      Boolean               @default(true)
+  sortOrder   Int                   @default(0)
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  company     Company              @relation(fields: [companyId], references: [id])
+  memberships Membership[]
+
+  @@index([companyId])
+}
+
+enum MembershipStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+}
+
+model Membership {
+  id              String           @id @default(uuid())
+  companyId       String
+  customerId      String
+  tierId          String
+  status          MembershipStatus @default(ACTIVE)
+  startDate       DateTime
+  endDate         DateTime?
+  nextBillingDate DateTime?
+  lastBillingDate DateTime?
+  autoRenew       Boolean          @default(true)
+  visitsUsed      Int              @default(0)
+  canceledAt      DateTime?
+  cancelReason    String?
+  notes           String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  company  Company        @relation(fields: [companyId], references: [id])
+  customer Customer       @relation(fields: [customerId], references: [id])
+  tier     MembershipTier @relation(fields: [tierId], references: [id])
+
+  @@index([companyId])
+  @@index([customerId])
+  @@index([status])
+  @@index([nextBillingDate])
+}
+
+// -----------------------------------------------------------------------------
+// Automated Campaigns & Follow-ups
+// -----------------------------------------------------------------------------
+
+enum CampaignType {
+  UNSOLD_ESTIMATE
+  SEASONAL_REMINDER
+  SERVICE_ANNIVERSARY
+  MEMBERSHIP_RENEWAL
+  CUSTOM
+}
+
+enum CampaignStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  DRAFT
+}
+
+model Campaign {
+  id          String         @id @default(uuid())
+  companyId   String
+  name        String
+  type        CampaignType
+  status      CampaignStatus @default(DRAFT)
+  trigger     Json // Trigger conditions (days since, season, etc.)
+  template    Json // Message template (subject, body, channel)
+  channels    String[] // EMAIL, SMS, WHATSAPP
+  lastRunAt   DateTime?
+  nextRunAt   DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  company  Company          @relation(fields: [companyId], references: [id])
+  sends    CampaignSend[]
+
+  @@index([companyId])
+  @@index([status, nextRunAt])
+}
+
+model CampaignSend {
+  id          String   @id @default(uuid())
+  campaignId  String
+  customerId  String
+  channel     String // EMAIL, SMS, WHATSAPP
+  sentAt      DateTime @default(now())
+  status      String   @default("SENT") // SENT, DELIVERED, OPENED, CLICKED, FAILED
+  metadata    Json?
+
+  campaign Campaign @relation(fields: [campaignId], references: [id])
+
+  @@index([campaignId])
+  @@index([customerId])
+}
+
+// -----------------------------------------------------------------------------
+// Permit & Inspection Tracking
+// -----------------------------------------------------------------------------
+
+enum PermitStatus {
+  APPLIED
+  ISSUED
+  INSPECTION_SCHEDULED
+  PASSED
+  FAILED
+  EXPIRED
+}
+
+model Permit {
+  id               String       @id @default(uuid())
+  companyId        String
+  jobId            String
+  permitNumber     String?
+  permitType       String // Plumbing, Gas, Drainage, etc.
+  authority        String? // Issuing authority / municipality
+  status           PermitStatus @default(APPLIED)
+  applicationDate  DateTime     @default(now())
+  issueDate        DateTime?
+  expirationDate   DateTime?
+  fee              Decimal?
+  notes            String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  company     Company      @relation(fields: [companyId], references: [id])
+  job         Job          @relation(fields: [jobId], references: [id])
+  inspections Inspection[]
+
+  @@index([companyId])
+  @@index([jobId])
+}
+
+model Inspection {
+  id              String   @id @default(uuid())
+  permitId        String
+  scheduledDate   DateTime
+  completedDate   DateTime?
+  inspectorName   String?
+  inspectorPhone  String?
+  result          String? // PASS, FAIL, CONDITIONAL
+  notes           String?
+  followUpRequired Boolean @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  permit Permit @relation(fields: [permitId], references: [id])
+
+  @@index([permitId])
+}
+
+// -----------------------------------------------------------------------------
+// Subcontractor Management
+// -----------------------------------------------------------------------------
+
+enum SubcontractorStatus {
+  ACTIVE
+  INACTIVE
+  PENDING_VERIFICATION
+}
+
+model Subcontractor {
+  id                    String               @id @default(uuid())
+  companyId             String
+  name                  String
+  contactName           String?
+  email                 String?
+  phone                 String?
+  specialty             String? // Plumbing, Gas Fitting, Drainage, etc.
+  licenseNumber         String?
+  licenseExpiry         DateTime?
+  insuranceProvider     String?
+  insurancePolicyNumber String?
+  insuranceExpiry       DateTime?
+  taxId                 String?
+  hourlyRate            Decimal?
+  notes                 String?
+  status                SubcontractorStatus  @default(ACTIVE)
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  company     Company                @relation(fields: [companyId], references: [id])
+  assignments SubcontractorAssignment[]
+
+  @@index([companyId])
+}
+
+model SubcontractorAssignment {
+  id               String   @id @default(uuid())
+  subcontractorId  String
+  jobId            String
+  description      String?
+  agreedRate       Decimal?
+  hoursWorked      Float?
+  totalPayout      Decimal?
+  paidAt           DateTime?
+  invoiceReference String?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  subcontractor Subcontractor @relation(fields: [subcontractorId], references: [id])
+  job           Job           @relation(fields: [jobId], references: [id])
+
+  @@index([subcontractorId])
+  @@index([jobId])
+}
+
+// -----------------------------------------------------------------------------
+// Customer Financing
+// -----------------------------------------------------------------------------
+
+enum FinancingStatus {
+  OFFERED
+  APPLIED
+  APPROVED
+  DECLINED
+  ACTIVE
+  PAID_OFF
+  DEFAULTED
+}
+
+model FinancingOption {
+  id           String          @id @default(uuid())
+  companyId    String
+  name         String // e.g., "12-Month Plan", "6-Month Interest Free"
+  provider     String? // Wisetack, GreenSky, In-House
+  termMonths   Int
+  interestRate Float           @default(0)
+  minAmount    Decimal         @default(0)
+  maxAmount    Decimal?
+  active       Boolean         @default(true)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  company      Company              @relation(fields: [companyId], references: [id])
+  applications FinancingApplication[]
+
+  @@index([companyId])
+}
+
+model FinancingApplication {
+  id                String          @id @default(uuid())
+  companyId         String
+  customerId        String
+  estimateId        String?
+  jobId             String?
+  financingOptionId String
+  amount            Decimal
+  status            FinancingStatus @default(OFFERED)
+  monthlyPayment    Decimal?
+  providerRef       String? // External provider reference
+  approvedAt        DateTime?
+  notes             String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  company         Company         @relation(fields: [companyId], references: [id])
+  customer        Customer        @relation(fields: [customerId], references: [id])
+  financingOption FinancingOption @relation(fields: [financingOptionId], references: [id])
+
+  @@index([companyId])
+  @@index([customerId])
+  @@index([estimateId])
+}
+
+// -----------------------------------------------------------------------------
+// Flat-Rate Task Bundles (extends Price Book)
+// -----------------------------------------------------------------------------
+
+model FlatRateBundle {
+  id          String   @id @default(uuid())
+  companyId   String
+  name        String // e.g., "Replace Kitchen Faucet"
+  description String?
+  category    String?
+  flatPrice   Decimal // All-inclusive price
+  laborMinutes Int?   // Estimated labor time
+  items       Json // Bundled materials + labor breakdown (not shown to customer)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId])
+  @@index([category])
+}
+
+// -----------------------------------------------------------------------------
+// Markup Rules (auto-markup by category)
+// -----------------------------------------------------------------------------
+
+model MarkupRule {
+  id          String   @id @default(uuid())
+  companyId   String
+  category    String // Material category to match
+  markupType  String   @default("PERCENTAGE") // PERCENTAGE or FLAT
+  markupValue Float // e.g., 35 for 35%
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, category])
+  @@index([companyId])
+}
+
+// -----------------------------------------------------------------------------
+// Technician Certifications
+// -----------------------------------------------------------------------------
+
+model TechCertification {
+  id              String    @id @default(uuid())
+  userId          String
+  companyId       String
+  name            String // e.g., "Gas Safe", "City & Guilds Level 3"
+  issuingBody     String?
+  certificateNumber String?
+  issuedDate      DateTime?
+  expiryDate      DateTime?
+  documentUrl     String?
+  verified        Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id])
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([userId])
+  @@index([companyId])
+  @@index([expiryDate])
+}
+
+// -----------------------------------------------------------------------------
+// Customer Communication Notes (for unified timeline)
+// -----------------------------------------------------------------------------
+
+enum CustomerNoteType {
+  NOTE
+  CALL_INBOUND
+  CALL_OUTBOUND
+  EMAIL_SENT
+  EMAIL_RECEIVED
+  SMS_SENT
+  MEETING
+}
+
+model CustomerNote {
+  id         String           @id @default(uuid())
+  companyId  String
+  customerId String
+  userId     String // Staff member who created it
+  type       CustomerNoteType @default(NOTE)
+  subject    String?
+  body       String
+  duration   Int? // Call duration in seconds
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  company  Company  @relation(fields: [companyId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@index([companyId])
+  @@index([customerId, createdAt])
+}
+
+// -----------------------------------------------------------------------------
+// Warranty Claims
+// -----------------------------------------------------------------------------
+
+enum WarrantyClaimStatus {
+  SUBMITTED
+  IN_REVIEW
+  APPROVED
+  DENIED
+  FULFILLED
+}
+
+model WarrantyClaim {
+  id              String               @id @default(uuid())
+  companyId       String
+  propertyAssetId String
+  jobId           String?
+  claimNumber     String?
+  manufacturer    String?
+  status          WarrantyClaimStatus  @default(SUBMITTED)
+  issueDescription String
+  submittedDate   DateTime             @default(now())
+  resolvedDate    DateTime?
+  resolution      String?
+  notes           String?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  company       Company       @relation(fields: [companyId], references: [id])
+  propertyAsset PropertyAsset @relation(fields: [propertyAssetId], references: [id])
+
+  @@index([companyId])
+  @@index([propertyAssetId])
 }

@@ -6,6 +6,7 @@ import { socketService } from '../../services/socket.service';
 import { notificationService } from '../../services/notifications/notification.service';
 
 const createJobSchema = z.object({
+    projectId: z.string().uuid().optional().nullable(),
     customerId: z.string().uuid(),
     propertyId: z.string().uuid(),
     techId: z.string().uuid().optional(),
@@ -25,6 +26,7 @@ const createJobSchema = z.object({
 });
 
 const updateJobSchema = z.object({
+    projectId: z.string().uuid().optional().nullable(),
     title: z.string().min(1).optional(),
     description: z.string().optional(),
     priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'EMERGENCY']).optional(),
@@ -61,6 +63,7 @@ const addChecklistSchema = z.object({
 });
 
 const quickCreateSchema = z.object({
+    projectId: z.string().uuid().optional().nullable(),
     customerName: z.string().min(1),
     customerPhone: z.string().optional(),
     customerEmail: z.string().email().optional().or(z.literal('')),
@@ -137,6 +140,7 @@ export const jobsService = {
             const created = await tx.job.create({
                 data: {
                     companyId,
+                    projectId: parsed.projectId,
                     customerId: parsed.customerId,
                     propertyId: parsed.propertyId,
                     techId: parsed.techId,
@@ -225,6 +229,7 @@ export const jobsService = {
             where: { id },
             data: {
                 ...parsed,
+                projectId: parsed.projectId,
                 scheduledStart: parsed.scheduledStart !== undefined
                     ? (parsed.scheduledStart ? new Date(parsed.scheduledStart) : null)
                     : undefined,
@@ -636,6 +641,7 @@ export const jobsService = {
             const job = await tx.job.create({
                 data: {
                     companyId,
+                    projectId: parsed.projectId,
                     customerId,
                     propertyId: property.id,
                     techId: parsed.techId,

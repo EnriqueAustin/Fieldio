@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "../../../lib/api";
 import { Button } from "../../../components/ui/button";
 import { Plus, AlertTriangle, Package, Search, Minus, Warehouse, Truck } from "lucide-react";
@@ -38,28 +39,21 @@ const createItemSchema = z.object({
 });
 
 export default function InventoryPage() {
-    const [items, setItems] = useState<InventoryItem[]>([]);
+    const qc = useQueryClient();
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [query, setQuery] = useState("");
     const [filter, setFilter] = useState<"ALL" | "LOW" | "WAREHOUSE" | "VAN">("ALL");
     const { register, handleSubmit, reset } = useForm({ resolver: zodResolver(createItemSchema) });
 
-    const fetchItems = async () => {
-        try {
-            const res = await api.get("/operations/inventory");
-            setItems(res.data.data.items);
-        } catch (e) {
-            console.error(e);
-        }
-    };
-
-    useEffect(() => {
-        fetchItems();
-    }, []);
+    const { data } = useQuery({
+        queryKey: ["inventory"],
+        queryFn: () => api.get("/operations/inventory").then((res) => res.data.data.items as InventoryItem[]),
+    });
+    const items: InventoryItem[] = data ?? [];
 
     const onSubmit = async (data: any) => {
         await api.post("/operations/inventory", { ...data, minLevel: data.minLevel || 5 });
-        fetchItems();
+        void qc.invalidateQueries({ queryKey: ["inventory"] });
         setIsDialogOpen(false);
         reset();
     };
@@ -67,7 +61,7 @@ export default function InventoryPage() {
     const updateQuantity = async (id: string, newQty: number) => {
         if (newQty < 0) return;
         await api.patch(`/operations/inventory/${id}`, { quantity: newQty });
-        fetchItems();
+        void qc.invalidateQueries({ queryKey: ["inventory"] });
     };
 
     const filtered = useMemo(() => {

@@ -15,6 +15,11 @@ financeRouter.get('/estimates/:id', catchAsync(estimateController.getOne));
 financeRouter.post('/estimates/:id/approve', catchAsync(estimateController.approveWithSignature));
 financeRouter.post('/estimates/:id/convert', catchAsync(estimateController.convertToJob));
 
+// Estimate Options
+financeRouter.post('/estimates/:id/options', catchAsync(estimateController.addOption));
+financeRouter.get('/estimates/:id/options', catchAsync(estimateController.getOptions));
+financeRouter.post('/estimates/:id/options/:optionId/accept', catchAsync(estimateController.acceptOption));
+
 // Invoices
 financeRouter.post('/jobs/:jobId/invoice', catchAsync(invoiceController.createFromJob));
 financeRouter.get('/invoices', catchAsync(invoiceController.getAll));

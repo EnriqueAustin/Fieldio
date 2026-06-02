@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import Link from "next/link";
 import api from "../../../lib/api";
 import { Button } from "../../../components/ui/button";
@@ -23,17 +25,14 @@ interface Job {
 const FILTERS = ["ALL", "REQUESTED", "ASSIGNED", "EN_ROUTE", "ON_SITE", "COMPLETED"] as const;
 
 export default function JobsPage() {
-    const [jobs, setJobs] = useState<Job[]>([]);
     const [filter, setFilter] = useState<(typeof FILTERS)[number]>("ALL");
     const [query, setQuery] = useState("");
-    const [loading, setLoading] = useState(true);
 
-    useEffect(() => {
-        api.get("/jobs")
-            .then((res) => setJobs(res.data.data.items ?? []))
-            .catch(console.error)
-            .finally(() => setLoading(false));
-    }, []);
+    const { data, isLoading: loading } = useQuery({
+        queryKey: ["jobs"],
+        queryFn: () => api.get("/jobs").then((res) => res.data.data.items ?? []),
+    });
+    const jobs: Job[] = data ?? [];
 
     const filtered = useMemo(() => {
         return jobs

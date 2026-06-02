@@ -347,4 +347,198 @@ export const analyticsService = {
             },
         };
     },
+
+    getTechScorecards: async (companyId: string, range?: { from?: Date; to?: Date }) => {
+        const now = new Date();
+        const from = range?.from ?? new Date(now.getFullYear(), now.getMonth(), 1);
+        const to = range?.to ?? now;
+
+        const technicians = await prisma.user.findMany({
+            where: { companyId, role: 'TECHNICIAN', status: 'ACTIVE' },
+            select: { id: true, firstName: true, lastName: true, email: true },
+        });
+
+        const scorecards = [];
+
+        for (const tech of technicians) {
+            const [completedJobs, allAssigned, estimates, callbacks, timeEntries] = await Promise.all([
+                prisma.job.findMany({
+                    where: { companyId, techId: tech.id, status: 'COMPLETED', deletedAt: null, actualEnd: { gte: from, lte: to } },
+                    include: {
+                        invoice: { select: { total: true, status: true } },
+                        lineItems: true,
+                    },
+                }),
+                prisma.job.count({
+                    where: { companyId, techId: tech.id, deletedAt: null, createdAt: { gte: from, lte: to } },
+                }),
+                prisma.estimate.findMany({
+                    where: { companyId, createdAt: { gte: from, lte: to }, job: { techId: tech.id } },
+                    select: { status: true, total: true },
+                }),
+                prisma.job.count({
+                    where: {
+                        companyId, techId: tech.id, deletedAt: null,
+                        createdAt: { gte: from, lte: to },
+                        description: { contains: 'callback', mode: 'insensitive' },
+                    },
+                }),
+                prisma.timeEntry.findMany({
+                    where: { companyId, userId: tech.id, startTime: { gte: from, lte: to }, endTime: { not: null } },
+                }),
+            ]);
+
+            const revenue = completedJobs.reduce((sum, j) => sum + (j.invoice ? Number(j.invoice.total) : 0), 0);
+            const avgTicket = completedJobs.length > 0 ? revenue / completedJobs.length : 0;
+
+            const sentEstimates = estimates.filter((e) => ['SENT', 'APPROVED', 'DECLINED'].includes(e.status));
+            const approvedEstimates = estimates.filter((e) => e.status === 'APPROVED');
+            const conversionRate = sentEstimates.length > 0
+                ? Math.round((approvedEstimates.length / sentEstimates.length) * 100) : 0;
+
+            const callbackRate = completedJobs.length > 0
+                ? Math.round((callbacks / completedJobs.length) * 100) : 0;
+
+            const onTimeJobs = completedJobs.filter((j) => {
+                if (!j.scheduledStart || !j.actualStart) return false;
+                const diff = (j.actualStart.getTime() - j.scheduledStart.getTime()) / 60000;
+                return diff <= 15;
+            });
+            const onTimeRate = completedJobs.length > 0
+                ? Math.round((onTimeJobs.length / completedJobs.length) * 100) : 0;
+
+            const totalWrenchMinutes = timeEntries
+                .filter((t) => t.type === 'WRENCH')
+                .reduce((sum, t) => sum + (t.duration ?? 0), 0) / 60;
+            const totalTravelMinutes = timeEntries
+                .filter((t) => t.type === 'TRAVEL')
+                .reduce((sum, t) => sum + (t.duration ?? 0), 0) / 60;
+            const totalHours = timeEntries
+                .reduce((sum, t) => sum + (t.duration ?? 0), 0) / 3600;
+
+            scorecards.push({
+                tech: {
+                    id: tech.id,
+                    name: [tech.firstName, tech.lastName].filter(Boolean).join(' ') || tech.email,
+                },
+                jobsCompleted: completedJobs.length,
+                jobsAssigned: allAssigned,
+                revenue: Math.round(revenue * 100) / 100,
+                avgTicketSize: Math.round(avgTicket * 100) / 100,
+                estimateConversionRate: conversionRate,
+                callbackRate,
+                onTimeArrivalRate: onTimeRate,
+                totalHoursWorked: Math.round(totalHours * 100) / 100,
+                wrenchTimeMinutes: Math.round(totalWrenchMinutes),
+                travelTimeMinutes: Math.round(totalTravelMinutes),
+                efficiency: totalHours > 0 ? Math.round((totalWrenchMinutes / 60 / totalHours) * 100) : 0,
+            });
+        }
+
+        return { range: { from, to }, scorecards };
+    },
+
+    getRevenueByServiceType: async (companyId: string, range?: { from?: Date; to?: Date }) => {
+        const now = new Date();
+        const from = range?.from ?? new Date(now.getFullYear(), now.getMonth(), 1);
+        const to = range?.to ?? now;
+
+        const jobs = await prisma.job.findMany({
+            where: { companyId, deletedAt: null, status: 'COMPLETED', actualEnd: { gte: from, lte: to } },
+            include: {
+                lineItems: true,
+                invoice: { select: { total: true } },
+            },
+        });
+
+        const byCategory = new Map<string, { revenue: number; jobCount: number; avgTicket: number }>();
+        for (const job of jobs) {
+            for (const item of job.lineItems) {
+                const cat = item.type || 'SERVICE';
+                if (!byCategory.has(cat)) byCategory.set(cat, { revenue: 0, jobCount: 0, avgTicket: 0 });
+                const entry = byCategory.get(cat)!;
+                entry.revenue += Number(item.total);
+            }
+        }
+
+        const totalRevenue = Array.from(byCategory.values()).reduce((s, e) => s + e.revenue, 0);
+
+        return {
+            range: { from, to },
+            categories: Array.from(byCategory.entries()).map(([type, data]) => ({
+                type,
+                revenue: Math.round(data.revenue * 100) / 100,
+                percentage: totalRevenue > 0 ? Math.round((data.revenue / totalRevenue) * 100) : 0,
+            })),
+            totalRevenue: Math.round(totalRevenue * 100) / 100,
+        };
+    },
+
+    getEstimateConversionReport: async (companyId: string, range?: { from?: Date; to?: Date }) => {
+        const now = new Date();
+        const from = range?.from ?? new Date(now.getFullYear(), now.getMonth(), 1);
+        const to = range?.to ?? now;
+
+        const estimates = await prisma.estimate.findMany({
+            where: { companyId, createdAt: { gte: from, lte: to } },
+            include: {
+                job: { select: { techId: true, tech: { select: { id: true, firstName: true, lastName: true, email: true } } } },
+            },
+        });
+
+        const byEstimator = new Map<string, { name: string; total: number; approved: number; declined: number; pending: number; totalValue: number; approvedValue: number }>();
+
+        for (const est of estimates) {
+            const techId = est.job?.techId ?? 'unassigned';
+            const techName = est.job?.tech
+                ? [est.job.tech.firstName, est.job.tech.lastName].filter(Boolean).join(' ') || est.job.tech.email
+                : 'Unassigned';
+
+            if (!byEstimator.has(techId)) {
+                byEstimator.set(techId, { name: techName, total: 0, approved: 0, declined: 0, pending: 0, totalValue: 0, approvedValue: 0 });
+            }
+
+            const entry = byEstimator.get(techId)!;
+            entry.total++;
+            entry.totalValue += Number(est.total);
+            if (est.status === 'APPROVED') { entry.approved++; entry.approvedValue += Number(est.total); }
+            else if (est.status === 'DECLINED') entry.declined++;
+            else if (['DRAFT', 'SENT'].includes(est.status)) entry.pending++;
+        }
+
+        return {
+            range: { from, to },
+            estimators: Array.from(byEstimator.entries()).map(([id, data]) => ({
+                id,
+                ...data,
+                closeRate: data.total > 0 ? Math.round((data.approved / data.total) * 100) : 0,
+            })),
+        };
+    },
+
+    getAvgTicketTrend: async (companyId: string, months = 6) => {
+        const now = new Date();
+        const trends = [];
+
+        for (let i = months - 1; i >= 0; i--) {
+            const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59);
+
+            const invoices = await prisma.invoice.aggregate({
+                where: { companyId, deletedAt: null, createdAt: { gte: monthStart, lte: monthEnd } },
+                _avg: { total: true },
+                _count: { id: true },
+                _sum: { total: true },
+            });
+
+            trends.push({
+                month: monthStart.toISOString().slice(0, 7),
+                avgTicket: Math.round(Number(invoices._avg.total ?? 0) * 100) / 100,
+                totalRevenue: Math.round(Number(invoices._sum.total ?? 0) * 100) / 100,
+                invoiceCount: invoices._count.id,
+            });
+        }
+
+        return { trends };
+    },
 };

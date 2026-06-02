@@ -68,6 +68,31 @@ export const companySettingsSchema = z.object({
         flatAmount: z.number().min(0).default(0),
         percentageRate: z.number().min(0).max(100).default(0),
     }).default({}),
+    memberships: z.object({
+        enabled: z.boolean().default(false),
+        showOnPortal: z.boolean().default(true),
+        autoRenewDefault: z.boolean().default(true),
+    }).default({}),
+    campaigns: z.object({
+        enabled: z.boolean().default(false),
+        unsoldEstimateFollowup: z.object({
+            enabled: z.boolean().default(false),
+            delayDays: z.number().int().min(1).max(90).default(7),
+        }).default({}),
+        serviceAnniversary: z.object({
+            enabled: z.boolean().default(false),
+            monthsSince: z.number().int().min(1).max(24).default(12),
+        }).default({}),
+    }).default({}),
+    permits: z.object({
+        enabled: z.boolean().default(false),
+        requireForJobTypes: z.array(z.string()).default([]),
+    }).default({}),
+    financing: z.object({
+        enabled: z.boolean().default(false),
+        showOnEstimates: z.boolean().default(true),
+        provider: z.string().optional().nullable(),
+    }).default({}),
 });
 
 export type CompanySettings = z.infer<typeof companySettingsSchema>;
@@ -139,6 +164,31 @@ export const defaultCompanySettings: CompanySettings = {
         type: 'flat' as const,
         flatAmount: 0,
         percentageRate: 0,
+    },
+    memberships: {
+        enabled: false,
+        showOnPortal: true,
+        autoRenewDefault: true,
+    },
+    campaigns: {
+        enabled: false,
+        unsoldEstimateFollowup: {
+            enabled: false,
+            delayDays: 7,
+        },
+        serviceAnniversary: {
+            enabled: false,
+            monthsSince: 12,
+        },
+    },
+    permits: {
+        enabled: false,
+        requireForJobTypes: [],
+    },
+    financing: {
+        enabled: false,
+        showOnEstimates: true,
+        provider: null,
     },
 };
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import api from "../../lib/api";
 import {
@@ -111,32 +111,23 @@ function StatCard({
 
 export default function DashboardPage() {
     const { user } = useAuthStore();
-    const [stats, setStats] = useState<DashboardStats | null>(null);
-    const [error, setError] = useState<string | null>(null);
 
-    useEffect(() => {
-        const fetchStats = async () => {
-            try {
-                if (user?.role === "TECHNICIAN") return;
-                const res = await api.get("/analytics/dashboard");
-                if (res.data?.data?.stats) setStats(res.data.data.stats);
-                else setError("Invalid data format received from server");
-            } catch (e: any) {
-                if (user?.role !== "TECHNICIAN") {
-                    setError(e.response?.data?.message || e.message || "Failed to load dashboard");
-                }
-            }
-        };
-        void fetchStats();
-    }, [user]);
+    const { data: stats, error } = useQuery<DashboardStats>({
+        queryKey: ["dashboard-stats"],
+        queryFn: () => api.get("/analytics/dashboard").then((res) => {
+            if (!res.data?.data?.stats) throw new Error("Invalid data format received from server");
+            return res.data.data.stats;
+        }),
+        enabled: !!user && user.role !== "TECHNICIAN",
+    });
 
     if (!user) return <SkeletonShell />;
-    if (user.role === "TECHNICIAN") return <TechnicianView user={user} stats={stats} />;
+    if (user.role === "TECHNICIAN") return <TechnicianView user={user} stats={stats ?? null} />;
     if (error) {
         return (
             <div className="surface-card flex items-center gap-3 p-6 text-rose-700">
                 <AlertCircle className="h-5 w-5" />
-                <span>{error}</span>
+                <span>{(error as any).message ?? "Failed to load dashboard"}</span>
             </div>
         );
     }
