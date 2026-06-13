@@ -50,6 +50,7 @@ export function ReassignDialog({
     onReassigned,
 }: ReassignDialogProps) {
     const queryClient = useQueryClient();
+    const isAssigned = Boolean(currentTechId || currentVanId);
     const [assignmentType, setAssignmentType] = useState<"tech" | "van" | "unassign">(
         currentVanId ? "van" : currentTechId ? "tech" : "tech"
     );
@@ -81,7 +82,7 @@ export function ReassignDialog({
             await api.patch(`/schedule/jobs/${jobId}`, payload);
         },
         onSuccess: async () => {
-            toast({ title: "Job re-assigned" });
+            toast({ title: isAssigned ? "Job re-assigned" : "Job assigned" });
             await queryClient.invalidateQueries({ queryKey: ["unscheduled-jobs"] });
             onReassigned?.();
             onClose();
@@ -98,7 +99,7 @@ export function ReassignDialog({
         <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
             <DialogContent>
                 <DialogHeader>
-                    <DialogTitle>Re-assign job</DialogTitle>
+                    <DialogTitle>{isAssigned ? "Re-assign job" : "Assign job"}</DialogTitle>
                 </DialogHeader>
 
                 <div className="space-y-4">
@@ -213,7 +214,7 @@ export function ReassignDialog({
                             (assignmentType === "van" && !vanId)
                         }
                     >
-                        {mutation.isPending ? "Saving…" : "Re-assign"}
+                        {mutation.isPending ? "Saving…" : isAssigned ? "Re-assign" : "Assign"}
                     </Button>
                 </DialogFooter>
             </DialogContent>

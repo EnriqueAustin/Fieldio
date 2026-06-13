@@ -18,6 +18,7 @@ import { DispatchMap } from "../../../components/schedule/dispatch-map";
 import { UnscheduledJobsPanel } from "../../../components/schedule/unscheduled-jobs-panel";
 import { TechSuggestModal } from "../../../components/schedule/tech-suggest-modal";
 import { ReassignDialog } from "../../../components/schedule/reassign-dialog";
+import { toast } from "../../../components/ui/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { io, Socket } from "socket.io-client";
 import { useAuthStore } from "../../../store/auth";
@@ -268,8 +269,15 @@ export default function SchedulePage() {
                 scheduledStart: info.event.start,
                 scheduledEnd: info.event.end,
             });
-        } catch {
+            toast({ title: `Rescheduled to ${format(info.event.start, "EEE d MMM, p")}` });
+        } catch (err: any) {
+            // Surface the reason (e.g. backend 409 "Tech is already booked") instead
+            // of silently snapping the event back with no explanation.
             info.revert();
+            toast({
+                title: err?.response?.data?.message ?? "Could not reschedule job",
+                variant: "destructive",
+            });
         }
     };
 
@@ -288,8 +296,22 @@ export default function SchedulePage() {
             if (apiRef) {
                 await refreshCalendar(apiRef.view.activeStart, apiRef.view.activeEnd);
             }
-        } catch {
+            // Scheduling the time is only half the job — open the assign dialog
+            // prefilled with the dropped slot so the dispatcher picks a tech in one flow.
+            setReassignJob({
+                id: jobId,
+                title: info.event.title,
+                start: start.toISOString(),
+                end: end.toISOString(),
+                extendedProps: { techId: null, vanId: null, status: "REQUESTED" },
+            });
+            toast({ title: "Scheduled — now assign a technician" });
+        } catch (err: any) {
             info.event.remove();
+            toast({
+                title: err?.response?.data?.message ?? "Could not schedule job",
+                variant: "destructive",
+            });
         }
     };
 
@@ -662,6 +684,9 @@ export default function SchedulePage() {
 
             <TechSuggestModal jobId={suggestJobId} onClose={() => setSuggestJobId(null)} />
             <ReassignDialog
+                // Remount per job + slot so the dialog's fields prefill from the
+                // current selection instead of keeping the first job's state.
+                key={reassignJob ? `${reassignJob.id}:${reassignJob.start}` : "none"}
                 open={!!reassignJob}
                 onClose={() => setReassignJob(null)}
                 jobId={reassignJob?.id ?? null}
