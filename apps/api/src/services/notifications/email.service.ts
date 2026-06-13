@@ -70,10 +70,13 @@ const send = async (params: {
     }
 };
 
+const escapeHtml = (str: string): string =>
+    str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
 const wrap = (title: string, body: string) => `
 <!doctype html><html><body style="font-family: -apple-system, system-ui, sans-serif; background:#f6f7f9; padding:24px;">
   <div style="max-width:560px; margin:0 auto; background:#fff; border-radius:12px; padding:32px; box-shadow:0 1px 3px rgba(0,0,0,.05);">
-    <h1 style="font-size:20px; margin:0 0 16px;">${title}</h1>
+    <h1 style="font-size:20px; margin:0 0 16px;">${escapeHtml(title)}</h1>
     <div style="color:#374151; line-height:1.6;">${body}</div>
     <hr style="border:none; border-top:1px solid #e5e7eb; margin:24px 0;" />
     <p style="color:#9ca3af; font-size:12px;">Sent via Fieldio</p>
@@ -81,13 +84,22 @@ const wrap = (title: string, body: string) => `
 </body></html>`;
 
 export const emailService = {
+    sendRaw: (to: string, subject: string, body: string, companyId?: string) =>
+        send({
+            to,
+            subject,
+            template: 'raw',
+            companyId,
+            html: wrap(subject, `<pre style="font-family: inherit; white-space: pre-wrap; margin:0;">${escapeHtml(body)}</pre>`),
+        }),
+
     sendWelcomeEmail: (email: string, name: string, companyId?: string) =>
         send({
             to: email,
             subject: 'Welcome to Fieldio',
             template: 'welcome',
             companyId,
-            html: wrap('Welcome to Fieldio', `<p>Hi ${name},</p><p>Your account is ready.</p>`),
+            html: wrap('Welcome to Fieldio', `<p>Hi ${escapeHtml(name)},</p><p>Your account is ready.</p>`),
         }),
 
     sendJobAssigned: (email: string, jobTitle: string, jobId: string, companyId?: string) =>
@@ -99,7 +111,7 @@ export const emailService = {
             payload: { jobId },
             html: wrap(
                 'New job assigned',
-                `<p>You have been assigned to <strong>${jobTitle}</strong>.</p><p><a href="${config.WEB_URL}/jobs/${jobId}">View job</a></p>`
+                `<p>You have been assigned to <strong>${escapeHtml(jobTitle)}</strong>.</p><p><a href="${escapeHtml(config.WEB_URL)}/jobs/${encodeURIComponent(jobId)}">View job</a></p>`
             ),
         }),
 
@@ -117,7 +129,7 @@ export const emailService = {
             html: wrap(
                 'Your invoice is ready',
                 `<p>Total due: <strong>$${Number(invoice.total).toFixed(2)}</strong></p>
-                 <p><a href="${invoice.payUrl}" style="display:inline-block; background:#111827; color:#fff; padding:12px 20px; border-radius:8px; text-decoration:none;">View &amp; pay invoice</a></p>`
+                 <p><a href="${escapeHtml(invoice.payUrl)}" style="display:inline-block; background:#111827; color:#fff; padding:12px 20px; border-radius:8px; text-decoration:none;">View &amp; pay invoice</a></p>`
             ),
         }),
 
@@ -152,7 +164,7 @@ export const emailService = {
             html: wrap(
                 'Estimate ready',
                 `<p>Total: <strong>$${Number(estimate.total).toFixed(2)}</strong></p>
-                 <p><a href="${estimate.viewUrl}">View estimate</a></p>`
+                 <p><a href="${escapeHtml(estimate.viewUrl)}">View estimate</a></p>`
             ),
         }),
 
@@ -169,9 +181,9 @@ export const emailService = {
             companyId,
             html: wrap(
                 'We value your feedback',
-                `<p>Thank you for choosing <strong>${companyName}</strong>. We hope everything went well!</p>
+                `<p>Thank you for choosing <strong>${escapeHtml(companyName)}</strong>. We hope everything went well!</p>
                  <p>If you have a moment, we'd really appreciate a review:</p>
-                 <p><a href="${reviewUrl}" style="display:inline-block; background:#111827; color:#fff; padding:12px 20px; border-radius:8px; text-decoration:none;">Leave a review</a></p>
+                 <p><a href="${escapeHtml(reviewUrl)}" style="display:inline-block; background:#111827; color:#fff; padding:12px 20px; border-radius:8px; text-decoration:none;">Leave a review</a></p>
                  <p style="color:#6b7280; font-size:14px;">Your feedback helps us improve and helps others find quality service.</p>`
             ),
         }),

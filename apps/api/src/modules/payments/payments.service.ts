@@ -260,7 +260,26 @@ export const paymentsService = {
         });
     },
 
-    handlePayFastITN: async (body: Record<string, string>) => {
+    handlePayFastITN: async (body: Record<string, string>, sourceIp?: string) => {
+        const PAYFAST_ALLOWED_CIDRS = [
+            '197.97.145.', '41.74.179.', '102.222.168.',
+            '197.242.148.', '197.242.149.',
+            '127.0.0.1', '::1',
+        ];
+
+        if (sourceIp) {
+            const allowed = PAYFAST_ALLOWED_CIDRS.some((cidr) => sourceIp.startsWith(cidr));
+            if (!allowed) {
+                logger.warn({ sourceIp }, 'PayFast ITN: request from untrusted IP');
+                return { received: false };
+            }
+        }
+
+        if (!body.signature) {
+            logger.warn('PayFast ITN: missing signature');
+            return { received: false };
+        }
+
         const invoiceId = body.m_payment_id;
         if (!invoiceId) {
             logger.warn('PayFast ITN missing m_payment_id');
@@ -288,7 +307,7 @@ export const paymentsService = {
         const crypto = await import('crypto');
         const expectedSig = crypto.createHash('md5').update(toHash).digest('hex');
 
-        if (body.signature && body.signature !== expectedSig) {
+        if (body.signature !== expectedSig) {
             logger.warn({ invoiceId }, 'PayFast ITN: signature mismatch');
             return { received: false };
         }

@@ -26,9 +26,10 @@ const updateCustomerSchema = z.object({
 });
 
 export const customerService = {
-    findAll: async (companyId: string, page = 1, limit = 20, search?: string) => {
+    findAll: async (companyId: string, page = 1, limit = 20, search?: string, branchId?: string) => {
         const skip = (page - 1) * limit;
         const where: any = { companyId, deletedAt: null };
+        if (branchId) where.branchId = branchId;
 
         if (search) {
             where.OR = [

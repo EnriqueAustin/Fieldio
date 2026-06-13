@@ -10,6 +10,7 @@ const createJobSchema = z.object({
     customerId: z.string().uuid(),
     propertyId: z.string().uuid(),
     techId: z.string().uuid().optional(),
+    vanId: z.string().uuid().optional().nullable(),
     title: z.string().min(1),
     description: z.string().optional(),
     priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'EMERGENCY']).optional(),
@@ -31,6 +32,7 @@ const updateJobSchema = z.object({
     description: z.string().optional(),
     priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'EMERGENCY']).optional(),
     techId: z.string().uuid().nullable().optional(),
+    vanId: z.string().uuid().nullable().optional(),
     scheduledStart: z.string().datetime().nullable().optional(),
     scheduledEnd: z.string().datetime().nullable().optional(),
 });
@@ -76,9 +78,11 @@ const quickCreateSchema = z.object({
     description: z.string().optional(),
     priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'EMERGENCY']).optional(),
     techId: z.string().uuid().optional(),
+    vanId: z.string().uuid().optional().nullable(),
     scheduledStart: z.string().datetime().optional(),
     scheduledEnd: z.string().datetime().optional(),
     existingCustomerId: z.string().uuid().optional(),
+    templateId: z.string().uuid().optional(),
 });
 
 const JOB_NOTE_ACTION = 'JOB_NOTE_ADDED';
@@ -144,14 +148,15 @@ export const jobsService = {
                     customerId: parsed.customerId,
                     propertyId: parsed.propertyId,
                     techId: parsed.techId,
+                    vanId: parsed.vanId ?? null,
                     title: parsed.title,
                     description: parsed.description,
                     priority: parsed.priority ?? 'MEDIUM',
-                    status: parsed.techId ? 'ASSIGNED' : 'REQUESTED',
+                    status: (parsed.techId || parsed.vanId) ? 'ASSIGNED' : 'REQUESTED',
                     scheduledStart: parsed.scheduledStart ? new Date(parsed.scheduledStart) : null,
                     scheduledEnd: parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null,
                 },
-                include: { customer: true, property: true, tech: true },
+                include: { customer: true, property: true, tech: true, van: true },
             });
 
             if (parsed.lineItems?.length) {
@@ -209,6 +214,21 @@ export const jobsService = {
             }
         }
 
+        if (job.vanId) {
+            const vanMembers = await prisma.vanMember.findMany({
+                where: { vanId: job.vanId },
+                include: { user: true },
+            });
+            for (const member of vanMembers) {
+                if (member.userId !== job.techId) {
+                    await notificationService.notifyUser(
+                        member.userId, companyId, 'JOB_ASSIGNED',
+                        'New van job', `Your van has been assigned to: ${job.title}`
+                    );
+                }
+            }
+        }
+
         return job;
     },
 
@@ -224,7 +244,7 @@ export const jobsService = {
             if (!tech) throw new AppError('Technician not found', StatusCodes.NOT_FOUND);
         }
 
-        const wasUnassigned = !job.techId;
+        const wasUnassigned = !job.techId && !job.vanId;
         const updated = await prisma.job.update({
             where: { id },
             data: {
@@ -236,9 +256,9 @@ export const jobsService = {
                 scheduledEnd: parsed.scheduledEnd !== undefined
                     ? (parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null)
                     : undefined,
-                status: wasUnassigned && parsed.techId ? 'ASSIGNED' : undefined,
+                status: wasUnassigned && (parsed.techId || parsed.vanId) ? 'ASSIGNED' : undefined,
             },
-            include: { customer: true, property: true, tech: true },
+            include: { customer: true, property: true, tech: true, van: true },
         });
 
         await prisma.auditLog.create({
@@ -271,10 +291,24 @@ export const jobsService = {
         return updated;
     },
 
-    addLineItem: async (jobId: string, companyId: string, input: z.infer<typeof addLineItemSchema>) => {
+    addLineItem: async (jobId: string, companyId: string, input: z.infer<typeof addLineItemSchema>, userId?: string, userRole?: string) => {
         const parsed = addLineItemSchema.parse(input);
         const job = await prisma.job.findFirst({ where: { id: jobId, companyId, deletedAt: null } });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        if (userRole === 'TECHNICIAN' && userId) {
+            const isAssigned = job.techId === userId;
+            let isVanMate = false;
+            if (!isAssigned && job.vanId) {
+                const membership = await prisma.vanMember.findFirst({
+                    where: { userId, van: { id: job.vanId, companyId } },
+                });
+                isVanMate = !!membership;
+            }
+            if (!isAssigned && !isVanMate) {
+                throw new AppError('You can only add items to jobs assigned to you or your van', StatusCodes.FORBIDDEN);
+            }
+        }
 
         if (parsed.priceBookItemId) {
             const pbItem = await prisma.priceBookItem.findFirst({
@@ -311,16 +345,46 @@ export const jobsService = {
             });
 
             if (inventoryItem && inventoryItem.quantity >= parsed.quantity) {
+                const newQty = inventoryItem.quantity - Math.floor(parsed.quantity);
                 await prisma.inventoryItem.update({
                     where: { id: inventoryItem.id },
-                    data: { quantity: { decrement: Math.floor(parsed.quantity) } },
+                    data: { quantity: newQty },
                 });
                 socketService.emitToCompany(companyId, 'inventory:deducted', {
                     itemId: inventoryItem.id,
                     name: inventoryItem.name,
                     deducted: parsed.quantity,
-                    remaining: inventoryItem.quantity - parsed.quantity,
+                    remaining: newQty,
                 });
+
+                // Immediate par-level check for the affected van
+                if (inventoryItem.vanId) {
+                    const target = await prisma.vanInventoryTarget.findFirst({
+                        where: { vanId: inventoryItem.vanId, inventoryItemId: inventoryItem.id, active: true },
+                    });
+                    if (target && newQty < target.parLevel) {
+                        const open = await prisma.inventoryAlert.findFirst({
+                            where: {
+                                companyId, vanId: inventoryItem.vanId, inventoryItemId: inventoryItem.id, status: 'OPEN',
+                            },
+                        });
+                        if (!open) {
+                            await prisma.inventoryAlert.create({
+                                data: {
+                                    companyId,
+                                    vanId: inventoryItem.vanId,
+                                    inventoryItemId: inventoryItem.id,
+                                    message: `${inventoryItem.name} dropped below par after job consumption (${newQty}/${target.parLevel}).`,
+                                    currentQty: newQty,
+                                    targetQty: target.parLevel,
+                                },
+                            });
+                            socketService.emitToCompany(companyId, 'inventory:alert', {
+                                itemId: inventoryItem.id, vanId: inventoryItem.vanId, current: newQty, target: target.parLevel,
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -328,9 +392,23 @@ export const jobsService = {
         return item;
     },
 
-    removeLineItem: async (jobId: string, itemId: string, companyId: string) => {
+    removeLineItem: async (jobId: string, itemId: string, companyId: string, userId?: string, userRole?: string) => {
         const job = await prisma.job.findFirst({ where: { id: jobId, companyId, deletedAt: null } });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        if (userRole === 'TECHNICIAN' && userId) {
+            const isAssigned = job.techId === userId;
+            let isVanMate = false;
+            if (!isAssigned && job.vanId) {
+                const membership = await prisma.vanMember.findFirst({
+                    where: { userId, van: { id: job.vanId, companyId } },
+                });
+                isVanMate = !!membership;
+            }
+            if (!isAssigned && !isVanMate) {
+                throw new AppError('You can only modify items on jobs assigned to you or your van', StatusCodes.FORBIDDEN);
+            }
+        }
 
         const item = await prisma.jobLineItem.findFirst({ where: { id: itemId, jobId } });
         if (!item) throw new AppError('Line item not found', StatusCodes.NOT_FOUND);
@@ -340,10 +418,24 @@ export const jobsService = {
         return { deleted: true };
     },
 
-    addChecklistItem: async (jobId: string, companyId: string, input: z.infer<typeof addChecklistSchema>) => {
+    addChecklistItem: async (jobId: string, companyId: string, input: z.infer<typeof addChecklistSchema>, userId?: string, userRole?: string) => {
         const parsed = addChecklistSchema.parse(input);
         const job = await prisma.job.findFirst({ where: { id: jobId, companyId, deletedAt: null } });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        if (userRole === 'TECHNICIAN' && userId) {
+            const isAssigned = job.techId === userId;
+            let isVanMate = false;
+            if (!isAssigned && job.vanId) {
+                const membership = await prisma.vanMember.findFirst({
+                    where: { userId, van: { id: job.vanId, companyId } },
+                });
+                isVanMate = !!membership;
+            }
+            if (!isAssigned && !isVanMate) {
+                throw new AppError('You can only add checklist items to jobs assigned to you or your van', StatusCodes.FORBIDDEN);
+            }
+        }
 
         const item = await prisma.jobChecklist.create({
             data: { jobId, label: parsed.label },
@@ -372,6 +464,7 @@ export const jobsService = {
                 customer: true,
                 property: { include: { assets: true } },
                 tech: { select: { id: true, email: true, firstName: true, lastName: true, avatarUrl: true } },
+                van: { include: { members: { include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } } } } },
                 lineItems: true,
                 checklist: { orderBy: { id: 'asc' } },
                 estimate: true,
@@ -387,16 +480,45 @@ export const jobsService = {
 
         const notes = await getJobNotes(companyId, [job.id]);
 
-        return { ...job, notes };
+        const materialsCost = job.lineItems
+            .filter(li => li.type === 'MATERIAL')
+            .reduce((s, li) => s + Number(li.total), 0);
+        const laborRevenue = job.lineItems
+            .filter(li => li.type === 'LABOR')
+            .reduce((s, li) => s + Number(li.total), 0);
+        const serviceRevenue = job.lineItems
+            .filter(li => li.type === 'SERVICE')
+            .reduce((s, li) => s + Number(li.total), 0);
+        const totalRevenue = job.lineItems.reduce((s, li) => s + Number(li.total), 0);
+        const totalExpenses = job.expenses.reduce((s, e) => s + Number(e.amount), 0);
+
+        const costSummary = {
+            materialsCost,
+            laborRevenue,
+            serviceRevenue,
+            totalRevenue,
+            totalExpenses,
+            margin: totalRevenue - materialsCost - totalExpenses,
+        };
+
+        return { ...job, notes, costSummary };
     },
 
     getAssignedToTech: async (companyId: string, userId: string) => {
+        const vanMembership = await prisma.vanMember.findFirst({
+            where: { userId, van: { companyId, active: true } },
+            select: { vanId: true },
+        });
+
         const jobs = await prisma.job.findMany({
             where: {
                 companyId,
-                techId: userId,
                 deletedAt: null,
                 status: { notIn: ['COMPLETED', 'CANCELED'] },
+                OR: [
+                    { techId: userId },
+                    ...(vanMembership ? [{ vanId: vanMembership.vanId }] : []),
+                ],
             },
             orderBy: [{ scheduledStart: 'asc' }, { updatedAt: 'desc' }],
             include: {
@@ -406,6 +528,7 @@ export const jobsService = {
                 photos: { orderBy: { createdAt: 'desc' } },
                 signatures: { orderBy: { signedAt: 'desc' } },
                 lineItems: true,
+                van: { select: { id: true, name: true } },
             },
         });
 
@@ -417,13 +540,20 @@ export const jobsService = {
             notesByJobId.set(note.jobId, existing);
         }
 
-        return jobs.map((job) => ({ ...job, notes: notesByJobId.get(job.id) ?? [] }));
+        // Techs record what they used (item + quantity) but must not see what the
+        // company charges — strip pricing from line items before returning them.
+        return jobs.map((job) => ({
+            ...job,
+            lineItems: job.lineItems.map(({ unitPrice, total, ...rest }) => rest),
+            notes: notesByJobId.get(job.id) ?? [],
+        }));
     },
 
-    getAll: async (companyId: string, page = 1, limit = 20, status?: string) => {
+    getAll: async (companyId: string, page = 1, limit = 20, status?: string, branchId?: string) => {
         const skip = (page - 1) * limit;
         const where: any = { companyId, deletedAt: null };
         if (status) where.status = status;
+        if (branchId) where.branchId = branchId;
 
         const [items, total] = await Promise.all([
             prisma.job.findMany({
@@ -459,6 +589,11 @@ export const jobsService = {
             }
         }
 
+        // Generate tracker token on first EN_ROUTE so the customer's SMS link works.
+        const trackerToken = (status === 'EN_ROUTE' && !job.customerTrackingToken)
+            ? require('crypto').randomBytes(20).toString('hex')
+            : undefined;
+
         const updatedJob = await prisma.job.update({
             where: { id },
             data: {
@@ -466,12 +601,63 @@ export const jobsService = {
                 ...(status === 'EN_ROUTE' && !job.actualStart ? { actualStart: new Date() } : {}),
                 ...(status === 'ON_SITE' && !job.actualStart ? { actualStart: new Date() } : {}),
                 ...(status === 'COMPLETED' ? { actualEnd: new Date() } : {}),
+                ...(trackerToken ? { customerTrackingToken: trackerToken, onMyWaySentAt: new Date() } : {}),
+                ...(status === 'ON_SITE' ? { arrivedNotifiedAt: new Date() } : {}),
             },
             include: {
                 tech: { select: { id: true, email: true, firstName: true, lastName: true } },
                 customer: true,
             },
         });
+
+        // Timeline event
+        await prisma.jobTimelineEvent.create({
+            data: {
+                companyId, jobId: id,
+                type: 'STATUS_CHANGE',
+                message: `Status: ${job.status} → ${status}`,
+                actorId: userId,
+            },
+        }).catch(() => undefined);
+
+        // Auto time-entries: TRAVEL during EN_ROUTE, WRENCH while ON_SITE.
+        if (updatedJob.techId) {
+            // Stop any open time entry for this job + user when leaving an active state
+            if (status === 'ON_SITE' || status === 'COMPLETED' || status === 'PAUSED' || status === 'CANCELED') {
+                const openEntries = await prisma.timeEntry.findMany({
+                    where: { jobId: id, userId: updatedJob.techId, endTime: null },
+                });
+                for (const e of openEntries) {
+                    const end = new Date();
+                    await prisma.timeEntry.update({
+                        where: { id: e.id },
+                        data: {
+                            endTime: end,
+                            duration: Math.floor((end.getTime() - e.startTime.getTime()) / 1000),
+                        },
+                    });
+                }
+            }
+            // Start the appropriate entry on entering EN_ROUTE / ON_SITE
+            if (status === 'EN_ROUTE') {
+                await prisma.timeEntry.create({
+                    data: {
+                        companyId, jobId: id, userId: updatedJob.techId,
+                        type: 'TRAVEL', startTime: new Date(),
+                        description: 'Auto-clocked on EN_ROUTE',
+                    },
+                });
+            }
+            if (status === 'ON_SITE') {
+                await prisma.timeEntry.create({
+                    data: {
+                        companyId, jobId: id, userId: updatedJob.techId,
+                        type: 'WRENCH', startTime: new Date(),
+                        description: 'Auto-clocked on ON_SITE',
+                    },
+                });
+            }
+        }
 
         await prisma.auditLog.create({
             data: {
@@ -488,9 +674,11 @@ export const jobsService = {
             : 'Your technician';
 
         if (status === 'EN_ROUTE' && updatedJob.customer) {
+            const token = updatedJob.customerTrackingToken;
+            const trackingUrl = token ? `${process.env.WEB_URL || ''}/track/${token}` : '';
             await notificationService.notifyCustomer(updatedJob.customerId, companyId, 'JOB_EN_ROUTE', {
                 techName,
-                trackingUrl: `${process.env.WEB_URL || ''}/track/${id}`,
+                trackingUrl,
             });
         }
 
@@ -504,6 +692,17 @@ export const jobsService = {
             await notificationService.notifyCustomer(updatedJob.customerId, companyId, 'JOB_COMPLETED', {
                 jobTitle: updatedJob.title,
             });
+
+            // Leave-behind summary PDF — fire & forget so completion doesn't block on storage/email.
+            const { jobSummaryService } = await import('./summary-pdf.service');
+            jobSummaryService
+                .generateAndSend(id, companyId, { email: true })
+                .catch((err) => {
+                    require('../../utils/logger').logger.warn(
+                        { jobId: id, err: err.message },
+                        'Job summary PDF generation failed',
+                    );
+                });
         }
 
         socketService.emitToCompany(companyId, 'job:updated', updatedJob);
@@ -638,6 +837,10 @@ export const jobsService = {
                 },
             });
 
+            const template = parsed.templateId
+                ? await tx.jobTemplate.findFirst({ where: { id: parsed.templateId, companyId } })
+                : null;
+
             const job = await tx.job.create({
                 data: {
                     companyId,
@@ -645,15 +848,41 @@ export const jobsService = {
                     customerId,
                     propertyId: property.id,
                     techId: parsed.techId,
+                    vanId: parsed.vanId ?? null,
+                    templateId: template?.id,
                     title: parsed.title,
-                    description: parsed.description,
-                    priority: parsed.priority ?? 'MEDIUM',
-                    status: parsed.techId ? 'ASSIGNED' : 'REQUESTED',
+                    description: parsed.description ?? template?.defaultDescription ?? undefined,
+                    priority: parsed.priority ?? template?.defaultPriority ?? 'MEDIUM',
+                    requiredSkills: template?.requiredSkills ?? [],
+                    status: (parsed.techId || parsed.vanId) ? 'ASSIGNED' : 'REQUESTED',
                     scheduledStart: parsed.scheduledStart ? new Date(parsed.scheduledStart) : null,
                     scheduledEnd: parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null,
                 },
-                include: { customer: true, property: true, tech: true },
+                include: { customer: true, property: true, tech: true, van: true },
             });
+
+            if (template) {
+                const tplLineItems = (template.defaultLineItems as any[]) ?? [];
+                if (tplLineItems.length) {
+                    await tx.jobLineItem.createMany({
+                        data: tplLineItems.map((li) => ({
+                            jobId: job.id,
+                            name: li.name,
+                            description: li.description,
+                            quantity: li.quantity,
+                            unitPrice: li.unitPrice,
+                            total: li.quantity * li.unitPrice,
+                            type: (li.type ?? 'SERVICE') as any,
+                        })),
+                    });
+                }
+                const tplChecklist = (template.defaultChecklist as any[]) ?? [];
+                if (tplChecklist.length) {
+                    await tx.jobChecklist.createMany({
+                        data: tplChecklist.map((c) => ({ jobId: job.id, label: c.label })),
+                    });
+                }
+            }
 
             await tx.auditLog.create({
                 data: {
@@ -661,7 +890,7 @@ export const jobsService = {
                     action: 'JOB_CREATED',
                     entityId: job.id,
                     entityType: 'JOB',
-                    metadata: { title: parsed.title, quickCreate: true },
+                    metadata: { title: parsed.title, quickCreate: true, templateId: template?.id },
                 },
             });
 

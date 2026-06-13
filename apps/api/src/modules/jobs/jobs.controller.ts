@@ -43,7 +43,8 @@ export const jobsController = {
         const page = Number(req.query.page) || 1;
         const limit = Number(req.query.limit) || 20;
         const status = req.query.status as string;
-        const result = await jobsService.getAll(req.user!.companyId, page, limit, status);
+        const branchId = req.query.branchId as string | undefined;
+        const result = await jobsService.getAll(req.user!.companyId, page, limit, status, branchId);
         res.status(StatusCodes.OK).json({ status: 'success', data: result });
     },
 
@@ -81,17 +82,23 @@ export const jobsController = {
     },
 
     addLineItem: async (req: Request, res: Response) => {
-        const item = await jobsService.addLineItem(req.params.id, req.user!.companyId, req.body);
+        const item = await jobsService.addLineItem(
+            req.params.id, req.user!.companyId, req.body, req.user!.userId, req.user!.role
+        );
         res.status(StatusCodes.CREATED).json({ status: 'success', data: { item } });
     },
 
     removeLineItem: async (req: Request, res: Response) => {
-        await jobsService.removeLineItem(req.params.id, req.params.itemId, req.user!.companyId);
+        await jobsService.removeLineItem(
+            req.params.id, req.params.itemId, req.user!.companyId, req.user!.userId, req.user!.role
+        );
         res.status(StatusCodes.OK).json({ status: 'success' });
     },
 
     addChecklistItem: async (req: Request, res: Response) => {
-        const item = await jobsService.addChecklistItem(req.params.id, req.user!.companyId, req.body);
+        const item = await jobsService.addChecklistItem(
+            req.params.id, req.user!.companyId, req.body, req.user!.userId, req.user!.role
+        );
         res.status(StatusCodes.CREATED).json({ status: 'success', data: { item } });
     },
 

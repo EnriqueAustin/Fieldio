@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { z } from 'zod';
 import { analyticsService } from './analytics.service';
+import { kpiService } from './kpi.service';
 
 const rangeSchema = z.object({
     from: z.string().datetime().optional(),
@@ -63,5 +64,17 @@ export const analyticsController = {
         const months = Number(req.query.months) || 6;
         const report = await analyticsService.getAvgTicketTrend(req.user!.companyId, months);
         res.status(StatusCodes.OK).json({ status: 'success', data: { report } });
+    },
+
+    getKpiSnapshot: async (req: Request, res: Response) => {
+        const days = Number(req.query.days) || 30;
+        const snapshot = await kpiService.snapshot(req.user!.companyId, days);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { snapshot } });
+    },
+
+    getKpiHistory: async (req: Request, res: Response) => {
+        const limit = Number(req.query.limit) || 30;
+        const history = await kpiService.history(req.user!.companyId, limit);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { history } });
     },
 };

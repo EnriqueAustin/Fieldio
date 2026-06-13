@@ -83,6 +83,9 @@ const send = async (params: {
 export const whatsappService = {
     isConfigured,
 
+    sendText: (phone: string, body: string, companyId?: string) =>
+        send({ to: phone, template: 'inbox_reply', companyId, body }),
+
     sendJobEnRoute: (phone: string, techName: string, trackingUrl?: string, companyId?: string) =>
         send({
             to: phone,

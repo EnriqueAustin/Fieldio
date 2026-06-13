@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { supplierController } from '../modules/suppliers/suppliers.controller';
 import { purchaseOrderController } from '../modules/purchase-orders/purchase-orders.controller';
-import { requireUser } from '../middleware/auth';
+import { requireUser, restrictTo } from '../middleware/auth';
 import { catchAsync } from '../utils/catchAsync';
 
 export const supplierRouter = Router();
 
 supplierRouter.use(requireUser);
+supplierRouter.use(restrictTo('ADMIN', 'OFFICE'));
 
 // Suppliers
 supplierRouter.get('/', catchAsync(supplierController.getAll));

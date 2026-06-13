@@ -7,4 +7,4 @@ export const authRouter = Router();
 authRouter.post('/register', catchAsync(authController.register));
 authRouter.post('/login', catchAsync(authController.login));
 authRouter.post('/refresh', catchAsync(authController.refresh));
-authRouter.post('/logout', authController.logout);
+authRouter.post('/logout', catchAsync(authController.logout));

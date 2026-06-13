@@ -3,103 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "../../lib/utils";
-import {
-    LayoutDashboard,
-    Calendar,
-    Users,
-    Briefcase,
-    Settings,
-    LogOut,
-    Building2,
-    Package,
-    BookOpen,
-    Bell,
-    Clock,
-    UserCog,
-    Search,
-    ChevronsUpDown,
-    Zap,
-    Inbox,
-    Truck,
-    BarChart3,
-    FolderKanban,
-    FileSignature,
-    Crown,
-    Megaphone,
-    ClipboardCheck,
-    HardHat,
-    CreditCard,
-    Wrench,
-    Shield,
-    Award,
-} from "lucide-react";
+import { LogOut, Search, ChevronsUpDown, Zap } from "lucide-react";
 import { useAuthStore } from "../../store/auth";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { MobileNav } from "./mobile-nav";
 import { NotificationBell } from "../notifications/notification-bell";
-
-type NavItem = { label: string; href: string; icon: any };
-type NavGroup = { label?: string; items: NavItem[] };
-
-const navGroups: NavGroup[] = [
-    {
-        items: [
-            { label: "Dashboard", href: "/", icon: LayoutDashboard },
-            { label: "Projects", href: "/projects", icon: FolderKanban },
-            { label: "Schedule", href: "/schedule", icon: Calendar },
-            { label: "Jobs", href: "/jobs", icon: Briefcase },
-            { label: "Bookings", href: "/bookings", icon: Inbox },
-            { label: "Customers", href: "/customers", icon: Users },
-        ],
-    },
-    {
-        label: "Finance",
-        items: [
-            { label: "Memberships", href: "/memberships", icon: Crown },
-            { label: "Financing", href: "/financing", icon: CreditCard },
-            { label: "Campaigns", href: "/campaigns", icon: Megaphone },
-        ],
-    },
-    {
-        label: "Operations",
-        items: [
-            { label: "Digital Forms", href: "/forms", icon: FileSignature },
-            { label: "Time Tracking", href: "/time-tracking", icon: Clock },
-            { label: "Inventory", href: "/inventory", icon: Package },
-            { label: "Suppliers", href: "/suppliers", icon: Truck },
-            { label: "Subcontractors", href: "/subcontractors", icon: HardHat },
-            { label: "Permits", href: "/permits", icon: ClipboardCheck },
-            { label: "Flat Rate", href: "/flat-rate", icon: Wrench },
-            { label: "Price Book", href: "/settings/price-book", icon: BookOpen },
-            { label: "Warranties", href: "/warranty-claims", icon: Shield },
-            { label: "Certifications", href: "/certifications", icon: Award },
-            { label: "Reports", href: "/reports", icon: BarChart3 },
-            { label: "Hours", href: "/settings/business-hours", icon: Clock },
-        ],
-    },
-    {
-        label: "Workspace",
-        items: [
-            { label: "Team", href: "/settings/users", icon: UserCog },
-            { label: "Notifications", href: "/settings/notifications", icon: Bell },
-            { label: "Company", href: "/settings/company", icon: Building2 },
-        ],
-    },
-];
-
-const techNavGroups: NavGroup[] = [
-    {
-        items: [
-            { label: "My Jobs", href: "/", icon: Briefcase },
-        ],
-    },
-    {
-        label: "Settings",
-        items: [
-            { label: "Notifications", href: "/settings/notifications", icon: Bell },
-        ],
-    },
-];
+import { CallerIdPopup } from "../notifications/caller-id-popup";
+import { getNavGroupsForRole } from "../../lib/nav-config";
+import { OfflineBanner } from "../offline/offline-banner";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
@@ -137,7 +48,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
                 {/* Nav */}
                 <div className="flex-1 overflow-y-auto scrollbar-thin px-3 py-4">
-                    {(user?.role === "TECHNICIAN" ? techNavGroups : navGroups).map((group, gi) => (
+                    {getNavGroupsForRole(user?.role).map((group, gi) => (
                         <div key={gi} className={gi > 0 ? "mt-6" : ""}>
                             {group.label && (
                                 <div className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
@@ -232,10 +143,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     </div>
                 </header>
 
+                {user?.role === "TECHNICIAN" && <OfflineBanner />}
+
                 <main className="page-shell">{children}</main>
             </div>
 
             <MobileNav />
+            <CallerIdPopup />
         </div>
     );
 }

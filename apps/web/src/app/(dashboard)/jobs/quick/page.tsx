@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +17,12 @@ interface Tech {
     email: string;
 }
 
+interface VanOption {
+    id: string;
+    name: string;
+    registration?: string | null;
+}
+
 interface ExistingCustomer {
     id: string;
     name: string;
@@ -24,9 +30,23 @@ interface ExistingCustomer {
     email?: string;
 }
 
+interface JobTemplate {
+    id: string;
+    name: string;
+    defaultDurationMin: number | null;
+    defaultPriority: string;
+    requiredSkills: string[];
+    defaultLineItems: Array<{ name: string; quantity: number; unitPrice: number }>;
+    defaultDescription: string | null;
+}
+
 export default function QuickJobPage() {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const [techs, setTechs] = useState<Tech[]>([]);
+    const [vans, setVans] = useState<VanOption[]>([]);
+    const [templates, setTemplates] = useState<JobTemplate[]>([]);
+    const [selectedTemplateId, setSelectedTemplateId] = useState("");
     const [existingCustomers, setExistingCustomers] = useState<ExistingCustomer[]>([]);
     const [customerSearch, setCustomerSearch] = useState("");
     const [useExisting, setUseExisting] = useState(false);
@@ -46,6 +66,7 @@ export default function QuickJobPage() {
         description: "",
         priority: "MEDIUM" as string,
         techId: "",
+        vanId: "",
         scheduledStart: "",
     });
 
@@ -54,10 +75,41 @@ export default function QuickJobPage() {
             const users = res.data?.data?.users ?? [];
             setTechs(users.filter((u: any) => u.role === "TECHNICIAN" && u.status === "ACTIVE"));
         });
+        api.get("/vans").then((res) => {
+            setVans((res.data?.data?.vans ?? []).filter((v: any) => v.active).map((v: any) => ({ id: v.id, name: v.name, registration: v.registration })));
+        }).catch(() => {});
         api.get("/customers?limit=200").then((res) => {
             setExistingCustomers(res.data?.data?.items ?? []);
         });
+        api.get("/job-templates").then((res) => {
+            setTemplates(res.data?.data?.templates ?? []);
+        }).catch(() => {});
     }, []);
+
+    // Caller-ID pre-fill from query params
+    useEffect(() => {
+        const phone = searchParams.get("phone");
+        const customerId = searchParams.get("customerId");
+        if (customerId && existingCustomers.length) {
+            const c = existingCustomers.find((x) => x.id === customerId);
+            if (c) selectExistingCustomer(c);
+        } else if (phone) {
+            setForm((f) => ({ ...f, customerPhone: phone }));
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [searchParams, existingCustomers.length]);
+
+    const applyTemplate = (templateId: string) => {
+        setSelectedTemplateId(templateId);
+        const tpl = templates.find((t) => t.id === templateId);
+        if (!tpl) return;
+        setForm((f) => ({
+            ...f,
+            title: f.title || tpl.name,
+            description: f.description || tpl.defaultDescription || "",
+            priority: tpl.defaultPriority || f.priority,
+        }));
+    };
 
     const filteredCustomers = existingCustomers.filter(
         (c) =>
@@ -99,10 +151,14 @@ export default function QuickJobPage() {
                 description: form.description || undefined,
                 priority: form.priority,
                 techId: form.techId || undefined,
+                vanId: form.vanId || undefined,
                 scheduledStart: form.scheduledStart ? new Date(form.scheduledStart).toISOString() : undefined,
             };
             if (form.existingCustomerId) {
                 payload.existingCustomerId = form.existingCustomerId;
+            }
+            if (selectedTemplateId) {
+                payload.templateId = selectedTemplateId;
             }
             const res = await api.post("/jobs/quick", payload);
             router.push(`/jobs/${res.data.data.job.id}`);
@@ -257,6 +313,28 @@ export default function QuickJobPage() {
             {/* Job Section */}
             <div className="surface-card p-6 space-y-4">
                 <h2 className="font-semibold">Job Details</h2>
+                {templates.length > 0 && (
+                    <div className="space-y-2">
+                        <Label>Use template (optional)</Label>
+                        <select
+                            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                            value={selectedTemplateId}
+                            onChange={(e) => applyTemplate(e.target.value)}
+                        >
+                            <option value="">— None —</option>
+                            {templates.map((t) => (
+                                <option key={t.id} value={t.id}>
+                                    {t.name} {t.defaultDurationMin ? `(${t.defaultDurationMin} min)` : ""}
+                                </option>
+                            ))}
+                        </select>
+                        {selectedTemplateId && (
+                            <p className="text-xs text-muted-foreground">
+                                Template will pre-fill title, description, line items, and checklist on the new job.
+                            </p>
+                        )}
+                    </div>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="col-span-full space-y-2">
                         <Label>Job Title *</Label>
@@ -299,6 +377,21 @@ export default function QuickJobPage() {
                             {techs.map((t) => (
                                 <option key={t.id} value={t.id}>
                                     {techName(t)}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                    <div className="space-y-2">
+                        <Label>Assign Van / Team</Label>
+                        <select
+                            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                            value={form.vanId}
+                            onChange={(e) => setForm({ ...form, vanId: e.target.value })}
+                        >
+                            <option value="">No van</option>
+                            {vans.map((v) => (
+                                <option key={v.id} value={v.id}>
+                                    {v.name}{v.registration ? ` (${v.registration})` : ""}
                                 </option>
                             ))}
                         </select>

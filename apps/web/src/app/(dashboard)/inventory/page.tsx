@@ -20,13 +20,20 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { cn } from "../../../lib/utils";
 
+interface VanOption {
+    id: string;
+    name: string;
+}
+
 interface InventoryItem {
     id: string;
     name: string;
     sku: string;
     quantity: number;
     minLevel: number;
+    unitCost: string | null;
     location: "WAREHOUSE" | "VAN";
+    van?: { id: string; name: string } | null;
 }
 
 const createItemSchema = z.object({
@@ -43,6 +50,7 @@ export default function InventoryPage() {
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [query, setQuery] = useState("");
     const [filter, setFilter] = useState<"ALL" | "LOW" | "WAREHOUSE" | "VAN">("ALL");
+    const [vanFilter, setVanFilter] = useState<string>("ALL");
     const { register, handleSubmit, reset } = useForm({ resolver: zodResolver(createItemSchema) });
 
     const { data } = useQuery({
@@ -50,6 +58,12 @@ export default function InventoryPage() {
         queryFn: () => api.get("/operations/inventory").then((res) => res.data.data.items as InventoryItem[]),
     });
     const items: InventoryItem[] = data ?? [];
+
+    const { data: vansData } = useQuery<VanOption[]>({
+        queryKey: ["vans-list"],
+        queryFn: () => api.get("/vans").then((r) => (r.data.data.vans as any[]).map((v: any) => ({ id: v.id, name: v.name }))),
+    });
+    const vanOptions: VanOption[] = vansData ?? [];
 
     const onSubmit = async (data: any) => {
         await api.post("/operations/inventory", { ...data, minLevel: data.minLevel || 5 });
@@ -72,12 +86,17 @@ export default function InventoryPage() {
                 if (filter === "VAN") return i.location === "VAN";
                 return true;
             })
+            .filter((i) => {
+                if (vanFilter === "ALL") return true;
+                if (vanFilter === "WAREHOUSE") return !i.van;
+                return i.van?.id === vanFilter;
+            })
             .filter((i) =>
                 query
                     ? `${i.name} ${i.sku}`.toLowerCase().includes(query.toLowerCase())
                     : true
             );
-    }, [items, filter, query]);
+    }, [items, filter, vanFilter, query]);
 
     const lowStockCount = items.filter((i) => i.quantity <= i.minLevel).length;
     const totalValue = items.reduce((acc, i) => acc + i.quantity, 0);
@@ -191,6 +210,19 @@ export default function InventoryPage() {
                         );
                     })}
                 </div>
+                {vanOptions.length > 0 && (
+                    <select
+                        value={vanFilter}
+                        onChange={(e) => setVanFilter(e.target.value)}
+                        className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium"
+                    >
+                        <option value="ALL">All locations</option>
+                        <option value="WAREHOUSE">Warehouse only</option>
+                        {vanOptions.map((v) => (
+                            <option key={v.id} value={v.id}>{v.name}</option>
+                        ))}
+                    </select>
+                )}
             </div>
 
             {/* Table */}
@@ -251,7 +283,7 @@ export default function InventoryPage() {
                                                 ) : (
                                                     <Truck className="h-3.5 w-3.5 text-blue-500" />
                                                 )}
-                                                {item.location === "WAREHOUSE" ? "Warehouse" : "Van"}
+                                                {item.van ? item.van.name : item.location === "WAREHOUSE" ? "Warehouse" : "Van"}
                                             </span>
                                         </td>
                                         <td className="px-6 py-3.5">

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { paymentsController } from '../modules/payments/payments.controller';
 import { paymentsService } from '../modules/payments/payments.service';
-import { requireUser } from '../middleware/auth';
+import { requireUser, restrictTo } from '../middleware/auth';
 import { catchAsync } from '../utils/catchAsync';
 import { logger } from '../utils/logger';
 
@@ -34,7 +34,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
         res.json(result);
     } catch (err: any) {
         logger.error({ err: err.message }, 'Stripe webhook error');
-        res.status(400).send(`Webhook error: ${err.message}`);
+        res.status(400).send('Webhook processing failed');
     }
 };
 
@@ -45,9 +45,11 @@ export const paymentsRouter = Router();
 paymentsRouter.use(requireUser);
 paymentsRouter.get(
     '/invoices/:invoiceId/pay-link',
+    restrictTo('ADMIN', 'OFFICE'),
     catchAsync(paymentsController.getPayLink)
 );
 paymentsRouter.post(
     '/invoices/:invoiceId/record',
+    restrictTo('ADMIN', 'OFFICE'),
     catchAsync(paymentsController.recordManual)
 );

@@ -24,13 +24,25 @@ interface Job {
 
 const FILTERS = ["ALL", "REQUESTED", "ASSIGNED", "EN_ROUTE", "ON_SITE", "COMPLETED"] as const;
 
+interface Branch { id: string; name: string }
+
 export default function JobsPage() {
     const [filter, setFilter] = useState<(typeof FILTERS)[number]>("ALL");
     const [query, setQuery] = useState("");
+    const [branchId, setBranchId] = useState<string>(() =>
+        (typeof window !== "undefined" && localStorage.getItem("branchFilter")) || ""
+    );
+
+    const { data: branchesData } = useQuery<Branch[]>({
+        queryKey: ["branches"],
+        queryFn: () => api.get("/branches").then(r => r.data.data.branches),
+    });
+    const branches = branchesData ?? [];
 
     const { data, isLoading: loading } = useQuery({
-        queryKey: ["jobs"],
-        queryFn: () => api.get("/jobs").then((res) => res.data.data.items ?? []),
+        queryKey: ["jobs", branchId],
+        queryFn: () => api.get("/jobs", { params: branchId ? { branchId } : {} })
+            .then((res) => res.data.data.items ?? []),
     });
     const jobs: Job[] = data ?? [];
 
@@ -90,6 +102,19 @@ export default function JobsPage() {
                         className="w-full rounded-lg border border-border bg-background/60 pl-9 pr-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]"
                     />
                 </div>
+                {branches.length > 0 && (
+                    <select
+                        value={branchId}
+                        onChange={(e) => {
+                            setBranchId(e.target.value);
+                            if (typeof window !== "undefined") localStorage.setItem("branchFilter", e.target.value);
+                        }}
+                        className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium"
+                    >
+                        <option value="">All branches</option>
+                        {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                    </select>
+                )}
                 <div className="flex items-center gap-1 overflow-x-auto scrollbar-thin">
                     {FILTERS.map((f) => {
                         const active = filter === f;

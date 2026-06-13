@@ -17,8 +17,11 @@ export const portalController = {
 
     approveEstimate: async (req: Request, res: Response) => {
         const body = z.object({
-            signerName: z.string().min(1),
-            signatureUrl: z.string().min(1),
+            signerName: z.string().min(1).max(200),
+            signatureUrl: z.string().min(1).max(5000).refine(
+                (url) => url.startsWith('https://') || url.startsWith('data:image/'),
+                { message: 'Signature URL must be an HTTPS URL or a data:image URI' }
+            ),
         }).parse(req.body);
 
         const estimate = await portalService.approveEstimateViaPortal(

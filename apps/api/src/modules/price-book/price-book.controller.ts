@@ -6,7 +6,7 @@ export const priceBookController = {
     getAll: async (req: Request, res: Response) => {
         const includeInactive = req.query.includeInactive === 'true';
         const category = req.query.category as string | undefined;
-        const items = await priceBookService.getAll(req.user!.companyId, includeInactive, category);
+        const items = await priceBookService.getAll(req.user!.companyId, includeInactive, category, req.user!.role);
         res.status(StatusCodes.OK).json({ status: 'success', data: { items } });
     },
 
@@ -16,7 +16,7 @@ export const priceBookController = {
     },
 
     getOne: async (req: Request, res: Response) => {
-        const item = await priceBookService.getOne(req.params.id, req.user!.companyId);
+        const item = await priceBookService.getOne(req.params.id, req.user!.companyId, req.user!.role);
         res.status(StatusCodes.OK).json({ status: 'success', data: { item } });
     },
 

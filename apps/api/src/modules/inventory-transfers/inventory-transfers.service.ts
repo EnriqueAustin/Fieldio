@@ -7,6 +7,7 @@ const createTransferSchema = z.object({
     inventoryItemId: z.string().uuid(),
     fromLocation: z.enum(['WAREHOUSE', 'VAN']),
     toLocation: z.enum(['WAREHOUSE', 'VAN']),
+    toVanId: z.string().uuid().optional(),
     quantity: z.number().int().positive(),
     notes: z.string().optional(),
 });
@@ -79,13 +80,15 @@ export const inventoryTransfersService = {
                 data: { quantity: sourceItem.quantity - transfer.quantity },
             });
 
-            // Find or create destination item
+            const toVanId = (transfer as any).toVanId ?? null;
+
             const destItem = await tx.inventoryItem.findFirst({
                 where: {
                     companyId,
                     name: sourceItem.name,
                     sku: sourceItem.sku,
-                    location: transfer.toLocation
+                    location: transfer.toLocation,
+                    ...(toVanId ? { vanId: toVanId } : { vanId: null }),
                 }
             });
 
@@ -101,7 +104,9 @@ export const inventoryTransfersService = {
                         name: sourceItem.name,
                         sku: sourceItem.sku,
                         minLevel: sourceItem.minLevel,
+                        unitCost: sourceItem.unitCost,
                         location: transfer.toLocation,
+                        vanId: toVanId,
                         quantity: transfer.quantity,
                     }
                 });

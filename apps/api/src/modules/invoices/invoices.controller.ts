@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
+import { z } from 'zod';
 import { invoiceService } from './invoices.service';
 
 export const invoiceController = {
@@ -14,8 +15,8 @@ export const invoiceController = {
     },
 
     getAll: async (req: Request, res: Response) => {
-        const page = Number(req.query.page) || 1;
-        const limit = Number(req.query.limit) || 20;
+        const page = Math.max(1, Number(req.query.page) || 1);
+        const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
         const status = req.query.status as string | undefined;
         const result = await invoiceService.getAll(req.user!.companyId, page, limit, status);
         res.status(StatusCodes.OK).json({ status: 'success', data: result });
@@ -37,7 +38,7 @@ export const invoiceController = {
     },
 
     sendBulkReminders: async (req: Request, res: Response) => {
-        const { ids } = req.body;
+        const { ids } = z.object({ ids: z.array(z.string().uuid()).min(1).max(50) }).parse(req.body);
         const results = await invoiceService.sendBulkReminders(ids, req.user!.companyId);
         res.status(StatusCodes.OK).json({ status: 'success', data: { results } });
     },

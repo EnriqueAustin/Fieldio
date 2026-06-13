@@ -71,6 +71,9 @@ const send = async (params: {
 };
 
 export const smsService = {
+    sendText: (phone: string, body: string, companyId?: string) =>
+        send({ to: phone, template: 'inbox_reply', companyId, body }),
+
     sendJobEnRoute: (phone: string, techName: string, eta?: string, companyId?: string) =>
         send({
             to: phone,

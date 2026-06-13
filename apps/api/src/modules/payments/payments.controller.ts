@@ -21,7 +21,8 @@ export const paymentsController = {
     },
 
     handlePayFastITN: async (req: Request, res: Response) => {
-        const result = await paymentsService.handlePayFastITN(req.body);
+        const sourceIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || '';
+        const result = await paymentsService.handlePayFastITN(req.body, sourceIp);
         res.status(result.received ? StatusCodes.OK : StatusCodes.BAD_REQUEST)
             .send(result.received ? 'OK' : 'FAIL');
     },

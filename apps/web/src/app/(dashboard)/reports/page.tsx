@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import api from "../../../lib/api";
-import { BarChart3, Clock, DollarSign, TrendingUp, Users } from "lucide-react";
+import { BarChart3, Clock, DollarSign, Download, TrendingUp, Users } from "lucide-react";
 
 type Tab = "costing" | "timesheet" | "earnings";
 
@@ -53,9 +53,34 @@ export default function ReportsPage() {
 
     return (
         <div className="space-y-6">
-            <div>
-                <h1 className="page-title">Reports</h1>
-                <p className="page-subtitle">Job costing, timesheets, and technician earnings.</p>
+            <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+                <div>
+                    <h1 className="page-title">Reports</h1>
+                    <p className="page-subtitle">Job costing, timesheets, and technician earnings.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                    <a
+                        href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"}/finance/export/sage/invoices`}
+                        className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-3 py-2 text-sm font-medium transition hover:bg-slate-50"
+                    >
+                        <Download className="h-4 w-4" />
+                        Sage Invoices
+                    </a>
+                    <a
+                        href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"}/finance/export/sage/expenses`}
+                        className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-3 py-2 text-sm font-medium transition hover:bg-slate-50"
+                    >
+                        <Download className="h-4 w-4" />
+                        Sage Expenses
+                    </a>
+                    <a
+                        href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"}/finance/export/sage/job-costing`}
+                        className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-3 py-2 text-sm font-medium transition hover:bg-slate-50"
+                    >
+                        <Download className="h-4 w-4" />
+                        Sage Job Costing
+                    </a>
+                </div>
             </div>
 
             <div className="flex gap-1 border-b border-border">

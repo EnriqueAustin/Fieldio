@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -68,6 +69,21 @@ interface PriceBookItem {
     sku?: string | null;
 }
 
+interface VanMember {
+    id: string;
+    role: string;
+    user: { id: string; email: string; firstName?: string | null; lastName?: string | null };
+}
+
+interface CostSummary {
+    materialsCost: number;
+    laborRevenue: number;
+    serviceRevenue: number;
+    totalRevenue: number;
+    totalExpenses: number;
+    margin: number;
+}
+
 interface Job {
     id: string;
     title: string;
@@ -80,7 +96,9 @@ interface Job {
     checklist: { id: string; label: string; isCompleted: boolean }[];
     lineItems: LineItem[];
     tech: { firstName?: string; lastName?: string; email: string } | null;
+    van?: { id: string; name: string; registration?: string | null; members: VanMember[] } | null;
     invoice: { id: string; total: string; status: string; balance?: string } | null;
+    costSummary?: CostSummary | null;
 }
 
 interface Expense {
@@ -102,10 +120,8 @@ const STATUS_STEPS = ["REQUESTED", "ASSIGNED", "EN_ROUTE", "ON_SITE", "COMPLETED
 
 export default function JobDetailPage() {
     const { id } = useParams();
-    const [job, setJob] = useState<Job | null>(null);
-    const [expenses, setExpenses] = useState<Expense[]>([]);
-    const [photos, setPhotos] = useState<JobPhoto[]>([]);
-    const [newExpense, setNewExpense] = useState({ description: "", amount: "" });
+    const queryClient = useQueryClient();
+    const [newExpense, setNewExpense] = useState({ description: "", amount: "", category: "OTHER" });
     const [isExpenseDialogOpen, setIsExpenseDialogOpen] = useState(false);
     const [photoFile, setPhotoFile] = useState<File | null>(null);
     const [photoCaption, setPhotoCaption] = useState("");
@@ -184,38 +200,42 @@ export default function JobDetailPage() {
         }
     };
 
-    const fetchJob = async () => {
-        try {
+    const jobQuery = useQuery<Job | null>({
+        queryKey: ["job", id],
+        queryFn: async () => {
             const res = await api.get(`/jobs/${id}`);
-            setJob(res.data.data.job);
-        } catch (e) {
-            console.error(e);
-        }
-    };
+            return res.data.data.job as Job;
+        },
+        enabled: !!id,
+    });
+    const job = jobQuery.data ?? null;
 
-    const fetchExpenses = async () => {
-        try {
+    const expensesQuery = useQuery<Expense[]>({
+        queryKey: ["job-expenses", id],
+        queryFn: async () => {
             const res = await api.get(`/operations/jobs/${id}/expenses`);
-            setExpenses(res.data.data.expenses);
-        } catch (e) {
-            console.error(e);
-        }
-    };
+            return (res.data.data.expenses ?? []) as Expense[];
+        },
+        enabled: !!id,
+    });
+    const expenses = expensesQuery.data ?? [];
 
-    const fetchPhotos = async () => {
-        try {
+    const photosQuery = useQuery<JobPhoto[]>({
+        queryKey: ["job-photos", id],
+        queryFn: async () => {
             const res = await api.get(`/media/jobs/${id}/photos`);
-            setPhotos(res.data.data.photos ?? []);
-        } catch (e) {
-            console.error(e);
-        }
-    };
+            return (res.data.data.photos ?? []) as JobPhoto[];
+        },
+        enabled: !!id,
+    });
+    const photos = photosQuery.data ?? [];
+
+    const fetchJob = () => queryClient.invalidateQueries({ queryKey: ["job", id] });
+    const fetchExpenses = () => queryClient.invalidateQueries({ queryKey: ["job-expenses", id] });
+    const fetchPhotos = () => queryClient.invalidateQueries({ queryKey: ["job-photos", id] });
 
     useEffect(() => {
         if (id) {
-            fetchJob();
-            fetchExpenses();
-            fetchPhotos();
             fetchPriceBook();
         }
     }, [id]);
@@ -269,12 +289,13 @@ export default function JobDetailPage() {
     const addExpense = async () => {
         if (!job) return;
         await api.post(`/operations/jobs/${job.id}/expenses`, {
-            ...newExpense,
+            description: newExpense.description,
             amount: parseFloat(newExpense.amount),
+            category: newExpense.category,
             date: new Date().toISOString(),
         });
         setIsExpenseDialogOpen(false);
-        setNewExpense({ description: "", amount: "" });
+        setNewExpense({ description: "", amount: "", category: "OTHER" });
         fetchExpenses();
     };
 
@@ -303,7 +324,7 @@ export default function JobDetailPage() {
         if (!confirm("Delete this photo?")) return;
         try {
             await api.delete(`/media/photos/${photoId}`);
-            setPhotos((cur) => cur.filter((p) => p.id !== photoId));
+            fetchPhotos();
         } catch {
             setPhotoError("Could not remove photo.");
         }
@@ -745,11 +766,11 @@ export default function JobDetailPage() {
                                             <div>
                                                 <p className="text-sm text-slate-300">Invoice total</p>
                                                 <p className="text-3xl font-semibold mt-1">
-                                                    ${Number(job.invoice.total).toFixed(2)}
+                                                    R{Number(job.invoice.total).toFixed(2)}
                                                 </p>
                                                 {job.invoice.balance !== undefined && (
                                                     <p className="text-xs text-slate-300 mt-1">
-                                                        Balance: ${Number(job.invoice.balance).toFixed(2)}
+                                                        Balance: R{Number(job.invoice.balance).toFixed(2)}
                                                     </p>
                                                 )}
                                             </div>
@@ -837,7 +858,7 @@ export default function JobDetailPage() {
                                                 <div className="space-y-2">
                                                     <Label>Description</Label>
                                                     <Input
-                                                        placeholder="e.g. Parking fee"
+                                                        placeholder="e.g. Copper fittings from Plumblink"
                                                         value={newExpense.description}
                                                         onChange={(e) =>
                                                             setNewExpense({
@@ -847,19 +868,40 @@ export default function JobDetailPage() {
                                                         }
                                                     />
                                                 </div>
-                                                <div className="space-y-2">
-                                                    <Label>Amount</Label>
-                                                    <Input
-                                                        type="number"
-                                                        placeholder="0.00"
-                                                        value={newExpense.amount}
-                                                        onChange={(e) =>
-                                                            setNewExpense({
-                                                                ...newExpense,
-                                                                amount: e.target.value,
-                                                            })
-                                                        }
-                                                    />
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div className="space-y-2">
+                                                        <Label>Amount (R)</Label>
+                                                        <Input
+                                                            type="number"
+                                                            placeholder="0.00"
+                                                            value={newExpense.amount}
+                                                            onChange={(e) =>
+                                                                setNewExpense({
+                                                                    ...newExpense,
+                                                                    amount: e.target.value,
+                                                                })
+                                                            }
+                                                        />
+                                                    </div>
+                                                    <div className="space-y-2">
+                                                        <Label>Category</Label>
+                                                        <select
+                                                            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                                                            value={newExpense.category}
+                                                            onChange={(e) =>
+                                                                setNewExpense({
+                                                                    ...newExpense,
+                                                                    category: e.target.value,
+                                                                })
+                                                            }
+                                                        >
+                                                            <option value="PARTS_PURCHASE">Parts purchase</option>
+                                                            <option value="MATERIALS">Materials</option>
+                                                            <option value="TOOLS">Tools</option>
+                                                            <option value="TRAVEL">Travel</option>
+                                                            <option value="OTHER">Other</option>
+                                                        </select>
+                                                    </div>
                                                 </div>
                                             </div>
                                             <DialogFooter>
@@ -894,7 +936,7 @@ export default function JobDetailPage() {
                                                         </div>
                                                     </div>
                                                     <div className="font-medium text-rose-600">
-                                                        -${Number(exp.amount).toFixed(2)}
+                                                        -R{Number(exp.amount).toFixed(2)}
                                                     </div>
                                                 </div>
                                             ))}
@@ -1050,6 +1092,33 @@ export default function JobDetailPage() {
                         )}
                     </div>
 
+                    {job.van && (
+                        <div className="surface-card p-5">
+                            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                Van / Team
+                            </h3>
+                            <p className="mt-2 font-medium">{job.van.name}</p>
+                            {job.van.registration && (
+                                <p className="text-xs text-muted-foreground">{job.van.registration}</p>
+                            )}
+                            <div className="mt-3 space-y-1.5">
+                                {job.van.members.map((m) => (
+                                    <div key={m.id} className="flex items-center gap-2 text-sm">
+                                        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-[10px] font-medium text-slate-700">
+                                            {(m.user.firstName?.[0] || m.user.email[0]).toUpperCase()}
+                                        </div>
+                                        <span>
+                                            {[m.user.firstName, m.user.lastName].filter(Boolean).join(" ") || m.user.email.split("@")[0]}
+                                        </span>
+                                        {m.role === "DRIVER" && (
+                                            <span className="text-[10px] text-amber-600 font-medium">Driver</span>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     <div className="surface-card p-5">
                         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                             Customer
@@ -1076,6 +1145,44 @@ export default function JobDetailPage() {
                             )}
                         </div>
                     </div>
+
+                    {job.costSummary && (job.costSummary.totalRevenue > 0 || job.costSummary.totalExpenses > 0) && (
+                        <div className="surface-card p-5">
+                            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                Job Costing
+                            </h3>
+                            <div className="mt-3 space-y-2 text-sm">
+                                <div className="flex justify-between">
+                                    <span className="text-muted-foreground">Materials</span>
+                                    <span>R{job.costSummary.materialsCost.toFixed(2)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-muted-foreground">Labour</span>
+                                    <span>R{job.costSummary.laborRevenue.toFixed(2)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-muted-foreground">Services</span>
+                                    <span>R{job.costSummary.serviceRevenue.toFixed(2)}</span>
+                                </div>
+                                <div className="flex justify-between border-t pt-2">
+                                    <span className="font-medium">Revenue</span>
+                                    <span className="font-medium">R{job.costSummary.totalRevenue.toFixed(2)}</span>
+                                </div>
+                                {job.costSummary.totalExpenses > 0 && (
+                                    <div className="flex justify-between text-rose-600">
+                                        <span>Expenses</span>
+                                        <span>-R{job.costSummary.totalExpenses.toFixed(2)}</span>
+                                    </div>
+                                )}
+                                <div className="flex justify-between border-t pt-2">
+                                    <span className="font-semibold">Margin</span>
+                                    <span className={cn("font-semibold", job.costSummary.margin >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                                        R{job.costSummary.margin.toFixed(2)}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
         </div>

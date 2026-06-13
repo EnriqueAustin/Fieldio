@@ -6,7 +6,43 @@ const api = axios.create({
     withCredentials: true, // Important for HttpOnly cookies
 });
 
+// One refresh in flight at a time. Every 401'd request and the app bootstrap
+// share this same promise so a reconnecting client (or a tech replaying a
+// queue of offline mutations) reauths exactly once instead of stampeding
+// /auth/refresh and racing the server's refresh-token rotation.
 let refreshPromise: Promise<string | null> | null = null;
+
+/**
+ * Ensure we hold a valid access token.
+ * @param staleToken the token a caller just had rejected (401). If the store
+ *   already rotated to a newer token, we return that without a network call;
+ *   otherwise we trigger (or join) the single in-flight refresh.
+ */
+export function ensureFreshSession(staleToken?: string | null): Promise<string | null> {
+    const current = useAuthStore.getState().accessToken;
+    if (current && current !== staleToken) {
+        return Promise.resolve(current);
+    }
+
+    if (!refreshPromise) {
+        refreshPromise = api
+            .post('/auth/refresh')
+            .then((response) => {
+                const { user, accessToken } = response.data.data;
+                useAuthStore.getState().hydrateSession(user, accessToken);
+                return accessToken as string;
+            })
+            .catch(() => {
+                useAuthStore.getState().logout();
+                return null;
+            })
+            .finally(() => {
+                refreshPromise = null;
+            });
+    }
+
+    return refreshPromise;
+}
 
 // Request Interceptor: Attach Token
 api.interceptors.request.use((config) => {
@@ -17,13 +53,12 @@ api.interceptors.request.use((config) => {
     return config;
 });
 
-// Response Interceptor: Handle Refresh
+// Response Interceptor: refresh once on 401, then retry the original request.
 api.interceptors.response.use(
     (response) => response,
     async (error) => {
         const originalRequest = error.config;
 
-        // If 401 and not already retrying
         if (
             error.response?.status === 401 &&
             !originalRequest._retry &&
@@ -31,24 +66,10 @@ api.interceptors.response.use(
         ) {
             originalRequest._retry = true;
 
+            const usedToken = String(originalRequest?.headers?.Authorization || '').replace('Bearer ', '') || null;
+
             try {
-                if (!refreshPromise) {
-                    refreshPromise = api
-                        .post('/auth/refresh')
-                        .then((response) => {
-                            const { user, accessToken } = response.data.data;
-                            useAuthStore.getState().hydrateSession(user, accessToken);
-                            return accessToken as string;
-                        })
-                        .catch(() => {
-                            useAuthStore.getState().logout();
-                            return null;
-                        })
-                        .finally(() => {
-                            refreshPromise = null;
-                        });
-                }
-                const nextToken = await refreshPromise;
+                const nextToken = await ensureFreshSession(usedToken);
                 if (!nextToken) {
                     if (typeof window !== 'undefined') {
                         window.location.href = '/login';

@@ -4,10 +4,11 @@ import { customerService } from './customers.service';
 
 export const customerController = {
     getAll: async (req: Request, res: Response) => {
-        const page = Number(req.query.page) || 1;
-        const limit = Number(req.query.limit) || 20;
+        const page = Math.max(1, Number(req.query.page) || 1);
+        const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
         const search = req.query.search as string;
-        const result = await customerService.findAll(req.user!.companyId, page, limit, search);
+        const branchId = req.query.branchId as string | undefined;
+        const result = await customerService.findAll(req.user!.companyId, page, limit, search, branchId);
         res.status(StatusCodes.OK).json({ status: 'success', data: result });
     },
 

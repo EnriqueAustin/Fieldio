@@ -9,8 +9,8 @@ export const envSchema = z.object({
     TRUST_PROXY: z.coerce.boolean().default(false),
     API_BODY_LIMIT: z.string().default('2mb'),
     DATABASE_URL: z.string().min(1),
-    JWT_SECRET: z.string().min(1),
-    JWT_REFRESH_SECRET: z.string().min(1),
+    JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
+    JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
     API_URL: z.string().url(),
     WEB_URL: z.string().url(),
 

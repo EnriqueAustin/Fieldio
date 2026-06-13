@@ -18,6 +18,17 @@ export const userController = {
         res.status(StatusCodes.OK).json({ status: 'success', data: { user } });
     },
 
+    updateSkills: async (req: Request, res: Response) => {
+        const skills = Array.isArray(req.body?.skills) ? req.body.skills : [];
+        const user = await userService.updateSkills(req.params.id, req.user!.companyId, skills);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { user } });
+    },
+
+    skillsCatalog: async (req: Request, res: Response) => {
+        const skills = await userService.listSkillsCatalog(req.user!.companyId);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { skills } });
+    },
+
     delete: async (req: Request, res: Response) => {
         await userService.delete(req.params.id, req.user!.companyId);
         res.status(StatusCodes.OK).json({ status: 'success' });

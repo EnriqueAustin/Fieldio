@@ -82,7 +82,9 @@ export const authController = {
         });
     },
 
-    logout: (req: Request, res: Response) => {
+    logout: async (req: Request, res: Response) => {
+        const refreshToken = req.cookies?.refreshToken;
+        await authService.logout(refreshToken);
         res.clearCookie('refreshToken', COOKIE_OPTIONS);
         res.status(StatusCodes.OK).json({ status: 'success' });
     },

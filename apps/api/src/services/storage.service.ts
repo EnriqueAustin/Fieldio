@@ -118,4 +118,26 @@ export const storageService = {
 
         return { url: publicUrl(key), key };
     },
+
+    /** Upload an arbitrary file buffer (e.g. PDF) under a chosen folder. */
+    uploadBuffer: async (params: {
+        companyId: string;
+        folder: string;
+        fileName: string;
+        buffer: Buffer;
+        contentType: string;
+    }) => {
+        const client = getClient();
+        const id = crypto.randomBytes(6).toString('hex');
+        const key = `companies/${params.companyId}/${params.folder}/${id}-${params.fileName}`;
+        await client.send(
+            new PutObjectCommand({
+                Bucket: config.S3_BUCKET!,
+                Key: key,
+                Body: params.buffer,
+                ContentType: params.contentType,
+            })
+        );
+        return { url: publicUrl(key), key };
+    },
 };

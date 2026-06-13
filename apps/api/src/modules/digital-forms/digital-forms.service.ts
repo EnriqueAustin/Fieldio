@@ -44,9 +44,28 @@ export const digitalFormsService = {
         const template = await prisma.digitalFormTemplate.findFirst({
             where: { id: parsed.templateId, companyId, active: true },
         });
-        
+
         if (!template) {
             throw new AppError('Template not found or inactive', StatusCodes.NOT_FOUND);
+        }
+
+        // Certificate-of-Compliance templates are restricted: only users the admin
+        // has granted the `canIssueCoC` capability may submit them.
+        const requiresCoc = Boolean((template.schema as Record<string, unknown> | null)?.requiresCoc);
+        if (requiresCoc) {
+            const submitter = await prisma.user.findFirst({
+                where: { id: userId, companyId },
+                select: { permissions: true },
+            });
+            const canIssueCoC = Boolean(
+                (submitter?.permissions as Record<string, unknown> | null)?.canIssueCoC
+            );
+            if (!canIssueCoC) {
+                throw new AppError(
+                    'You are not authorised to issue Certificates of Compliance. Ask an admin to grant this permission.',
+                    StatusCodes.FORBIDDEN
+                );
+            }
         }
 
         return prisma.digitalFormSubmission.create({

@@ -1,66 +1,67 @@
-const CACHE_NAME = 'fieldio-v1';
+const CACHE_NAME = 'fieldio-v2';
+const APP_SHELL = ['/', '/manifest.json'];
 
 self.addEventListener('install', (event) => {
     event.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => {
-            return cache.addAll([
-                '/',
-                '/manifest.json',
-                // Add offline fallback page here if we had one
-            ]);
-        })
+        caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL))
     );
     self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
     event.waitUntil(
-        caches.keys().then((cacheNames) => {
-            return Promise.all(
+        caches.keys().then((cacheNames) =>
+            Promise.all(
                 cacheNames.map((cacheName) => {
-                    if (cacheName !== CACHE_NAME) {
-                        return caches.delete(cacheName);
-                    }
+                    if (cacheName !== CACHE_NAME) return caches.delete(cacheName);
                 })
-            );
-        })
+            )
+        )
     );
     self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
-    // Network first, fall back to cache for navigation
-    if (event.request.mode === 'navigate') {
+    const { request } = event;
+
+    // Never touch writes or non-GET verbs — let them go straight to the
+    // network so the app's own offline queue owns retry/replay semantics.
+    if (request.method !== 'GET') return;
+
+    const url = new URL(request.url);
+
+    // Only the web app's own origin is cacheable here. API reads (a different
+    // origin) are cached by the React Query persister, not the SW.
+    if (url.origin !== self.location.origin) return;
+
+    // App navigations: network-first, fall back to the matching cached page,
+    // then to the cached app shell so the SPA still boots with no signal.
+    if (request.mode === 'navigate') {
         event.respondWith(
-            fetch(event.request).catch(() => {
-                return caches.match(event.request);
+            fetch(request).catch(async () => {
+                const cached = await caches.match(request);
+                return cached || (await caches.match('/'));
             })
         );
         return;
     }
 
-    // Stale-while-revalidate for others
-    // Valid response check
+    // Static assets: stale-while-revalidate.
     event.respondWith(
-        caches.match(event.request).then((cachedResponse) => {
-            const fetchPromise = fetch(event.request).then((networkResponse) => {
-                // Check if we received a valid response
-                if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
+        caches.match(request).then((cachedResponse) => {
+            const fetchPromise = fetch(request)
+                .then((networkResponse) => {
+                    if (
+                        networkResponse &&
+                        networkResponse.status === 200 &&
+                        networkResponse.type === 'basic'
+                    ) {
+                        const copy = networkResponse.clone();
+                        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+                    }
                     return networkResponse;
-                }
-
-                // Important: Clone the response. A response is a stream
-                // and because we want the browser to consume the response
-                // as well as the cache consuming the response, we need
-                // to clone it so we have two streams.
-                const responseToCache = networkResponse.clone();
-
-                caches.open(CACHE_NAME).then((cache) => {
-                    cache.put(event.request, responseToCache);
-                });
-
-                return networkResponse;
-            });
+                })
+                .catch(() => cachedResponse);
             return cachedResponse || fetchPromise;
         })
     );

@@ -16,16 +16,27 @@ const updateItemSchema = createItemSchema.partial().extend({
     active: z.boolean().optional(),
 });
 
+/**
+ * Technicians work the field and select items by name/SKU only — they must not
+ * see what the company charges. Strip pricing before it ever leaves the API so
+ * it can't be read from the network response or client memory either.
+ */
+function hidePricesForTech<T extends { unitPrice?: unknown }>(items: T[], role?: string) {
+    if (role !== 'TECHNICIAN') return items;
+    return items.map(({ unitPrice, ...rest }) => rest);
+}
+
 export const priceBookService = {
-    getAll: async (companyId: string, includeInactive = false, category?: string) => {
+    getAll: async (companyId: string, includeInactive = false, category?: string, role?: string) => {
         const where: any = { companyId };
         if (!includeInactive) where.active = true;
         if (category) where.category = category;
 
-        return prisma.priceBookItem.findMany({
+        const items = await prisma.priceBookItem.findMany({
             where,
             orderBy: [{ category: 'asc' }, { name: 'asc' }],
         });
+        return hidePricesForTech(items, role);
     },
 
     getCategories: async (companyId: string) => {
@@ -38,10 +49,10 @@ export const priceBookService = {
         return items.map((i) => i.category).filter(Boolean);
     },
 
-    getOne: async (id: string, companyId: string) => {
+    getOne: async (id: string, companyId: string, role?: string) => {
         const item = await prisma.priceBookItem.findFirst({ where: { id, companyId } });
         if (!item) throw new AppError('Price book item not found', StatusCodes.NOT_FOUND);
-        return item;
+        return hidePricesForTech([item], role)[0];
     },
 
     create: async (companyId: string, input: z.infer<typeof createItemSchema>) => {

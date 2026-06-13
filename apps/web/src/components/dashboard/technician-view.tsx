@@ -2,7 +2,7 @@
 
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { format, formatDistanceToNowStrict } from "date-fns";
 import {
     Calendar,
@@ -24,6 +24,8 @@ import {
     Wrench,
 } from "lucide-react";
 import api from "../../lib/api";
+import { OFFLINE_KEYS } from "../../lib/offline-mutations";
+import { putPhotoBlob } from "../../lib/offline-db";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Button } from "../ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
@@ -82,16 +84,15 @@ interface JobLineItem {
     name: string;
     description?: string | null;
     quantity: number;
-    unitPrice: string;
-    total: string;
     type: "SERVICE" | "MATERIAL" | "LABOR";
 }
 
+// Pricing is intentionally omitted from technician-facing payloads — the API
+// strips it for the TECHNICIAN role. Techs select items and quantities only.
 interface PriceBookItem {
     id: string;
     name: string;
     description?: string | null;
-    unitPrice: string;
     type: "SERVICE" | "MATERIAL" | "LABOR";
     category?: string | null;
     sku?: string | null;
@@ -274,8 +275,32 @@ function SignaturePad({
     );
 }
 
+/** Ticking elapsed-time readout. `start` is the job's actualStart; once the job
+ *  is completed it freezes at `end` (actualEnd) instead of running forever. */
+function LiveTimer({ start, end }: { start: string; end?: string | null }) {
+    const [now, setNow] = useState(() => Date.now());
+    useEffect(() => {
+        if (end) return; // frozen — no interval needed
+        const id = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(id);
+    }, [end]);
+
+    const startMs = new Date(start).getTime();
+    const endMs = end ? new Date(end).getTime() : now;
+    const totalSeconds = Math.max(0, Math.floor((endMs - startMs) / 1000));
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    const pad = (n: number) => String(n).padStart(2, "0");
+
+    return (
+        <span className="font-mono tabular-nums">
+            {h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`}
+        </span>
+    );
+}
+
 export function TechnicianView({ user }: TechnicianViewProps) {
-    const queryClient = useQueryClient();
     const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
     const [noteDraft, setNoteDraft] = useState("");
     const [photoCaption, setPhotoCaption] = useState("");
@@ -284,7 +309,9 @@ export function TechnicianView({ user }: TechnicianViewProps) {
     const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null);
     const [priceBookItems, setPriceBookItems] = useState<PriceBookItem[]>([]);
     const [pbSearch, setPbSearch] = useState("");
-    const [newItem, setNewItem] = useState({ name: "", quantity: 1, unitPrice: "", type: "SERVICE" as string, priceBookItemId: "" });
+    const [newItem, setNewItem] = useState({ name: "", quantity: 1, type: "SERVICE" as string, priceBookItemId: "" });
+    const [newExpense, setNewExpense] = useState({ description: "", amount: "", category: "PARTS_PURCHASE" });
+    const [expenseReceipt, setExpenseReceipt] = useState<File | null>(null);
 
     useEffect(() => {
         api.get("/price-book").then((res) => setPriceBookItems(res.data?.data?.items ?? [])).catch(() => {});
@@ -297,29 +324,19 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         )
     );
 
-    const lineItemMutation = useMutation({
-        mutationFn: async ({ jobId, ...data }: { jobId: string; name: string; quantity: number; unitPrice: number; type: string; priceBookItemId?: string }) => {
-            await api.post(`/jobs/${jobId}/line-items`, data);
-        },
-        onSuccess: async () => {
-            setNewItem({ name: "", quantity: 1, unitPrice: "", type: "SERVICE", priceBookItemId: "" });
-            setPbSearch("");
-            await invalidateJobs();
-        },
+    const lineItemMutation = useMutation<unknown, any, { jobId: string; name: string; quantity: number; unitPrice: number; type: string; priceBookItemId?: string }>({
+        mutationKey: OFFLINE_KEYS.lineItemAdd,
         onError: () => {
             toast({ title: "Could not add line item", variant: "destructive" });
         },
     });
 
-    const removeLineItemMutation = useMutation({
-        mutationFn: async ({ jobId, itemId }: { jobId: string; itemId: string }) => {
-            await api.delete(`/jobs/${jobId}/line-items/${itemId}`);
-        },
-        onSuccess: async () => { await invalidateJobs(); },
+    const removeLineItemMutation = useMutation<unknown, any, { jobId: string; itemId: string }>({
+        mutationKey: OFFLINE_KEYS.lineItemRemove,
     });
 
     const selectPBItem = (item: PriceBookItem) => {
-        setNewItem({ name: item.name, quantity: 1, unitPrice: String(Number(item.unitPrice)), type: item.type, priceBookItemId: item.id });
+        setNewItem({ name: item.name, quantity: 1, type: item.type, priceBookItemId: item.id });
         setPbSearch("");
     };
 
@@ -366,17 +383,8 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         );
     }, [assignedJobs]);
 
-    const invalidateJobs = async () => {
-        await queryClient.invalidateQueries({ queryKey: ["technician-assigned-jobs", user.id] });
-    };
-
-    const statusMutation = useMutation({
-        mutationFn: async ({ jobId, status }: { jobId: string; status: TechnicianJob["status"] }) => {
-            await api.patch(`/jobs/${jobId}/status`, { status });
-        },
-        onSuccess: async () => {
-            await invalidateJobs();
-        },
+    const statusMutation = useMutation<unknown, any, { jobId: string; status: TechnicianJob["status"] }>({
+        mutationKey: OFFLINE_KEYS.status,
         onError: (error: any) => {
             toast({
                 title: "Could not update job",
@@ -386,21 +394,8 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         },
     });
 
-    const checklistMutation = useMutation({
-        mutationFn: async ({
-            jobId,
-            checkId,
-            isCompleted,
-        }: {
-            jobId: string;
-            checkId: string;
-            isCompleted: boolean;
-        }) => {
-            await api.patch(`/jobs/${jobId}/checklist/${checkId}`, { isCompleted });
-        },
-        onSuccess: async () => {
-            await invalidateJobs();
-        },
+    const checklistMutation = useMutation<unknown, any, { jobId: string; checkId: string; isCompleted: boolean }>({
+        mutationKey: OFFLINE_KEYS.checklist,
         onError: () => {
             toast({
                 title: "Checklist update failed",
@@ -410,14 +405,8 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         },
     });
 
-    const noteMutation = useMutation({
-        mutationFn: async ({ jobId, message }: { jobId: string; message: string }) => {
-            await api.post(`/jobs/${jobId}/notes`, { message });
-        },
-        onSuccess: async () => {
-            setNoteDraft("");
-            await invalidateJobs();
-        },
+    const noteMutation = useMutation<unknown, any, { jobId: string; message: string }>({
+        mutationKey: OFFLINE_KEYS.note,
         onError: () => {
             toast({
                 title: "Note not saved",
@@ -427,22 +416,8 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         },
     });
 
-    const photoMutation = useMutation({
-        mutationFn: async ({ jobId, file, caption }: { jobId: string; file: File; caption: string }) => {
-            const formData = new FormData();
-            formData.append("photo", file);
-            if (caption.trim()) {
-                formData.append("caption", caption.trim());
-            }
-            await api.post(`/media/jobs/${jobId}/photos`, formData);
-        },
-        onSuccess: async () => {
-            setPhotoFile(null);
-            setPhotoCaption("");
-            const fileInput = document.getElementById("technician-photo-upload") as HTMLInputElement | null;
-            if (fileInput) fileInput.value = "";
-            await invalidateJobs();
-        },
+    const photoMutation = useMutation<unknown, any, { jobId: string; blobId: string; caption: string }>({
+        mutationKey: OFFLINE_KEYS.photo,
         onError: (error: any) => {
             toast({
                 title: "Photo upload failed",
@@ -452,26 +427,26 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         },
     });
 
-    const signatureMutation = useMutation({
-        mutationFn: async ({
+    /** Persist the photo bytes to IndexedDB, then queue the upload so it
+     *  survives reconnect and reload even with no signal. */
+    const queuePhotoUpload = async (jobId: string, file: File, caption: string) => {
+        const blobId = `photo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        await putPhotoBlob(blobId, {
             jobId,
-            signerName: nextSignerName,
-            signature,
-        }: {
-            jobId: string;
-            signerName: string;
-            signature: string;
-        }) => {
-            await api.post(`/jobs/${jobId}/signatures`, {
-                signerName: nextSignerName,
-                signatureDataUrl: signature,
-            });
-        },
-        onSuccess: async () => {
-            setSignerName("");
-            setSignatureDataUrl(null);
-            await invalidateJobs();
-        },
+            caption,
+            blob: file,
+            fileName: file.name || `${blobId}.jpg`,
+            createdAt: Date.now(),
+        });
+        photoMutation.mutate({ jobId, blobId, caption });
+        setPhotoFile(null);
+        setPhotoCaption("");
+        const fileInput = document.getElementById("technician-photo-upload") as HTMLInputElement | null;
+        if (fileInput) fileInput.value = "";
+    };
+
+    const signatureMutation = useMutation<unknown, any, { jobId: string; signerName: string; signatureDataUrl: string }>({
+        mutationKey: OFFLINE_KEYS.signature,
         onError: () => {
             toast({
                 title: "Signature not captured",
@@ -480,6 +455,32 @@ export function TechnicianView({ user }: TechnicianViewProps) {
             });
         },
     });
+
+    const expenseMutation = useMutation<unknown, any, { jobId: string; description: string; amount: number; category: string; receiptBlobId?: string }>({
+        mutationKey: OFFLINE_KEYS.expense,
+        onError: () => {
+            toast({ title: "Could not add expense", variant: "destructive" });
+        },
+    });
+
+    /** Persist the receipt bytes to IndexedDB (if any), then queue the expense so
+     *  it survives reconnect and reload — same pattern as photo uploads. */
+    const queueExpense = async (jobId: string, description: string, amount: number, category: string, receipt: File | null) => {
+        let receiptBlobId: string | undefined;
+        if (receipt) {
+            receiptBlobId = `receipt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            await putPhotoBlob(receiptBlobId, {
+                jobId,
+                caption: "",
+                blob: receipt,
+                fileName: receipt.name || `${receiptBlobId}.jpg`,
+                createdAt: Date.now(),
+            });
+        }
+        expenseMutation.mutate({ jobId, description, amount, category, receiptBlobId });
+        setNewExpense({ description: "", amount: "", category: "PARTS_PURCHASE" });
+        setExpenseReceipt(null);
+    };
 
     if (assignedJobsQuery.isLoading) {
         return <div className="rounded-2xl border border-border bg-card p-6">Loading field workflow...</div>;
@@ -700,12 +701,29 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                     <div>{getAddress(activeJob)}</div>
                                     <div>{getJobTiming(activeJob)}</div>
                                 </div>
+                                {(() => {
+                                    const commsHint =
+                                        activeJob.status === "ASSIGNED"
+                                            ? "“Start route” texts the customer a live tracking link automatically."
+                                            : activeJob.status === "EN_ROUTE"
+                                            ? "Customer has the tracking link — they’re notified you’re on the way."
+                                            : activeJob.status === "ON_SITE"
+                                            ? "Customer was notified you arrived. Completing emails them a job summary."
+                                            : activeJob.status === "COMPLETED"
+                                            ? "Customer was emailed the completion summary automatically."
+                                            : null;
+                                    return commsHint ? (
+                                        <div className="flex items-start gap-2 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                                            <Phone className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                            <span>{commsHint}</span>
+                                        </div>
+                                    ) : null;
+                                })()}
                             </div>
                             <div className="flex flex-wrap gap-2">
                                 {nextStatus && activeJob.status !== "ON_SITE" && (
                                     <Button
                                         onClick={() => statusMutation.mutate({ jobId: activeJob.id, status: nextStatus })}
-                                        disabled={statusMutation.isPending}
                                     >
                                         {activeJob.status === "ASSIGNED" ? "Start route" : "Arrive on site"}
                                     </Button>
@@ -715,7 +733,7 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                         onClick={() =>
                                             statusMutation.mutate({ jobId: activeJob.id, status: "COMPLETED" })
                                         }
-                                        disabled={!canComplete || statusMutation.isPending}
+                                        disabled={!canComplete}
                                     >
                                         Complete job
                                     </Button>
@@ -737,16 +755,14 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                         )}
                     </Card>
 
-                    <Tabs defaultValue="checklist">
-                        <TabsList className="grid w-full grid-cols-5">
-                            <TabsTrigger value="checklist">Checklist</TabsTrigger>
-                            <TabsTrigger value="items">Items</TabsTrigger>
-                            <TabsTrigger value="notes">Notes</TabsTrigger>
-                            <TabsTrigger value="photos">Photos</TabsTrigger>
-                            <TabsTrigger value="closeout">Closeout</TabsTrigger>
+                    <Tabs defaultValue="work">
+                        <TabsList className="grid w-full grid-cols-3">
+                            <TabsTrigger value="work">Work</TabsTrigger>
+                            <TabsTrigger value="media">Media</TabsTrigger>
+                            <TabsTrigger value="closeout">Done</TabsTrigger>
                         </TabsList>
 
-                        <TabsContent value="checklist">
+                        <TabsContent value="work" className="space-y-4">
                             <Card>
                                 <CardHeader>
                                     <CardTitle>Service checklist</CardTitle>
@@ -799,9 +815,7 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                     )}
                                 </CardContent>
                             </Card>
-                        </TabsContent>
 
-                        <TabsContent value="items">
                             <Card>
                                 <CardHeader>
                                     <CardTitle>Line Items</CardTitle>
@@ -830,19 +844,19 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                                             {item.type === "MATERIAL" ? <Package className="h-4 w-4 text-slate-400" /> : <Wrench className="h-4 w-4 text-slate-400" />}
                                                             <span className="font-medium">{item.name}</span>
                                                         </div>
-                                                        <span className="text-xs font-medium text-emerald-700">R{Number(item.unitPrice).toFixed(2)}</span>
+                                                        {item.sku && <span className="text-xs text-muted-foreground">{item.sku}</span>}
                                                     </button>
                                                 ))}
                                             </div>
                                         )}
 
-                                        <div className="grid grid-cols-[1fr,80px,100px,auto] gap-2 items-end">
+                                        <div className="grid grid-cols-[1fr,80px,auto] gap-2 items-end">
                                             <div className="space-y-1">
                                                 <label className="text-xs font-medium">Item</label>
                                                 <input
                                                     placeholder="Name"
                                                     value={newItem.name}
-                                                    onChange={(e) => setNewItem({ ...newItem, name: e.target.value })}
+                                                    onChange={(e) => setNewItem({ ...newItem, name: e.target.value, priceBookItemId: "" })}
                                                     className="w-full rounded-lg border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                                                 />
                                             </div>
@@ -856,28 +870,25 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                                     className="w-full rounded-lg border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                                                 />
                                             </div>
-                                            <div className="space-y-1">
-                                                <label className="text-xs font-medium">Price (R)</label>
-                                                <input
-                                                    type="number"
-                                                    step="0.01"
-                                                    placeholder="0.00"
-                                                    value={newItem.unitPrice}
-                                                    onChange={(e) => setNewItem({ ...newItem, unitPrice: e.target.value })}
-                                                    className="w-full rounded-lg border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                                                />
-                                            </div>
                                             <Button
                                                 size="sm"
-                                                onClick={() => newItem.name && newItem.unitPrice && lineItemMutation.mutate({
-                                                    jobId: activeJob.id,
-                                                    name: newItem.name,
-                                                    quantity: newItem.quantity,
-                                                    unitPrice: parseFloat(newItem.unitPrice),
-                                                    type: newItem.type,
-                                                    priceBookItemId: newItem.priceBookItemId || undefined,
-                                                })}
-                                                disabled={!newItem.name || !newItem.unitPrice || lineItemMutation.isPending}
+                                                onClick={() => {
+                                                    if (!newItem.name) return;
+                                                    // Pricing is set by the office. Techs only record the item and
+                                                    // quantity; the API resolves the real price from the price book
+                                                    // entry (priceBookItemId) or leaves it for the office to price.
+                                                    lineItemMutation.mutate({
+                                                        jobId: activeJob.id,
+                                                        name: newItem.name,
+                                                        quantity: newItem.quantity,
+                                                        unitPrice: 0,
+                                                        type: newItem.type,
+                                                        priceBookItemId: newItem.priceBookItemId || undefined,
+                                                    });
+                                                    setNewItem({ name: "", quantity: 1, type: "SERVICE", priceBookItemId: "" });
+                                                    setPbSearch("");
+                                                }}
+                                                disabled={!newItem.name}
                                             >
                                                 <Plus className="h-4 w-4" />
                                             </Button>
@@ -897,31 +908,101 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                                         {item.type === "MATERIAL" ? <Package className="h-4 w-4 text-slate-400 shrink-0" /> : <Wrench className="h-4 w-4 text-slate-400 shrink-0" />}
                                                         <div className="min-w-0">
                                                             <div className="font-medium text-sm truncate">{item.name}</div>
-                                                            <div className="text-xs text-muted-foreground">{item.quantity} × R{Number(item.unitPrice).toFixed(2)}</div>
+                                                            <div className="text-xs text-muted-foreground">Qty: {item.quantity}</div>
                                                         </div>
                                                     </div>
-                                                    <div className="flex items-center gap-2">
-                                                        <span className="text-sm font-medium">R{Number(item.total).toFixed(2)}</span>
-                                                        <button
-                                                            onClick={() => removeLineItemMutation.mutate({ jobId: activeJob.id, itemId: item.id })}
-                                                            className="opacity-0 group-hover:opacity-100 text-rose-500 hover:text-rose-600 transition"
-                                                        >
-                                                            <Trash2 className="h-3.5 w-3.5" />
-                                                        </button>
-                                                    </div>
+                                                    <button
+                                                        onClick={() => removeLineItemMutation.mutate({ jobId: activeJob.id, itemId: item.id })}
+                                                        className="opacity-0 group-hover:opacity-100 text-rose-500 hover:text-rose-600 transition"
+                                                    >
+                                                        <Trash2 className="h-3.5 w-3.5" />
+                                                    </button>
                                                 </div>
                                             ))}
-                                            <div className="flex justify-between pt-3 border-t mt-2">
-                                                <span className="text-sm font-semibold">Subtotal</span>
-                                                <span className="font-semibold">R{activeJob.lineItems.reduce((s, i) => s + Number(i.total), 0).toFixed(2)}</span>
-                                            </div>
                                         </div>
                                     )}
                                 </CardContent>
                             </Card>
+
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle>Job Expenses</CardTitle>
+                                </CardHeader>
+                                <CardContent className="space-y-4">
+                                    <div className="rounded-xl border p-4 space-y-3">
+                                        <div className="grid grid-cols-[1fr,100px] gap-2">
+                                            <div className="space-y-1">
+                                                <label className="text-xs font-medium">Description</label>
+                                                <input
+                                                    placeholder="What did you buy? e.g. Copper fittings at Plumblink"
+                                                    value={newExpense.description}
+                                                    onChange={(e) => setNewExpense({ ...newExpense, description: e.target.value })}
+                                                    className="w-full rounded-lg border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                                                />
+                                            </div>
+                                            <div className="space-y-1">
+                                                <label className="text-xs font-medium">Amount (R)</label>
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    placeholder="0.00"
+                                                    value={newExpense.amount}
+                                                    onChange={(e) => setNewExpense({ ...newExpense, amount: e.target.value })}
+                                                    className="w-full rounded-lg border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                                                />
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <div className="space-y-1">
+                                                <label className="text-xs font-medium">Category</label>
+                                                <select
+                                                    value={newExpense.category}
+                                                    onChange={(e) => setNewExpense({ ...newExpense, category: e.target.value })}
+                                                    className="w-full rounded-lg border border-border px-3 py-2 text-sm"
+                                                >
+                                                    <option value="PARTS_PURCHASE">Parts purchase</option>
+                                                    <option value="MATERIALS">Materials</option>
+                                                    <option value="TOOLS">Tools</option>
+                                                    <option value="TRAVEL">Travel</option>
+                                                    <option value="OTHER">Other</option>
+                                                </select>
+                                            </div>
+                                            <div className="space-y-1">
+                                                <label className="text-xs font-medium">Receipt photo</label>
+                                                <Input
+                                                    type="file"
+                                                    accept="image/*"
+                                                    onChange={(e) => setExpenseReceipt(e.target.files?.[0] ?? null)}
+                                                />
+                                            </div>
+                                        </div>
+                                        <div className="flex justify-end">
+                                            <Button
+                                                onClick={() => {
+                                                    if (!newExpense.description || !newExpense.amount) return;
+                                                    void queueExpense(
+                                                        activeJob.id,
+                                                        newExpense.description,
+                                                        parseFloat(newExpense.amount),
+                                                        newExpense.category,
+                                                        expenseReceipt,
+                                                    );
+                                                }}
+                                                disabled={!newExpense.description || !newExpense.amount}
+                                            >
+                                                Add expense
+                                            </Button>
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground text-center">
+                                        Expenses for this job will appear on the invoice as cost-of-sale items for Sage export.
+                                    </div>
+                                </CardContent>
+                            </Card>
                         </TabsContent>
 
-                        <TabsContent value="notes">
+                        <TabsContent value="media" className="space-y-4">
                             <Card>
                                 <CardHeader>
                                     <CardTitle>Internal notes</CardTitle>
@@ -936,12 +1017,14 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                         <div className="flex justify-end">
                                             <Button
                                                 onClick={() =>
-                                                    noteMutation.mutate({
-                                                        jobId: activeJob.id,
-                                                        message: noteDraft.trim(),
-                                                    })
+                                                {
+                                                    const message = noteDraft.trim();
+                                                    if (!message) return;
+                                                    noteMutation.mutate({ jobId: activeJob.id, message });
+                                                    setNoteDraft("");
                                                 }
-                                                disabled={!noteDraft.trim() || noteMutation.isPending}
+                                                }
+                                                disabled={!noteDraft.trim()}
                                             >
                                                 <StickyNote className="mr-2 h-4 w-4" />
                                                 Save note
@@ -980,9 +1063,7 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                     </div>
                                 </CardContent>
                             </Card>
-                        </TabsContent>
 
-                        <TabsContent value="photos">
                             <Card>
                                 <CardHeader>
                                     <CardTitle>Job photos</CardTitle>
@@ -1014,13 +1095,9 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                         <Button
                                             onClick={() =>
                                                 photoFile &&
-                                                photoMutation.mutate({
-                                                    jobId: activeJob.id,
-                                                    file: photoFile,
-                                                    caption: photoCaption,
-                                                })
+                                                queuePhotoUpload(activeJob.id, photoFile, photoCaption)
                                             }
-                                            disabled={!photoFile || photoMutation.isPending}
+                                            disabled={!photoFile}
                                         >
                                             <Upload className="mr-2 h-4 w-4" />
                                             Upload
@@ -1069,11 +1146,21 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                                 <Clock className="h-4 w-4" />
                                                 Labor timer
                                             </div>
-                                            <p className="mt-2 text-sm text-muted-foreground">
-                                                {activeJob.actualStart
-                                                    ? `Started ${format(new Date(activeJob.actualStart), "MMM d, p")}`
-                                                    : "Timer begins automatically when the technician starts travel or arrives on site."}
-                                            </p>
+                                            {activeJob.actualStart ? (
+                                                <>
+                                                    <p className="mt-2 text-2xl font-semibold text-slate-900">
+                                                        <LiveTimer start={activeJob.actualStart} end={activeJob.actualEnd} />
+                                                    </p>
+                                                    <p className="mt-1 text-xs text-muted-foreground">
+                                                        {activeJob.actualEnd ? "Total on-site time" : "Running"} · started{" "}
+                                                        {format(new Date(activeJob.actualStart), "p")}
+                                                    </p>
+                                                </>
+                                            ) : (
+                                                <p className="mt-2 text-sm text-muted-foreground">
+                                                    Timer begins automatically when you start travel or arrive on site.
+                                                </p>
+                                            )}
                                         </div>
                                         <div className="rounded-xl border p-4">
                                             <div className="flex items-center gap-2 font-medium">
@@ -1112,15 +1199,17 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                         <SignaturePad onChange={setSignatureDataUrl} disabled={signatureMutation.isPending} />
                                         <div className="flex justify-end">
                                             <Button
-                                                onClick={() =>
-                                                    signatureDataUrl &&
+                                                onClick={() => {
+                                                    if (!signatureDataUrl || !signerName.trim()) return;
                                                     signatureMutation.mutate({
                                                         jobId: activeJob.id,
                                                         signerName: signerName.trim(),
-                                                        signature: signatureDataUrl,
-                                                    })
-                                                }
-                                                disabled={!signerName.trim() || !signatureDataUrl || signatureMutation.isPending}
+                                                        signatureDataUrl,
+                                                    });
+                                                    setSignerName("");
+                                                    setSignatureDataUrl(null);
+                                                }}
+                                                disabled={!signerName.trim() || !signatureDataUrl}
                                             >
                                                 Save signature
                                             </Button>

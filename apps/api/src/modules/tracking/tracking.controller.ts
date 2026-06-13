@@ -3,6 +3,7 @@ import { StatusCodes } from 'http-status-codes';
 import { z } from 'zod';
 import { prisma } from '@fieldio/database';
 import { socketService } from '../../services/socket.service';
+import { evaluateGeofence } from './geofence';
 
 const pingSchema = z.object({
     lat: z.number(),
@@ -31,6 +32,8 @@ export const trackingController = {
             await prisma.userLocationPing.create({
                 data: { userId, companyId, lat: body.lat, lng: body.lng, accuracy: body.accuracy },
             });
+            // Fire-and-forget geofence evaluation
+            evaluateGeofence({ companyId, userId, lat: body.lat, lng: body.lng }).catch(() => undefined);
         }
 
         socketService.emitToCompany(companyId, 'tech:location', {
@@ -123,5 +126,125 @@ export const trackingController = {
                 }),
             },
         });
+    },
+
+    /**
+     * Route playback for a single technician over a date range.
+     * Returns: pings (route polyline), jobs worked (with actualStart/actualEnd),
+     * geofence events, time-on-site totals.
+     */
+    playback: async (req: Request, res: Response) => {
+        const companyId = req.user!.companyId;
+        const userId = req.params.userId;
+        const dayStr = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+        const start = new Date(`${dayStr}T00:00:00.000Z`);
+        const end = new Date(`${dayStr}T23:59:59.999Z`);
+
+        const [pings, jobs, geofence] = await Promise.all([
+            prisma.userLocationPing.findMany({
+                where: { companyId, userId, createdAt: { gte: start, lte: end } },
+                orderBy: { createdAt: 'asc' },
+                select: { id: true, lat: true, lng: true, createdAt: true, accuracy: true },
+            }),
+            prisma.job.findMany({
+                where: {
+                    companyId, techId: userId,
+                    deletedAt: null,
+                    OR: [
+                        { actualStart: { gte: start, lte: end } },
+                        { scheduledStart: { gte: start, lte: end } },
+                    ],
+                },
+                include: {
+                    customer: { select: { name: true } },
+                    property: { select: { addressLine1: true, city: true, geoLat: true, geoLng: true } },
+                },
+                orderBy: { scheduledStart: 'asc' },
+            }),
+            prisma.geofenceEvent.findMany({
+                where: { companyId, userId, createdAt: { gte: start, lte: end } },
+                orderBy: { createdAt: 'asc' },
+            }),
+        ]);
+
+        const jobSummaries = jobs.map((j) => {
+            let onSiteMs: number | null = null;
+            if (j.actualStart && j.actualEnd) {
+                onSiteMs = j.actualEnd.getTime() - j.actualStart.getTime();
+            }
+            return {
+                id: j.id,
+                title: j.title,
+                status: j.status,
+                customer: j.customer.name,
+                address: `${j.property.addressLine1}, ${j.property.city}`,
+                destination: j.property.geoLat != null && j.property.geoLng != null
+                    ? { lat: j.property.geoLat, lng: j.property.geoLng } : null,
+                scheduledStart: j.scheduledStart,
+                scheduledEnd: j.scheduledEnd,
+                actualStart: j.actualStart,
+                actualEnd: j.actualEnd,
+                onSiteMinutes: onSiteMs ? Math.round(onSiteMs / 60000) : null,
+            };
+        });
+
+        const totalOnSiteMin = jobSummaries.reduce((s, j) => s + (j.onSiteMinutes ?? 0), 0);
+
+        res.json({
+            status: 'success',
+            data: {
+                userId,
+                date: dayStr,
+                pings,
+                jobs: jobSummaries,
+                geofence,
+                totals: {
+                    jobsWorked: jobSummaries.length,
+                    onSiteMinutes: totalOnSiteMin,
+                    pingsRecorded: pings.length,
+                },
+            },
+        });
+    },
+
+    /** List all techs that have any pings or jobs on a given date. */
+    activeTechs: async (req: Request, res: Response) => {
+        const companyId = req.user!.companyId;
+        const dayStr = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+        const start = new Date(`${dayStr}T00:00:00.000Z`);
+        const end = new Date(`${dayStr}T23:59:59.999Z`);
+
+        const [pingUserIds, jobUserIds] = await Promise.all([
+            prisma.userLocationPing.findMany({
+                where: { companyId, createdAt: { gte: start, lte: end } },
+                select: { userId: true },
+                distinct: ['userId'],
+            }),
+            prisma.job.findMany({
+                where: {
+                    companyId, deletedAt: null,
+                    techId: { not: null },
+                    OR: [
+                        { actualStart: { gte: start, lte: end } },
+                        { scheduledStart: { gte: start, lte: end } },
+                    ],
+                },
+                select: { techId: true },
+                distinct: ['techId'],
+            }),
+        ]);
+
+        const ids = Array.from(new Set([
+            ...pingUserIds.map(p => p.userId),
+            ...jobUserIds.map(j => j.techId!).filter(Boolean),
+        ]));
+
+        if (ids.length === 0) return void res.json({ status: 'success', data: { techs: [] } });
+
+        const users = await prisma.user.findMany({
+            where: { companyId, id: { in: ids } },
+            select: { id: true, email: true, firstName: true, lastName: true },
+        });
+        res.json({ status: 'success', data: { techs: users } });
     },
 };

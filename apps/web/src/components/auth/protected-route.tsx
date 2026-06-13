@@ -3,7 +3,7 @@
 import { useAuthStore } from "../../store/auth"
 import { useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
-import api from "../../lib/api"
+import { ensureFreshSession } from "../../lib/api"
 
 export default function ProtectedRoute({
     children,
@@ -12,7 +12,7 @@ export default function ProtectedRoute({
     children: React.ReactNode
     allowedRoles?: string[]
 }) {
-    const { isAuthenticated, user, accessToken, hydrateSession, logout } = useAuthStore()
+    const { isAuthenticated, user, accessToken } = useAuthStore()
     const router = useRouter()
     const [isBootstrapping, setIsBootstrapping] = useState(true)
 
@@ -23,20 +23,16 @@ export default function ProtectedRoute({
                 return
             }
 
-            try {
-                const response = await api.post("/auth/refresh")
-                const { user, accessToken } = response.data.data
-                hydrateSession(user, accessToken)
-            } catch {
-                logout()
+            // Shared single-flight refresh — hydrates the store on success.
+            const token = await ensureFreshSession()
+            if (!token) {
                 router.push("/login")
-            } finally {
-                setIsBootstrapping(false)
             }
+            setIsBootstrapping(false)
         }
 
         void bootstrap()
-    }, [accessToken, hydrateSession, isAuthenticated, logout, router])
+    }, [accessToken, isAuthenticated, router])
 
     useEffect(() => {
         if (!isBootstrapping && allowedRoles && user && !allowedRoles.includes(user.role)) {
