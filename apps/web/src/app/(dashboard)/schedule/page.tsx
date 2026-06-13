@@ -6,7 +6,7 @@ import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
 import { format, isSameDay, startOfWeek, endOfWeek } from "date-fns";
-import { CalendarClock, MapPinned, RefreshCcw, Route, Satellite, ShieldCheck, TimerReset } from "lucide-react";
+import { CalendarClock, Maximize2, Minimize2, MapPinned, RefreshCcw, Route, Satellite, ShieldCheck, TimerReset } from "lucide-react";
 import api from "../../../lib/api";
 import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
@@ -117,6 +117,8 @@ export default function SchedulePage() {
     const { accessToken } = useAuthStore();
     const calendarRef = useRef<FullCalendar | null>(null);
     const socketRef = useRef<Socket | null>(null);
+    const fullscreenRef = useRef<HTMLDivElement | null>(null);
+    const [isFullscreen, setIsFullscreen] = useState(false);
     const [suggestJobId, setSuggestJobId] = useState<string | null>(null);
     const [reassignJob, setReassignJob] = useState<CalendarEvent | null>(null);
     const [events, setEvents] = useState<CalendarEvent[]>([]);
@@ -201,6 +203,48 @@ export default function SchedulePage() {
             socketRef.current?.disconnect();
         };
     }, [accessToken]);
+
+    // Expanded "wall-board" view for the dispatcher. Prefer the native Fullscreen
+    // API (hides browser chrome), but fall back to a CSS overlay that fills the
+    // viewport when fullscreen is blocked (permissions policy / embedded contexts),
+    // so the bigger view always works. `isFullscreen` drives the layout either way.
+    const collapse = () => {
+        setIsFullscreen(false);
+        if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    };
+
+    const toggleFullscreen = () => {
+        if (isFullscreen) {
+            collapse();
+            return;
+        }
+        setIsFullscreen(true);
+        // Best-effort native fullscreen; the CSS overlay covers us if it's rejected.
+        void fullscreenRef.current?.requestFullscreen?.().catch(() => {});
+    };
+
+    useEffect(() => {
+        // Leaving native fullscreen (e.g. via Esc) should collapse the layout too.
+        const onFsChange = () => {
+            if (!document.fullscreenElement) setIsFullscreen(false);
+        };
+        // Esc also exits the CSS-overlay fallback (no native fullscreen to listen to).
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape") setIsFullscreen(false);
+        };
+        document.addEventListener("fullscreenchange", onFsChange);
+        document.addEventListener("keydown", onKey);
+        return () => {
+            document.removeEventListener("fullscreenchange", onFsChange);
+            document.removeEventListener("keydown", onKey);
+        };
+    }, []);
+
+    // Recompute the calendar's size whenever the view expands/collapses.
+    useEffect(() => {
+        const id = setTimeout(() => calendarRef.current?.getApi().updateSize(), 150);
+        return () => clearTimeout(id);
+    }, [isFullscreen]);
 
     const visibleProperties = useMemo(
         () => properties.filter((property) => !planForm.customerId || property.customerId === planForm.customerId),
@@ -353,7 +397,14 @@ export default function SchedulePage() {
     };
 
     return (
-        <div className="space-y-6">
+        <div
+            ref={fullscreenRef}
+            className={
+                isFullscreen
+                    ? "fixed inset-0 z-50 space-y-6 overflow-auto bg-background p-6"
+                    : "space-y-6"
+            }
+        >
             <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
                 <div>
                     <h1 className="page-title">Dispatch Center</h1>
@@ -362,6 +413,15 @@ export default function SchedulePage() {
                     </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
+                    <Button
+                        variant="outline"
+                        className="gap-2"
+                        onClick={() => void toggleFullscreen()}
+                        title={isFullscreen ? "Exit fullscreen" : "Fullscreen dispatch board"}
+                    >
+                        {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                        {isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+                    </Button>
                     <Button variant="outline" className="gap-2" onClick={() => void refreshOperations()}>
                         <RefreshCcw className="h-4 w-4" />
                         Refresh live data
@@ -381,7 +441,7 @@ export default function SchedulePage() {
             </div>
 
             <div className="grid gap-6 xl:grid-cols-[280px_minmax(0,1.4fr)_minmax(320px,0.95fr)]">
-                <div className="h-[480px] xl:h-[820px]">
+                <div className={isFullscreen ? "h-[calc(100vh-220px)]" : "h-[480px] xl:h-[820px]"}>
                     <UnscheduledJobsPanel
                         onJobClick={(id) => router.push(`/jobs/${id}`)}
                         onSuggestTechClick={(id) => setSuggestJobId(id)}
@@ -392,7 +452,7 @@ export default function SchedulePage() {
                         <CardTitle>Calendar board</CardTitle>
                     </CardHeader>
                     <CardContent className="p-2 md:p-3">
-                        <div className="h-[560px] xl:h-[720px]">
+                        <div className={isFullscreen ? "h-[calc(100vh-260px)]" : "h-[560px] xl:h-[720px]"}>
                             <FullCalendar
                                 ref={calendarRef}
                                 plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
