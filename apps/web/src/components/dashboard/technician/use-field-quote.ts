@@ -2,7 +2,7 @@
 
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
-import api from "../../../lib/api";
+import { OFFLINE_KEYS } from "../../../lib/offline-mutations";
 import { toast } from "../../ui/use-toast";
 import type { PriceBookItem, QuoteDraftItem } from "./types";
 
@@ -14,8 +14,12 @@ export function useFieldQuote() {
     const [quoteSearch, setQuoteSearch] = useState("");
     const [quoteItems, setQuoteItems] = useState<QuoteDraftItem[]>([]);
 
+    // Field quote runs through the offline queue (OFFLINE_KEYS.fieldQuote): fired
+    // with no signal it is paused, persisted, and replayed on reconnect — same as
+    // status/photo/line-item actions. onSuccess only fires when the request
+    // actually lands (online now, or after reconnect while still mounted).
     const quoteMutation = useMutation<unknown, any, { jobId: string; items: QuoteDraftItem[] }>({
-        mutationFn: async (vars) => (await api.post("/finance/estimates/field", vars)).data,
+        mutationKey: OFFLINE_KEYS.fieldQuote,
         onSuccess: () => {
             toast({ title: "Quote sent to customer", description: "They’ll get an approval link by SMS/email." });
             setQuoteItems([]);
@@ -30,6 +34,23 @@ export function useFieldQuote() {
         },
     });
 
+    /** Send the on-site quote. Offline, the mutation queues; we clear the draft
+     *  and tell the tech it will send on reconnect. Online, we keep the draft
+     *  until onSuccess confirms delivery (and clear it on failure-free landing). */
+    const sendQuote = (jobId: string) => {
+        if (quoteItems.length === 0) return;
+        const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+        quoteMutation.mutate({ jobId, items: quoteItems });
+        if (offline) {
+            setQuoteItems([]);
+            setQuoteSearch("");
+            toast({
+                title: "Quote queued",
+                description: "No signal — it’ll send automatically when you’re back online.",
+            });
+        }
+    };
+
     const addQuoteItem = (item: PriceBookItem) => {
         setQuoteItems((prev) => {
             const existing = prev.find((q) => q.priceBookItemId === item.id);
@@ -41,5 +62,5 @@ export function useFieldQuote() {
         setQuoteSearch("");
     };
 
-    return { quoteSearch, setQuoteSearch, quoteItems, setQuoteItems, addQuoteItem, quoteMutation };
+    return { quoteSearch, setQuoteSearch, quoteItems, setQuoteItems, addQuoteItem, quoteMutation, sendQuote };
 }

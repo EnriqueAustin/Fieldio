@@ -3,6 +3,7 @@ import { prisma } from '@fieldio/database';
 import { AppError } from '../../middleware/error';
 import { StatusCodes } from 'http-status-codes';
 import { config } from '../../config/env';
+import { notificationService } from '../../services/notifications/notification.service';
 
 export const portalService = {
     generatePortalLink: async (customerId: string, companyId: string) => {
@@ -117,7 +118,7 @@ export const portalService = {
     },
 
     approveEstimateViaPortal: async (token: string, estimateId: string, signerName: string, signatureUrl: string) => {
-        const { customerId, companyId } = await portalService.validateToken(token);
+        const { customerId, companyId, customer } = await portalService.validateToken(token);
 
         const estimate = await prisma.estimate.findFirst({
             where: { id: estimateId, customerId, companyId },
@@ -127,7 +128,7 @@ export const portalService = {
             throw new AppError('Estimate cannot be approved', StatusCodes.BAD_REQUEST);
         }
 
-        return prisma.estimate.update({
+        const updated = await prisma.estimate.update({
             where: { id: estimateId },
             data: {
                 status: 'APPROVED',
@@ -137,10 +138,25 @@ export const portalService = {
                 approvedAt: new Date(),
             },
         });
+
+        // Best-effort: let the office know the quote closed. Never block the
+        // customer's approval on a notification failure.
+        try {
+            await notificationService.notifyStaffEstimateDecision(companyId, 'APPROVED', {
+                estimateId,
+                customerName: customer.name,
+                total: Number(estimate.total),
+                signerName,
+            });
+        } catch {
+            /* non-blocking — the estimate is already approved */
+        }
+
+        return updated;
     },
 
     declineEstimateViaPortal: async (token: string, estimateId: string) => {
-        const { customerId, companyId } = await portalService.validateToken(token);
+        const { customerId, companyId, customer } = await portalService.validateToken(token);
 
         const estimate = await prisma.estimate.findFirst({
             where: { id: estimateId, customerId, companyId },
@@ -150,12 +166,25 @@ export const portalService = {
             throw new AppError('Estimate cannot be declined', StatusCodes.BAD_REQUEST);
         }
 
-        return prisma.estimate.update({
+        const updated = await prisma.estimate.update({
             where: { id: estimateId },
             data: {
                 status: 'DECLINED',
                 declinedAt: new Date(),
             },
         });
+
+        // Best-effort: alert the office that the customer declined.
+        try {
+            await notificationService.notifyStaffEstimateDecision(companyId, 'DECLINED', {
+                estimateId,
+                customerName: customer.name,
+                total: Number(estimate.total),
+            });
+        } catch {
+            /* non-blocking — the estimate is already declined */
+        }
+
+        return updated;
     },
 };

@@ -20,6 +20,7 @@ export const OFFLINE_KEYS = {
     signature: ["job", "signature"] as const,
     expense: ["job", "expense"] as const,
     photo: ["job", "photo"] as const,
+    fieldQuote: ["job", "fieldQuote"] as const,
 };
 
 const ASSIGNED_JOBS_KEY = ["technician-assigned-jobs"];
@@ -187,6 +188,16 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
             if (receiptBlobId) await delPhotoBlob(receiptBlobId);
         },
         onSettled: () => invalidateFieldQueries(qc),
+    });
+
+    // Field quote: the tech builds a price-book-driven quote on site. Prices are
+    // resolved server-side (never trusted from the client), so the queued
+    // variables carry no pricing — only item ids/quantities. No optimistic cache
+    // patch: the estimate is a separate entity, not part of the assigned-jobs list.
+    qc.setMutationDefaults(OFFLINE_KEYS.fieldQuote, {
+        mutationFn: async ({ jobId, items }: { jobId: string; items: Array<{ priceBookItemId?: string; name: string; quantity: number; type: string }> }) => {
+            await api.post(`/finance/estimates/field`, { jobId, items });
+        },
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.photo, {

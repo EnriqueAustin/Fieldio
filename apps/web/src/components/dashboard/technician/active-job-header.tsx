@@ -20,9 +20,9 @@ export function ActiveJobHeader({ job, nextStatus, canComplete, mapsHref, onChan
             : job.status === "EN_ROUTE"
             ? "Customer has the tracking link — they’re notified you’re on the way."
             : job.status === "ON_SITE"
-            ? "Customer was notified you arrived. Completing emails them a job summary."
+            ? "Customer was notified you arrived. Completing sends them a job summary by email and WhatsApp."
             : job.status === "COMPLETED"
-            ? "Customer was emailed the completion summary automatically."
+            ? "Customer was sent the completion summary automatically by email and WhatsApp."
             : null;
 
     return (

@@ -19,6 +19,7 @@ import { useExpenses } from "./technician/use-expenses";
 import { useJobNotes } from "./technician/use-notes";
 import { useJobPhotos } from "./technician/use-photos";
 import { useSignature } from "./technician/use-signature";
+import { useJobSummary } from "./technician/use-job-summary";
 import { useJobProgress } from "./technician/use-job-progress";
 import { OverviewCards } from "./technician/overview-cards";
 import { JobList } from "./technician/job-list";
@@ -37,6 +38,7 @@ export function TechnicianView({ user }: TechnicianViewProps) {
     const notes = useJobNotes();
     const photos = useJobPhotos();
     const signature = useSignature();
+    const summaryMutation = useJobSummary();
     const { statusMutation, checklistMutation } = useJobProgress();
 
     const assignedJobsQuery = useQuery({
@@ -183,7 +185,7 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                 onToggleChecklist={(checkId, isCompleted) =>
                                     checklistMutation.mutate({ jobId: activeJob.id, checkId, isCompleted })
                                 }
-                                onSendQuote={() => quote.quoteMutation.mutate({ jobId: activeJob.id, items: quote.quoteItems })}
+                                onSendQuote={() => quote.sendQuote(activeJob.id)}
                                 isSendingQuote={quote.quoteMutation.isPending}
                             />
                         </TabsContent>
@@ -211,6 +213,8 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                 setSignatureDataUrl={signature.setSignatureDataUrl}
                                 onSaveSignature={() => signature.saveSignature(activeJob.id)}
                                 isSaving={signature.signatureMutation.isPending}
+                                onSendSummary={() => summaryMutation.mutate({ jobId: activeJob.id })}
+                                isSendingSummary={summaryMutation.isPending}
                             />
                         </TabsContent>
                     </Tabs>

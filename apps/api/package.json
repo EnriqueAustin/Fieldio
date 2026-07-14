@@ -6,7 +6,9 @@
         "build": "tsc",
         "dev": "tsx --watch src/server.ts",
         "lint": "tsc --noEmit",
-        "test": "node --experimental-strip-types scripts/test.ts",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "test:legacy": "node --experimental-strip-types scripts/test.ts",
         "start": "node dist/server.js"
     },
     "dependencies": {
@@ -44,7 +46,10 @@
         "@types/multer": "^1.4.11",
         "@types/node": "^20.10.0",
         "pino-pretty": "^10.3.0",
+        "supertest": "^7.0.0",
+        "@types/supertest": "^6.0.2",
         "tsx": "^4.7.0",
-        "typescript": "^5.3.0"
+        "typescript": "^5.3.0",
+        "vitest": "^2.1.8"
     }
 }

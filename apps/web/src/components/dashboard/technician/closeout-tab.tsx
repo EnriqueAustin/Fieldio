@@ -2,7 +2,7 @@
 
 import type { Dispatch, SetStateAction } from "react";
 import { format } from "date-fns";
-import { CheckCircle2, Clock, PenTool } from "lucide-react";
+import { CheckCircle2, Clock, FileText, PenTool, Send } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../../ui/card";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
@@ -20,6 +20,8 @@ interface CloseoutTabProps {
     setSignatureDataUrl: (value: string | null) => void;
     onSaveSignature: () => void;
     isSaving: boolean;
+    onSendSummary: () => void;
+    isSendingSummary: boolean;
 }
 
 export function CloseoutTab({
@@ -32,6 +34,8 @@ export function CloseoutTab({
     setSignatureDataUrl,
     onSaveSignature,
     isSaving,
+    onSendSummary,
+    isSendingSummary,
 }: CloseoutTabProps) {
     return (
         <Card>
@@ -81,6 +85,33 @@ export function CloseoutTab({
                                 : "Customer signoff still required."}
                         </p>
                     </div>
+                </div>
+
+                <div className="flex flex-col gap-3 rounded-2xl border p-5 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                        <div className="flex items-center gap-2 font-medium">
+                            <FileText className="h-4 w-4" />
+                            Customer job summary
+                        </div>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                            {job.summaryEmailedAt
+                                ? `Sent ${format(new Date(job.summaryEmailedAt), "MMM d, p")}. Re-send if the customer needs another copy.`
+                                : "Send the customer a summary of the work done, checklist and sign-off — no pricing shown to you."}
+                        </p>
+                    </div>
+                    <Button
+                        variant="outline"
+                        className="shrink-0"
+                        onClick={onSendSummary}
+                        disabled={isSendingSummary}
+                    >
+                        <Send className="mr-2 h-4 w-4" />
+                        {isSendingSummary
+                            ? "Sending…"
+                            : job.summaryEmailedAt
+                            ? "Re-send summary"
+                            : "Send job summary"}
+                    </Button>
                 </div>
 
                 <div className="space-y-4 rounded-2xl border p-5">

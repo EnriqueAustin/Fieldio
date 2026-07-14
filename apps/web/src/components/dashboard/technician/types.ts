@@ -74,6 +74,7 @@ export interface TechnicianJob {
     scheduledEnd?: string | null;
     actualStart?: string | null;
     actualEnd?: string | null;
+    summaryEmailedAt?: string | null;
     customer: {
         id: string;
         name: string;
