@@ -28,7 +28,7 @@ jobRouter.post('/:id/summary-pdf', catchAsync(async (req: Request, res: Response
     const r = await jobSummaryService.generateAndSend(
         req.params.id,
         req.user!.companyId,
-        { email: req.body?.email === true },
+        { email: req.body?.email === true, whatsapp: req.body?.whatsapp === true },
     );
     res.status(200).json({ status: 'success', data: r });
 }));
