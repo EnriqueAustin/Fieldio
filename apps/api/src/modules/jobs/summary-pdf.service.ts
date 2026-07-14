@@ -2,6 +2,7 @@ import PDFDocument from 'pdfkit';
 import { prisma } from '@fieldio/database';
 import { storageService, isStorageConfigured } from '../../services/storage.service';
 import { emailService } from '../../services/notifications/email.service';
+import { whatsappService } from '../../services/notifications/whatsapp.service';
 import { logger } from '../../utils/logger';
 import { normalizeCompanySettings } from '../company/company-settings';
 
@@ -128,8 +129,8 @@ const generateBuffer = async (job: any, company: any, settings: any): Promise<Bu
 };
 
 export const jobSummaryService = {
-    /** Build & store a leave-behind PDF and (optionally) email it to the customer. */
-    generateAndSend: async (jobId: string, companyId: string, opts: { email?: boolean } = {}) => {
+    /** Build & store a leave-behind PDF and (optionally) email / WhatsApp it to the customer. */
+    generateAndSend: async (jobId: string, companyId: string, opts: { email?: boolean; whatsapp?: boolean } = {}) => {
         const job = await prisma.job.findFirst({
             where: { id: jobId, companyId },
             include: {
@@ -168,7 +169,7 @@ export const jobSummaryService = {
             where: { id: jobId },
             data: {
                 ...(pdfUrl ? { summaryPdfUrl: pdfUrl } : {}),
-                ...(opts.email ? { summaryEmailedAt: new Date() } : {}),
+                ...(opts.email || opts.whatsapp ? { summaryEmailedAt: new Date() } : {}),
             },
         });
 
@@ -185,6 +186,17 @@ export const jobSummaryService = {
                 );
             } catch (err: any) {
                 logger.warn({ jobId, err: err.message }, 'Summary email failed');
+            }
+        }
+
+        if (opts.whatsapp && job.customer.phone) {
+            try {
+                const body = pdfUrl
+                    ? `Hi ${job.customer.name}, thanks for choosing ${company.name}. Your service summary for "${job.title}" is ready:\n${pdfUrl}`
+                    : `Hi ${job.customer.name}, thanks for choosing ${company.name}. Your service summary for "${job.title}" is ready in your customer portal.`;
+                await whatsappService.sendText(job.customer.phone, body, companyId);
+            } catch (err: any) {
+                logger.warn({ jobId, err: err.message }, 'Summary WhatsApp failed');
             }
         }
 

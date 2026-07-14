@@ -696,7 +696,7 @@ export const jobsService = {
             // Leave-behind summary PDF — fire & forget so completion doesn't block on storage/email.
             const { jobSummaryService } = await import('./summary-pdf.service');
             jobSummaryService
-                .generateAndSend(id, companyId, { email: true })
+                .generateAndSend(id, companyId, { email: true, whatsapp: true })
                 .catch((err) => {
                     require('../../utils/logger').logger.warn(
                         { jobId: id, err: err.message },
