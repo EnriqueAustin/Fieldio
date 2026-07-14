@@ -65,6 +65,7 @@ import { documentsRouter } from './routes/documents';
 import { inventoryAlertsRouter } from './routes/inventoryAlerts';
 import { branchesRouter } from './routes/branches';
 import { publicTrackerRouter } from './routes/scheduling';
+import { searchRouter } from './routes/search';
 const app = express();
 const httpServer = createServer(app);
 
@@ -184,6 +185,7 @@ app.use('/statements', statementsRouter);
 app.use('/documents', documentsRouter);
 app.use('/inventory-alerts', inventoryAlertsRouter);
 app.use('/branches', branchesRouter);
+app.use('/search', searchRouter);
 
 // Error handling
 app.use(errorHandler);

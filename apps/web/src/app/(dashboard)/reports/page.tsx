@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import api from "../../../lib/api";
+import { downloadFile } from "../../../lib/download";
+import { toast } from "../../../components/ui/use-toast";
 import { BarChart3, Clock, DollarSign, Download, TrendingUp, Users } from "lucide-react";
 
 type Tab = "costing" | "timesheet" | "earnings";
@@ -36,6 +38,31 @@ export default function ReportsPage() {
     const [costingData, setCostingData] = useState<{ summary: any; jobs: JobCostRow[] } | null>(null);
     const [timesheetData, setTimesheetData] = useState<{ technicians: TimesheetTech[]; totalHours: number } | null>(null);
     const [earningsData, setEarningsData] = useState<{ technicians: EarningsTech[]; totals: any } | null>(null);
+    const [from, setFrom] = useState("");
+    const [to, setTo] = useState("");
+    const [exporting, setExporting] = useState<string | null>(null);
+
+    const runExport = async (key: string, path: string, label: string, dateFiltered: boolean) => {
+        setExporting(key);
+        try {
+            await downloadFile(
+                path,
+                `${label}.csv`,
+                dateFiltered ? { from: from || undefined, to: to || undefined } : undefined
+            );
+        } catch {
+            toast({ title: `Failed to export ${label}`, variant: "destructive" });
+        } finally {
+            setExporting(null);
+        }
+    };
+
+    const sageExports = [
+        { key: "invoices", path: "/finance/export/sage/invoices", label: "Sage Invoices", dated: true },
+        { key: "expenses", path: "/finance/export/sage/expenses", label: "Sage Expenses", dated: true },
+        { key: "job-costing", path: "/finance/export/sage/job-costing", label: "Sage Job Costing", dated: true },
+        { key: "customers", path: "/finance/export/sage/customers", label: "Sage Customers", dated: false },
+    ];
 
     useEffect(() => {
         if (tab === "costing" && !costingData) {
@@ -58,28 +85,36 @@ export default function ReportsPage() {
                     <h1 className="page-title">Reports</h1>
                     <p className="page-subtitle">Job costing, timesheets, and technician earnings.</p>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                    <a
-                        href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"}/finance/export/sage/invoices`}
-                        className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-3 py-2 text-sm font-medium transition hover:bg-slate-50"
-                    >
-                        <Download className="h-4 w-4" />
-                        Sage Invoices
-                    </a>
-                    <a
-                        href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"}/finance/export/sage/expenses`}
-                        className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-3 py-2 text-sm font-medium transition hover:bg-slate-50"
-                    >
-                        <Download className="h-4 w-4" />
-                        Sage Expenses
-                    </a>
-                    <a
-                        href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"}/finance/export/sage/job-costing`}
-                        className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-3 py-2 text-sm font-medium transition hover:bg-slate-50"
-                    >
-                        <Download className="h-4 w-4" />
-                        Sage Job Costing
-                    </a>
+                <div className="flex flex-wrap items-end gap-2">
+                    <div className="flex flex-col gap-1">
+                        <label className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">From</label>
+                        <input
+                            type="date"
+                            value={from}
+                            onChange={(e) => setFrom(e.target.value)}
+                            className="rounded-lg border border-border bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]"
+                        />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                        <label className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">To</label>
+                        <input
+                            type="date"
+                            value={to}
+                            onChange={(e) => setTo(e.target.value)}
+                            className="rounded-lg border border-border bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]"
+                        />
+                    </div>
+                    {sageExports.map((exp) => (
+                        <button
+                            key={exp.key}
+                            onClick={() => runExport(exp.key, exp.path, exp.label, exp.dated)}
+                            disabled={exporting !== null}
+                            className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-3 py-2 text-sm font-medium transition hover:bg-slate-50 disabled:opacity-50"
+                        >
+                            <Download className="h-4 w-4" />
+                            {exporting === exp.key ? "Exporting…" : exp.label}
+                        </button>
+                    ))}
                 </div>
             </div>
 

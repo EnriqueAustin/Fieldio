@@ -1,8 +1,91 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { FileText, Briefcase, Clock, CheckCircle2, XCircle, AlertCircle, CreditCard } from "lucide-react";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+
+/** Lightweight finger/mouse signature pad for the public portal (no app deps). */
+function PortalSignaturePad({ onChange }: { onChange: (value: string | null) => void }) {
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const drawing = useRef(false);
+    const hasStroke = useRef(false);
+
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext("2d");
+        if (!canvas || !ctx) return;
+        ctx.lineWidth = 2;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.strokeStyle = "#0f172a";
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }, []);
+
+    const pt = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+        const canvas = canvasRef.current!;
+        const rect = canvas.getBoundingClientRect();
+        return {
+            x: (e.clientX - rect.left) * (canvas.width / rect.width),
+            y: (e.clientY - rect.top) * (canvas.height / rect.height),
+        };
+    };
+
+    const begin = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+        const ctx = canvasRef.current?.getContext("2d");
+        if (!ctx) return;
+        const p = pt(e);
+        drawing.current = true;
+        canvasRef.current!.setPointerCapture(e.pointerId);
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+    };
+    const move = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+        if (!drawing.current) return;
+        const ctx = canvasRef.current?.getContext("2d");
+        if (!ctx) return;
+        const p = pt(e);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+        hasStroke.current = true;
+    };
+    const end = () => {
+        if (!drawing.current) return;
+        drawing.current = false;
+        onChange(hasStroke.current ? canvasRef.current!.toDataURL("image/png") : null);
+    };
+    const clear = () => {
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext("2d");
+        if (!canvas || !ctx) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        hasStroke.current = false;
+        onChange(null);
+    };
+
+    return (
+        <div className="space-y-2">
+            <canvas
+                ref={canvasRef}
+                width={800}
+                height={240}
+                className="h-40 w-full rounded-xl border border-dashed border-slate-300 bg-white touch-none"
+                onPointerDown={begin}
+                onPointerMove={move}
+                onPointerUp={end}
+                onPointerLeave={end}
+            />
+            <button type="button" onClick={clear} className="text-xs font-medium text-slate-500 hover:text-slate-900">
+                Clear signature
+            </button>
+        </div>
+    );
+}
 
 interface PortalData {
     customer: { id: string; name: string; email: string | null; phone: string | null };
@@ -48,12 +131,59 @@ export default function CustomerPortalPage() {
     const [error, setError] = useState<string | null>(null);
     const [tab, setTab] = useState<"jobs" | "invoices" | "estimates">("jobs");
 
-    useEffect(() => {
-        fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"}/public/portal/${token}`)
+    // Quote approval flow state
+    const [approvingId, setApprovingId] = useState<string | null>(null);
+    const [signerName, setSignerName] = useState("");
+    const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null);
+    const [submitting, setSubmitting] = useState(false);
+    const [actionError, setActionError] = useState<string | null>(null);
+
+    const load = useCallback(() => {
+        fetch(`${API_BASE}/public/portal/${token}`)
             .then(r => { if (!r.ok) throw new Error("Invalid or expired link"); return r.json(); })
             .then(r => setData(r.data))
             .catch(e => setError(e.message));
     }, [token]);
+
+    useEffect(() => { load(); }, [load]);
+
+    const closeApproval = () => {
+        setApprovingId(null);
+        setSignerName("");
+        setSignatureDataUrl(null);
+        setActionError(null);
+    };
+
+    const submitApproval = async () => {
+        if (!approvingId || !signerName.trim() || !signatureDataUrl) return;
+        setSubmitting(true);
+        setActionError(null);
+        try {
+            const r = await fetch(`${API_BASE}/public/portal/${token}/estimates/${approvingId}/approve`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ signerName: signerName.trim(), signatureUrl: signatureDataUrl }),
+            });
+            if (!r.ok) throw new Error((await r.json().catch(() => null))?.message || "Could not approve quote");
+            closeApproval();
+            load();
+        } catch (e: any) {
+            setActionError(e.message);
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const declineEstimate = async (id: string) => {
+        if (!confirm("Decline this quote? The team will be notified.")) return;
+        try {
+            const r = await fetch(`${API_BASE}/public/portal/${token}/estimates/${id}/decline`, { method: "POST" });
+            if (!r.ok) throw new Error("Could not decline quote");
+            load();
+        } catch {
+            /* surfaced via reload — non-blocking */
+        }
+    };
 
     if (error) return (
         <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -157,19 +287,77 @@ export default function CustomerPortalPage() {
                 {tab === "estimates" && (
                     <div className="space-y-3">
                         {data.estimates.map(est => (
-                            <div key={est.id} className="bg-white rounded-xl border border-border p-5 flex justify-between items-center">
-                                <div>
-                                    <p className="font-medium">Estimate #{est.id.slice(0, 8)}</p>
-                                    <p className="text-sm text-muted-foreground">Total: R {Number(est.total).toFixed(2)}</p>
-                                    {est.validUntil && <p className="text-xs text-muted-foreground">Valid until: {new Date(est.validUntil).toLocaleDateString()}</p>}
+                            <div key={est.id} className="bg-white rounded-xl border border-border p-5">
+                                <div className="flex justify-between items-start gap-3">
+                                    <div>
+                                        <p className="font-medium">Estimate #{est.id.slice(0, 8)}</p>
+                                        <p className="text-sm text-muted-foreground">Total: R {Number(est.total).toFixed(2)}</p>
+                                        {est.validUntil && <p className="text-xs text-muted-foreground">Valid until: {new Date(est.validUntil).toLocaleDateString()}</p>}
+                                    </div>
+                                    <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium ${statusColors[est.status] || ""}`}>{est.status}</span>
                                 </div>
-                                <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium ${statusColors[est.status] || ""}`}>{est.status}</span>
+                                {est.status === "SENT" && (
+                                    <div className="flex gap-2 mt-4 pt-4 border-t border-border">
+                                        <button
+                                            onClick={() => { setApprovingId(est.id); setSignerName(data.customer.name); }}
+                                            className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 transition"
+                                        >
+                                            <CheckCircle2 className="h-4 w-4" /> Approve quote
+                                        </button>
+                                        <button
+                                            onClick={() => declineEstimate(est.id)}
+                                            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-4 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-50 transition"
+                                        >
+                                            <XCircle className="h-4 w-4" /> Decline
+                                        </button>
+                                    </div>
+                                )}
+                                {est.status === "APPROVED" && (
+                                    <p className="mt-3 text-xs text-emerald-700 flex items-center gap-1.5">
+                                        <CheckCircle2 className="h-3.5 w-3.5" /> You approved this quote. The team will be in touch.
+                                    </p>
+                                )}
                             </div>
                         ))}
                         {data.estimates.length === 0 && <p className="text-center py-12 text-sm text-muted-foreground">No estimates found</p>}
                     </div>
                 )}
             </div>
+
+            {approvingId && (
+                <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-4" onClick={closeApproval}>
+                    <div className="w-full max-w-lg rounded-2xl bg-white p-6 space-y-4" onClick={e => e.stopPropagation()}>
+                        <div>
+                            <h2 className="text-lg font-semibold">Approve quote</h2>
+                            <p className="text-sm text-muted-foreground mt-1">Sign below to accept this quote. This is your authorisation to proceed with the work.</p>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Your name</label>
+                            <input
+                                value={signerName}
+                                onChange={e => setSignerName(e.target.value)}
+                                placeholder="Full name"
+                                className="w-full rounded-lg border border-border px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Signature</label>
+                            <PortalSignaturePad onChange={setSignatureDataUrl} />
+                        </div>
+                        {actionError && <p className="text-sm text-rose-600">{actionError}</p>}
+                        <div className="flex gap-2 justify-end pt-2">
+                            <button onClick={closeApproval} className="rounded-lg border border-border px-4 py-2.5 text-sm font-medium hover:bg-slate-50">Cancel</button>
+                            <button
+                                onClick={submitApproval}
+                                disabled={submitting || !signerName.trim() || !signatureDataUrl}
+                                className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {submitting ? "Approving…" : "Approve & sign"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

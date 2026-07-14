@@ -30,6 +30,13 @@ export const portalController = {
         res.status(StatusCodes.OK).json({ status: 'success', data: { estimate } });
     },
 
+    declineEstimate: async (req: Request, res: Response) => {
+        const estimate = await portalService.declineEstimateViaPortal(
+            req.params.token, req.params.estimateId
+        );
+        res.status(StatusCodes.OK).json({ status: 'success', data: { estimate } });
+    },
+
     // --- Authenticated (office staff generates portal link) ---
     generateLink: async (req: Request, res: Response) => {
         const result = await portalService.generatePortalLink(req.params.customerId, req.user!.companyId);

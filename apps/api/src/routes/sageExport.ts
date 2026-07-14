@@ -104,6 +104,41 @@ sageExportRouter.get('/sage/expenses', catchAsync(async (req: Request, res: Resp
     res.status(StatusCodes.OK).send(csv);
 }));
 
+sageExportRouter.get('/sage/customers', catchAsync(async (req: Request, res: Response) => {
+    const companyId = req.user!.companyId;
+
+    const customers = await prisma.customer.findMany({
+        where: { companyId, deletedAt: null },
+        include: {
+            properties: { take: 1, orderBy: { id: 'asc' } },
+        },
+        orderBy: { name: 'asc' },
+    });
+
+    const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    const header = 'Name,Email,Phone,AddressLine1,AddressLine2,City,Province,PostalCode,Status,Notes';
+    const rows = customers.map(c => {
+        const p = c.properties[0];
+        return [
+            esc(c.name),
+            c.email ?? '',
+            c.phone ?? '',
+            esc(p?.addressLine1 ?? ''),
+            esc(p?.addressLine2 ?? ''),
+            esc(p?.city ?? ''),
+            esc(p?.state ?? ''),
+            p?.zip ?? '',
+            c.status,
+            esc(c.notes ?? ''),
+        ].join(',');
+    });
+
+    const csv = [header, ...rows].join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="sage-customers-${new Date().toISOString().split('T')[0]}.csv"`);
+    res.status(StatusCodes.OK).send(csv);
+}));
+
 sageExportRouter.get('/sage/job-costing', catchAsync(async (req: Request, res: Response) => {
     const { from, to } = req.query;
     const companyId = req.user!.companyId;

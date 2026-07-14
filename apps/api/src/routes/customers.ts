@@ -10,6 +10,7 @@ customerRouter.use(requireUser);
 
 customerRouter.get('/', catchAsync(customerController.getAll));
 customerRouter.post('/', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(customerController.create));
+customerRouter.post('/import', restrictTo('ADMIN', 'OFFICE'), catchAsync(customerController.bulkImport));
 customerRouter.get('/:id', catchAsync(customerController.getOne));
 customerRouter.patch('/:id', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(customerController.update));
 customerRouter.delete('/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(customerController.softDelete));

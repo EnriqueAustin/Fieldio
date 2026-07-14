@@ -8,6 +8,7 @@ export const publicPortalRouter = Router();
 publicPortalRouter.get('/:token', catchAsync(portalController.getDashboard));
 publicPortalRouter.get('/:token/jobs/:jobId', catchAsync(portalController.getJobDetail));
 publicPortalRouter.post('/:token/estimates/:estimateId/approve', catchAsync(portalController.approveEstimate));
+publicPortalRouter.post('/:token/estimates/:estimateId/decline', catchAsync(portalController.declineEstimate));
 
 export const portalRouter = Router();
 

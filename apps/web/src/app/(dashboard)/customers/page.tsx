@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import api from "../../../lib/api";
-import { Plus, Search, Users, Mail, Phone, Building, ArrowUpRight } from "lucide-react";
+import { Plus, Search, Users, Mail, Phone, Building, ArrowUpRight, Upload } from "lucide-react";
 import { Avatar, AvatarFallback } from "../../../components/ui/avatar";
 import { cn } from "../../../lib/utils";
 
@@ -35,13 +35,22 @@ export default function CustomersPage() {
                     <h1 className="page-title">Customers</h1>
                     <p className="page-subtitle">View and manage your client base.</p>
                 </div>
-                <Link
-                    href="/customers/new"
-                    className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 transition"
-                >
-                    <Plus className="h-4 w-4" />
-                    New customer
-                </Link>
+                <div className="flex items-center gap-2">
+                    <Link
+                        href="/customers/import"
+                        className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 transition"
+                    >
+                        <Upload className="h-4 w-4" />
+                        Import
+                    </Link>
+                    <Link
+                        href="/customers/new"
+                        className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 transition"
+                    >
+                        <Plus className="h-4 w-4" />
+                        New customer
+                    </Link>
+                </div>
             </div>
 
             <div className="surface-card p-3">

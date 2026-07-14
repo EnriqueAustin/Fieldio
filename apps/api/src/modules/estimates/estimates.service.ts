@@ -2,12 +2,28 @@ import { prisma } from '@fieldio/database';
 import { AppError } from '../../middleware/error';
 import { StatusCodes } from 'http-status-codes';
 import { z } from 'zod';
+import { portalService } from '../portal/portal.service';
+import { notificationService } from '../../services/notifications/notification.service';
 
 const createEstimateSchema = z.object({
     projectId: z.string().uuid().optional().nullable(),
     customerId: z.string(),
     items: z.array(z.any()), // Simplified for now
     total: z.number(),
+    validUntil: z.string().optional(),
+});
+
+// Field quote: a technician picks price-book items + quantities only. They never
+// send (or see) prices — the server resolves the unit price from the price book
+// and computes the total, consistent with the hide-pricing-from-techs rule.
+const fieldEstimateSchema = z.object({
+    jobId: z.string(),
+    items: z.array(z.object({
+        priceBookItemId: z.string().optional(),
+        name: z.string().min(1),
+        quantity: z.number().min(1).default(1),
+        type: z.enum(['SERVICE', 'MATERIAL', 'LABOR']).default('SERVICE'),
+    })).min(1),
     validUntil: z.string().optional(),
 });
 
@@ -36,6 +52,81 @@ export const estimateService = {
                 status: 'DRAFT',
             },
         });
+    },
+
+    // Tech-safe creation from the field. Resolves prices server-side, marks the
+    // quote SENT, and auto-sends the customer an approval link (best-effort).
+    createFromField: async (
+        companyId: string,
+        role: string | undefined,
+        input: z.infer<typeof fieldEstimateSchema>
+    ) => {
+        const parsed = fieldEstimateSchema.parse(input);
+
+        const job = await prisma.job.findFirst({
+            where: { id: parsed.jobId, companyId, deletedAt: null },
+            select: { customerId: true, projectId: true },
+        });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        // Resolve unit prices from the price book — never trust the client.
+        const pbIds = parsed.items.map((i) => i.priceBookItemId).filter(Boolean) as string[];
+        const pbItems = pbIds.length
+            ? await prisma.priceBookItem.findMany({ where: { id: { in: pbIds }, companyId } })
+            : [];
+        const priceMap = new Map(pbItems.map((p) => [p.id, p]));
+
+        let total = 0;
+        const items = parsed.items.map((i) => {
+            const pb = i.priceBookItemId ? priceMap.get(i.priceBookItemId) : undefined;
+            const unitPrice = pb ? Number(pb.unitPrice) : 0;
+            const lineTotal = unitPrice * i.quantity;
+            total += lineTotal;
+            return {
+                name: i.name,
+                quantity: i.quantity,
+                unitPrice,
+                total: lineTotal,
+                type: i.type,
+                priceBookItemId: i.priceBookItemId ?? null,
+            };
+        });
+
+        const estimate = await prisma.estimate.create({
+            data: {
+                companyId,
+                customerId: job.customerId,
+                projectId: job.projectId,
+                items,
+                total,
+                status: 'SENT',
+                sentAt: new Date(),
+                validUntil: parsed.validUntil ? new Date(parsed.validUntil) : null,
+            },
+        });
+
+        // Best-effort: hand the customer a portal link they can approve from.
+        try {
+            const link = await portalService.generatePortalLink(job.customerId, companyId);
+            await notificationService.notifyCustomer(job.customerId, companyId, 'ESTIMATE_SENT', {
+                estimateId: estimate.id,
+                total,
+                viewUrl: link.url,
+            });
+        } catch {
+            /* notification is non-blocking — the quote is already saved */
+        }
+
+        // A technician must never receive pricing back in the response.
+        if (role === 'TECHNICIAN') {
+            return {
+                id: estimate.id,
+                status: estimate.status,
+                createdAt: estimate.createdAt,
+                itemCount: items.length,
+            };
+        }
+        return estimate;
     },
 
     getAll: async (companyId: string) => {

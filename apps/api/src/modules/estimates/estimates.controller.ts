@@ -8,6 +8,15 @@ export const estimateController = {
         res.status(StatusCodes.CREATED).json({ status: 'success', data: { estimate } });
     },
 
+    createFromField: async (req: Request, res: Response) => {
+        const estimate = await estimateService.createFromField(
+            req.user!.companyId,
+            req.user!.role,
+            req.body
+        );
+        res.status(StatusCodes.CREATED).json({ status: 'success', data: { estimate } });
+    },
+
     getAll: async (req: Request, res: Response) => {
         const estimates = await estimateService.getAll(req.user!.companyId);
         res.status(StatusCodes.OK).json({ status: 'success', data: { estimates } });

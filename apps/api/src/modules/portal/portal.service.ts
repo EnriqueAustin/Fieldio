@@ -138,4 +138,24 @@ export const portalService = {
             },
         });
     },
+
+    declineEstimateViaPortal: async (token: string, estimateId: string) => {
+        const { customerId, companyId } = await portalService.validateToken(token);
+
+        const estimate = await prisma.estimate.findFirst({
+            where: { id: estimateId, customerId, companyId },
+        });
+        if (!estimate) throw new AppError('Estimate not found', StatusCodes.NOT_FOUND);
+        if (estimate.status !== 'SENT') {
+            throw new AppError('Estimate cannot be declined', StatusCodes.BAD_REQUEST);
+        }
+
+        return prisma.estimate.update({
+            where: { id: estimateId },
+            data: {
+                status: 'DECLINED',
+                declinedAt: new Date(),
+            },
+        });
+    },
 };

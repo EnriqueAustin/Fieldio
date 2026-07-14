@@ -31,4 +31,9 @@ export const customerController = {
         await customerService.softDelete(req.params.id, req.user!.companyId);
         res.status(StatusCodes.OK).json({ status: 'success' });
     },
+
+    bulkImport: async (req: Request, res: Response) => {
+        const result = await customerService.bulkImport(req.user!.companyId, req.body);
+        res.status(StatusCodes.OK).json({ status: 'success', data: result });
+    },
 };

@@ -10,6 +10,8 @@ financeRouter.use(requireUser);
 
 // Estimates
 financeRouter.post('/estimates', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(estimateController.create));
+// Field quoting: technicians (and office) build a price-book-driven quote on site.
+financeRouter.post('/estimates/field', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'TECHNICIAN'), catchAsync(estimateController.createFromField));
 financeRouter.get('/estimates', catchAsync(estimateController.getAll));
 financeRouter.get('/estimates/:id', catchAsync(estimateController.getOne));
 financeRouter.post('/estimates/:id/approve', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(estimateController.approveWithSignature));

@@ -10,6 +10,7 @@ import {
     CheckCircle2,
     Circle,
     Clock,
+    FileText,
     MapPin,
     Navigation,
     Package,
@@ -18,6 +19,7 @@ import {
     Plus,
     Route,
     Search,
+    Send,
     StickyNote,
     Trash2,
     Upload,
@@ -312,6 +314,10 @@ export function TechnicianView({ user }: TechnicianViewProps) {
     const [newItem, setNewItem] = useState({ name: "", quantity: 1, type: "SERVICE" as string, priceBookItemId: "" });
     const [newExpense, setNewExpense] = useState({ description: "", amount: "", category: "PARTS_PURCHASE" });
     const [expenseReceipt, setExpenseReceipt] = useState<File | null>(null);
+    // Field quoting: tech picks price-book items + qty only; the server prices it
+    // and sends the customer an approval link. Prices are never shown here.
+    const [quoteSearch, setQuoteSearch] = useState("");
+    const [quoteItems, setQuoteItems] = useState<Array<{ priceBookItemId?: string; name: string; quantity: number; type: string }>>([]);
 
     useEffect(() => {
         api.get("/price-book").then((res) => setPriceBookItems(res.data?.data?.items ?? [])).catch(() => {});
@@ -334,6 +340,33 @@ export function TechnicianView({ user }: TechnicianViewProps) {
     const removeLineItemMutation = useMutation<unknown, any, { jobId: string; itemId: string }>({
         mutationKey: OFFLINE_KEYS.lineItemRemove,
     });
+
+    const quoteMutation = useMutation<unknown, any, { jobId: string; items: typeof quoteItems }>({
+        mutationFn: async (vars) => (await api.post("/finance/estimates/field", vars)).data,
+        onSuccess: () => {
+            toast({ title: "Quote sent to customer", description: "They’ll get an approval link by SMS/email." });
+            setQuoteItems([]);
+            setQuoteSearch("");
+        },
+        onError: (error: any) => {
+            toast({
+                title: "Could not send quote",
+                description: error?.response?.data?.message ?? "Please try again when you have signal.",
+                variant: "destructive",
+            });
+        },
+    });
+
+    const addQuoteItem = (item: PriceBookItem) => {
+        setQuoteItems((prev) => {
+            const existing = prev.find((q) => q.priceBookItemId === item.id);
+            if (existing) {
+                return prev.map((q) => q.priceBookItemId === item.id ? { ...q, quantity: q.quantity + 1 } : q);
+            }
+            return [...prev, { priceBookItemId: item.id, name: item.name, quantity: 1, type: item.type }];
+        });
+        setQuoteSearch("");
+    };
 
     const selectPBItem = (item: PriceBookItem) => {
         setNewItem({ name: item.name, quantity: 1, type: item.type, priceBookItemId: item.id });
@@ -921,6 +954,100 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                             ))}
                                         </div>
                                     )}
+                                </CardContent>
+                            </Card>
+
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle className="flex items-center gap-2">
+                                        <FileText className="h-4 w-4" /> Quote customer
+                                    </CardTitle>
+                                </CardHeader>
+                                <CardContent className="space-y-4">
+                                    <p className="text-sm text-muted-foreground">
+                                        Spotted extra work? Build a quote from the price book and send {activeJob.customer.name} an
+                                        approval link. Pricing is applied by the office — you just pick the work.
+                                    </p>
+
+                                    {/* Price book search for the quote */}
+                                    <div className="relative">
+                                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                                        <input
+                                            placeholder="Search price book to add to quote…"
+                                            value={quoteSearch}
+                                            onChange={(e) => setQuoteSearch(e.target.value)}
+                                            className="w-full rounded-lg border border-border bg-background pl-9 pr-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                                        />
+                                    </div>
+                                    {quoteSearch && (
+                                        <div className="max-h-32 overflow-y-auto rounded-lg border divide-y">
+                                            {priceBookItems
+                                                .filter((item) =>
+                                                    item.name.toLowerCase().includes(quoteSearch.toLowerCase()) ||
+                                                    (item.sku && item.sku.toLowerCase().includes(quoteSearch.toLowerCase()))
+                                                )
+                                                .slice(0, 6)
+                                                .map((item) => (
+                                                    <button
+                                                        key={item.id}
+                                                        onClick={() => addQuoteItem(item)}
+                                                        className="w-full flex items-center justify-between p-2.5 text-left hover:bg-slate-50 text-sm"
+                                                    >
+                                                        <div className="flex items-center gap-2">
+                                                            {item.type === "MATERIAL" ? <Package className="h-4 w-4 text-slate-400" /> : <Wrench className="h-4 w-4 text-slate-400" />}
+                                                            <span className="font-medium">{item.name}</span>
+                                                        </div>
+                                                        <Plus className="h-4 w-4 text-slate-400" />
+                                                    </button>
+                                                ))}
+                                        </div>
+                                    )}
+
+                                    {/* Draft quote lines */}
+                                    {quoteItems.length === 0 ? (
+                                        <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground text-center">
+                                            No quote items yet. Search the price book above to start a quote.
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-2">
+                                            {quoteItems.map((q, idx) => (
+                                                <div key={q.priceBookItemId ?? idx} className="flex items-center justify-between rounded-xl border p-3">
+                                                    <div className="flex items-center gap-3 min-w-0">
+                                                        {q.type === "MATERIAL" ? <Package className="h-4 w-4 text-slate-400 shrink-0" /> : <Wrench className="h-4 w-4 text-slate-400 shrink-0" />}
+                                                        <span className="font-medium text-sm truncate">{q.name}</span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <input
+                                                            type="number"
+                                                            min="1"
+                                                            value={q.quantity}
+                                                            onChange={(e) => {
+                                                                const quantity = parseInt(e.target.value) || 1;
+                                                                setQuoteItems((prev) => prev.map((p, i) => i === idx ? { ...p, quantity } : p));
+                                                            }}
+                                                            className="w-16 rounded-lg border border-border px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-ring"
+                                                        />
+                                                        <button
+                                                            onClick={() => setQuoteItems((prev) => prev.filter((_, i) => i !== idx))}
+                                                            className="text-rose-500 hover:text-rose-600 transition"
+                                                        >
+                                                            <Trash2 className="h-3.5 w-3.5" />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    <div className="flex justify-end">
+                                        <Button
+                                            onClick={() => quoteMutation.mutate({ jobId: activeJob.id, items: quoteItems })}
+                                            disabled={quoteItems.length === 0 || quoteMutation.isPending}
+                                        >
+                                            <Send className="mr-2 h-4 w-4" />
+                                            {quoteMutation.isPending ? "Sending…" : "Send quote to customer"}
+                                        </Button>
+                                    </div>
                                 </CardContent>
                             </Card>
 
