@@ -110,6 +110,7 @@ interface TechnicianJob {
     scheduledEnd?: string | null;
     actualStart?: string | null;
     actualEnd?: string | null;
+    summaryEmailedAt?: string | null;
     customer: {
         id: string;
         name: string;
@@ -341,8 +342,12 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         mutationKey: OFFLINE_KEYS.lineItemRemove,
     });
 
+    // Field quote runs through the offline queue (OFFLINE_KEYS.fieldQuote): fired
+    // with no signal it is paused, persisted, and replayed on reconnect — same as
+    // status/photo/line-item actions. onSuccess only fires when the request
+    // actually lands (online now, or after reconnect while still mounted).
     const quoteMutation = useMutation<unknown, any, { jobId: string; items: typeof quoteItems }>({
-        mutationFn: async (vars) => (await api.post("/finance/estimates/field", vars)).data,
+        mutationKey: OFFLINE_KEYS.fieldQuote,
         onSuccess: () => {
             toast({ title: "Quote sent to customer", description: "They’ll get an approval link by SMS/email." });
             setQuoteItems([]);
@@ -356,6 +361,23 @@ export function TechnicianView({ user }: TechnicianViewProps) {
             });
         },
     });
+
+    /** Send the on-site quote. Offline, the mutation queues; we clear the draft
+     *  and tell the tech it will send on reconnect. Online, we keep the draft
+     *  until onSuccess confirms delivery (and clear it on failure-free landing). */
+    const sendQuote = () => {
+        if (!activeJob || quoteItems.length === 0) return;
+        const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+        quoteMutation.mutate({ jobId: activeJob.id, items: quoteItems });
+        if (offline) {
+            setQuoteItems([]);
+            setQuoteSearch("");
+            toast({
+                title: "Quote queued",
+                description: "No signal — it’ll send automatically when you’re back online.",
+            });
+        }
+    };
 
     const addQuoteItem = (item: PriceBookItem) => {
         setQuoteItems((prev) => {
@@ -493,6 +515,24 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         mutationKey: OFFLINE_KEYS.expense,
         onError: () => {
             toast({ title: "Could not add expense", variant: "destructive" });
+        },
+    });
+
+    // Customer job summary. The PDF is built server-side and delivered by email +
+    // WhatsApp, so no pricing is ever exposed to the tech. Needs signal (storage /
+    // messaging) — this is not queued for offline replay.
+    const summaryMutation = useMutation<unknown, any, { jobId: string }>({
+        mutationFn: async ({ jobId }) =>
+            (await api.post(`/jobs/${jobId}/summary-pdf`, { email: true, whatsapp: true })).data,
+        onSuccess: () => {
+            toast({ title: "Job summary sent", description: "The customer gets it by email and WhatsApp." });
+        },
+        onError: (error: any) => {
+            toast({
+                title: "Could not send summary",
+                description: error?.response?.data?.message ?? "Please try again when you have signal.",
+                variant: "destructive",
+            });
         },
     });
 
@@ -741,9 +781,9 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                             : activeJob.status === "EN_ROUTE"
                                             ? "Customer has the tracking link — they’re notified you’re on the way."
                                             : activeJob.status === "ON_SITE"
-                                            ? "Customer was notified you arrived. Completing emails them a job summary."
+                                            ? "Customer was notified you arrived. Completing sends them a job summary by email and WhatsApp."
                                             : activeJob.status === "COMPLETED"
-                                            ? "Customer was emailed the completion summary automatically."
+                                            ? "Customer was sent the completion summary automatically by email and WhatsApp."
                                             : null;
                                     return commsHint ? (
                                         <div className="flex items-start gap-2 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">
@@ -1041,7 +1081,7 @@ export function TechnicianView({ user }: TechnicianViewProps) {
 
                                     <div className="flex justify-end">
                                         <Button
-                                            onClick={() => quoteMutation.mutate({ jobId: activeJob.id, items: quoteItems })}
+                                            onClick={sendQuote}
                                             disabled={quoteItems.length === 0 || quoteMutation.isPending}
                                         >
                                             <Send className="mr-2 h-4 w-4" />
@@ -1309,6 +1349,33 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                                     : "Customer signoff still required."}
                                             </p>
                                         </div>
+                                    </div>
+
+                                    <div className="flex flex-col gap-3 rounded-2xl border p-5 sm:flex-row sm:items-center sm:justify-between">
+                                        <div className="min-w-0">
+                                            <div className="flex items-center gap-2 font-medium">
+                                                <FileText className="h-4 w-4" />
+                                                Customer job summary
+                                            </div>
+                                            <p className="mt-1 text-sm text-muted-foreground">
+                                                {activeJob.summaryEmailedAt
+                                                    ? `Sent ${format(new Date(activeJob.summaryEmailedAt), "MMM d, p")}. Re-send if the customer needs another copy.`
+                                                    : "Send the customer a summary of the work done, checklist and sign-off — no pricing shown to you."}
+                                            </p>
+                                        </div>
+                                        <Button
+                                            variant="outline"
+                                            className="shrink-0"
+                                            onClick={() => summaryMutation.mutate({ jobId: activeJob.id })}
+                                            disabled={summaryMutation.isPending}
+                                        >
+                                            <Send className="mr-2 h-4 w-4" />
+                                            {summaryMutation.isPending
+                                                ? "Sending…"
+                                                : activeJob.summaryEmailedAt
+                                                ? "Re-send summary"
+                                                : "Send job summary"}
+                                        </Button>
                                     </div>
 
                                     <div className="space-y-4 rounded-2xl border p-5">
