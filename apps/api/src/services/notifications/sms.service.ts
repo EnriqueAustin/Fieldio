@@ -105,4 +105,12 @@ export const smsService = {
             companyId,
             body: `Reminder: your appointment is scheduled for ${when}.`,
         }),
+
+    sendEstimate: (phone: string, total: string, viewUrl: string, companyId?: string) =>
+        send({
+            to: phone,
+            template: 'estimate_sent',
+            companyId,
+            body: `Your estimate for ${total} is ready. Approve or decline here: ${viewUrl}`,
+        }),
 };

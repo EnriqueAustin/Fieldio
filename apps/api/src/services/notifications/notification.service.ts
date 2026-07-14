@@ -32,6 +32,41 @@ export const notificationService = {
         return notification;
     },
 
+    // Fan a quote approve/decline back to the office so staff know it closed.
+    // Best-effort: notifies every active back-office user (ADMIN/OFFICE/DISPATCHER/
+    // CSR/SALES) via the in-app notification feed (which also pushes over socket).
+    notifyStaffEstimateDecision: async (
+        companyId: string,
+        decision: 'APPROVED' | 'DECLINED',
+        payload: { estimateId: string; customerName?: string; total?: number; signerName?: string }
+    ) => {
+        const staff = await prisma.user.findMany({
+            where: {
+                companyId,
+                status: 'ACTIVE',
+                role: { in: ['ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES'] },
+            },
+            select: { id: true },
+        });
+        if (staff.length === 0) return;
+
+        const shortId = payload.estimateId.slice(0, 8);
+        const who = payload.customerName ?? 'A customer';
+        const amount =
+            payload.total != null ? ` (R ${Number(payload.total).toFixed(2)})` : '';
+        const title = decision === 'APPROVED' ? 'Quote approved' : 'Quote declined';
+        const message =
+            decision === 'APPROVED'
+                ? `${who} approved quote #${shortId}${amount}${payload.signerName ? `, signed by ${payload.signerName}` : ''}.`
+                : `${who} declined quote #${shortId}${amount}.`;
+
+        await Promise.all(
+            staff.map((s) =>
+                notificationService.notifyUser(s.id, companyId, 'ALERT', title, message)
+            )
+        );
+    },
+
     notifyCustomer: async (
         customerId: string,
         companyId: string,
@@ -115,19 +150,26 @@ export const notificationService = {
                 }
                 break;
 
-            case 'ESTIMATE_SENT':
+            case 'ESTIMATE_SENT': {
                 if (customer.email)
                     await emailService.sendEstimate(
                         customer.email,
                         { id: payload.estimateId, total: payload.total ?? 0, viewUrl: payload.viewUrl ?? '' },
                         companyId
                     );
-                if (customer.phone && waEnabled) {
+                if (customer.phone) {
                     const currency = settings.regional.currency;
                     const total = `${currency} ${Number(payload.total ?? 0).toFixed(2)}`;
-                    await whatsappService.sendEstimate(customer.phone, total, payload.viewUrl ?? '', companyId);
+                    // Prefer WhatsApp when configured, otherwise fall back to SMS so the
+                    // approval link always reaches the customer on some channel.
+                    if (waEnabled) {
+                        await whatsappService.sendEstimate(customer.phone, total, payload.viewUrl ?? '', companyId);
+                    } else {
+                        await smsService.sendEstimate(customer.phone, total, payload.viewUrl ?? '', companyId);
+                    }
                 }
                 break;
+            }
 
             case 'REVIEW_REQUEST':
                 if (customer.phone && waEnabled && payload.reviewUrl) {
