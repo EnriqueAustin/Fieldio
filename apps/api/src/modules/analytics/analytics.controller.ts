@@ -66,9 +66,24 @@ export const analyticsController = {
         res.status(StatusCodes.OK).json({ status: 'success', data: { report } });
     },
 
+    getTimeseries: async (req: Request, res: Response) => {
+        const range = parseRange(req.query);
+        const days = Number(req.query.days) || undefined;
+        const report = await analyticsService.getTimeseries(req.user!.companyId, { ...range, days });
+        res.status(StatusCodes.OK).json({ status: 'success', data: { report } });
+    },
+
+    getScoreboard: async (req: Request, res: Response) => {
+        const range = parseRange(req.query);
+        const days = Number(req.query.days) || undefined;
+        const report = await analyticsService.getTechScoreboard(req.user!.companyId, { ...range, days });
+        res.status(StatusCodes.OK).json({ status: 'success', data: { report } });
+    },
+
     getKpiSnapshot: async (req: Request, res: Response) => {
+        const range = parseRange(req.query);
         const days = Number(req.query.days) || 30;
-        const snapshot = await kpiService.snapshot(req.user!.companyId, days);
+        const snapshot = await kpiService.snapshot(req.user!.companyId, { ...range, days });
         res.status(StatusCodes.OK).json({ status: 'success', data: { snapshot } });
     },
 

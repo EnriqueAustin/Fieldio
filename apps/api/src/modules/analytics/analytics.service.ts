@@ -516,6 +516,222 @@ export const analyticsService = {
         };
     },
 
+    /**
+     * Weekly time-series for the dashboard charts: revenue trend, jobs-by-status
+     * over time, and a quote funnel (sent -> approved -> converted). Built from
+     * findMany + in-JS bucketing (no raw SQL) so it stays portable and testable.
+     */
+    getTimeseries: async (companyId: string, range?: { from?: Date; to?: Date; days?: number }) => {
+        const now = new Date();
+        const to = range?.to ?? now;
+        const from = range?.from ?? new Date(now.getTime() - (range?.days ?? 30) * 86_400_000);
+        const spanMs = Math.max(to.getTime() - from.getTime(), 86_400_000);
+        const weekMs = 7 * 86_400_000;
+        const weekCount = Math.max(1, Math.ceil(spanMs / weekMs));
+
+        const weekIndex = (d: Date | string | null | undefined) => {
+            if (!d) return -1;
+            const t = new Date(d).getTime();
+            if (t < from.getTime() || t > to.getTime()) return -1;
+            return Math.min(weekCount - 1, Math.floor((t - from.getTime()) / weekMs));
+        };
+
+        const [invoices, jobs, estimates] = await Promise.all([
+            prisma.invoice.findMany({
+                where: {
+                    companyId,
+                    deletedAt: null,
+                    createdAt: { gte: from, lte: to },
+                    status: { in: ['SENT', 'PAID', 'PARTIAL', 'OVERDUE'] },
+                },
+                select: { total: true, createdAt: true },
+            }),
+            prisma.job.findMany({
+                where: { companyId, deletedAt: null, createdAt: { gte: from, lte: to } },
+                select: { status: true, createdAt: true },
+            }),
+            prisma.estimate.findMany({
+                where: { companyId, createdAt: { gte: from, lte: to } },
+                select: { status: true, total: true, jobId: true },
+            }),
+        ]);
+
+        const statuses = ['REQUESTED', 'ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'COMPLETED', 'CANCELED'];
+        const weeks = Array.from({ length: weekCount }, (_, i) => {
+            const weekStart = new Date(from.getTime() + i * weekMs);
+            const jobsByStatus: Record<string, number> = {};
+            for (const s of statuses) jobsByStatus[s] = 0;
+            return { weekStart: weekStart.toISOString(), revenue: 0, jobsTotal: 0, jobsByStatus };
+        });
+
+        for (const inv of invoices) {
+            const i = weekIndex(inv.createdAt);
+            if (i >= 0) weeks[i].revenue += Number(inv.total);
+        }
+        for (const job of jobs) {
+            const i = weekIndex(job.createdAt);
+            if (i < 0) continue;
+            weeks[i].jobsTotal += 1;
+            const s = job.status ?? 'REQUESTED';
+            weeks[i].jobsByStatus[s] = (weeks[i].jobsByStatus[s] ?? 0) + 1;
+        }
+
+        const funnel = {
+            sent: { count: 0, value: 0 },
+            approved: { count: 0, value: 0 },
+            converted: { count: 0, value: 0 },
+        };
+        for (const est of estimates) {
+            const value = Number(est.total);
+            if (['SENT', 'APPROVED', 'DECLINED'].includes(est.status)) {
+                funnel.sent.count += 1;
+                funnel.sent.value += value;
+            }
+            if (est.status === 'APPROVED') {
+                funnel.approved.count += 1;
+                funnel.approved.value += value;
+                if (est.jobId) {
+                    funnel.converted.count += 1;
+                    funnel.converted.value += value;
+                }
+            }
+        }
+
+        return {
+            range: { from, to },
+            weeks: weeks.map((w) => ({
+                ...w,
+                revenue: Math.round(w.revenue * 100) / 100,
+            })),
+            funnel,
+        };
+    },
+
+    /**
+     * Per-technician scoreboard for the selected range: jobs completed, revenue,
+     * utilization (worked hours vs available working hours), average job duration,
+     * and a first-time-fix rate derived from warranty claims linked to the job.
+     */
+    getTechScoreboard: async (companyId: string, range?: { from?: Date; to?: Date; days?: number }) => {
+        const now = new Date();
+        const to = range?.to ?? now;
+        const from = range?.from ?? new Date(now.getTime() - (range?.days ?? 30) * 86_400_000);
+
+        // Available working hours across the range: weekdays * 8h.
+        let workingDays = 0;
+        for (let t = from.getTime(); t <= to.getTime(); t += 86_400_000) {
+            const day = new Date(t).getUTCDay();
+            if (day !== 0 && day !== 6) workingDays += 1;
+        }
+        const availableHours = Math.max(workingDays, 1) * 8;
+
+        const [technicians, completedJobs, warrantyClaims] = await Promise.all([
+            prisma.user.findMany({
+                where: { companyId, role: 'TECHNICIAN', status: 'ACTIVE' },
+                select: { id: true, firstName: true, lastName: true, email: true },
+            }),
+            prisma.job.findMany({
+                where: {
+                    companyId,
+                    deletedAt: null,
+                    status: 'COMPLETED',
+                    techId: { not: null },
+                    actualEnd: { gte: from, lte: to },
+                },
+                select: {
+                    id: true,
+                    techId: true,
+                    actualStart: true,
+                    actualEnd: true,
+                    invoice: { select: { total: true } },
+                },
+            }),
+            prisma.warrantyClaim.findMany({
+                where: { companyId },
+                select: { jobId: true },
+            }),
+        ]);
+
+        const claimedJobIds = new Set(
+            warrantyClaims.map((c: { jobId: string | null }) => c.jobId).filter(Boolean)
+        );
+
+        type Acc = {
+            jobsCompleted: number;
+            revenue: number;
+            workedHours: number;
+            durationHours: number;
+            durationSamples: number;
+            firstTimeFix: number;
+        };
+        const byTech = new Map<string, Acc>();
+        const ensure = (id: string) => {
+            if (!byTech.has(id)) {
+                byTech.set(id, {
+                    jobsCompleted: 0,
+                    revenue: 0,
+                    workedHours: 0,
+                    durationHours: 0,
+                    durationSamples: 0,
+                    firstTimeFix: 0,
+                });
+            }
+            return byTech.get(id)!;
+        };
+
+        for (const job of completedJobs) {
+            if (!job.techId) continue;
+            const acc = ensure(job.techId);
+            acc.jobsCompleted += 1;
+            acc.revenue += job.invoice ? Number(job.invoice.total) : 0;
+            if (job.actualStart && job.actualEnd) {
+                const hours =
+                    (new Date(job.actualEnd).getTime() - new Date(job.actualStart).getTime()) /
+                    (1000 * 60 * 60);
+                if (hours > 0) {
+                    acc.workedHours += hours;
+                    acc.durationHours += hours;
+                    acc.durationSamples += 1;
+                }
+            }
+            if (!claimedJobIds.has(job.id)) acc.firstTimeFix += 1;
+        }
+
+        const scoreboard = technicians.map((tech: { id: string; firstName: string | null; lastName: string | null; email: string }) => {
+            const acc = byTech.get(tech.id);
+            const jobsCompleted = acc?.jobsCompleted ?? 0;
+            const revenue = acc?.revenue ?? 0;
+            const workedHours = acc?.workedHours ?? 0;
+            const avgDurationHours = acc && acc.durationSamples > 0 ? acc.durationHours / acc.durationSamples : 0;
+            const utilizationRate = Math.min(100, Math.round((workedHours / availableHours) * 100));
+            const firstTimeFixRate = jobsCompleted > 0 ? Math.round(((acc?.firstTimeFix ?? 0) / jobsCompleted) * 100) : 0;
+            return {
+                tech: {
+                    id: tech.id,
+                    name: [tech.firstName, tech.lastName].filter(Boolean).join(' ') || tech.email,
+                },
+                jobsCompleted,
+                revenue: Math.round(revenue * 100) / 100,
+                utilizationRate,
+                avgDurationHours: Math.round(avgDurationHours * 100) / 100,
+                firstTimeFixRate,
+            };
+        });
+
+        scoreboard.sort((a, b) => b.revenue - a.revenue);
+
+        return {
+            range: { from, to },
+            availableHours,
+            totals: {
+                technicians: technicians.length,
+                jobsCompleted: scoreboard.reduce((s, t) => s + t.jobsCompleted, 0),
+                revenue: Math.round(scoreboard.reduce((s, t) => s + t.revenue, 0) * 100) / 100,
+            },
+            scoreboard,
+        };
+    },
+
     getAvgTicketTrend: async (companyId: string, months = 6) => {
         const now = new Date();
         const trends = [];

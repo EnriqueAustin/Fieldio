@@ -8,16 +8,24 @@ const startOf = (offsetDays = 0) => {
 };
 
 export const kpiService = {
-    /** Owner-view KPI snapshot. */
-    snapshot: async (companyId: string, days = 30) => {
-        const since = startOf(days);
-        const prevSince = startOf(days * 2);
+    /** Owner-view KPI snapshot. Accepts either a `days` preset or an explicit from/to range. */
+    snapshot: async (
+        companyId: string,
+        opts: number | { days?: number; from?: Date; to?: Date } = 30
+    ) => {
+        const cfg = typeof opts === 'number' ? { days: opts } : opts;
+        const days = cfg.days ?? 30;
+        const to = cfg.to ?? new Date();
+        const since = cfg.from ?? startOf(days);
+        // Equal-length immediately-preceding window for vs-previous comparisons.
+        const spanMs = Math.max(to.getTime() - since.getTime(), 86_400_000);
+        const prevSince = new Date(since.getTime() - spanMs);
 
         const [thisRevenue, prevRevenue] = await Promise.all([
             prisma.invoice.aggregate({
                 _sum: { total: true },
                 _count: true,
-                where: { companyId, deletedAt: null, createdAt: { gte: since }, status: { in: ['SENT', 'PAID', 'PARTIAL', 'OVERDUE'] } },
+                where: { companyId, deletedAt: null, createdAt: { gte: since, lte: to }, status: { in: ['SENT', 'PAID', 'PARTIAL', 'OVERDUE'] } },
             }),
             prisma.invoice.aggregate({
                 _sum: { total: true },
@@ -26,14 +34,17 @@ export const kpiService = {
             }),
         ]);
 
-        const [estSent, estApproved] = await Promise.all([
-            prisma.estimate.count({ where: { companyId, createdAt: { gte: since }, status: { in: ['SENT', 'APPROVED', 'DECLINED'] } } }),
-            prisma.estimate.count({ where: { companyId, createdAt: { gte: since }, status: 'APPROVED' } }),
+        const [estSent, estApproved, prevEstSent, prevEstApproved] = await Promise.all([
+            prisma.estimate.count({ where: { companyId, createdAt: { gte: since, lte: to }, status: { in: ['SENT', 'APPROVED', 'DECLINED'] } } }),
+            prisma.estimate.count({ where: { companyId, createdAt: { gte: since, lte: to }, status: 'APPROVED' } }),
+            prisma.estimate.count({ where: { companyId, createdAt: { gte: prevSince, lt: since }, status: { in: ['SENT', 'APPROVED', 'DECLINED'] } } }),
+            prisma.estimate.count({ where: { companyId, createdAt: { gte: prevSince, lt: since }, status: 'APPROVED' } }),
         ]);
 
-        const jobsCompleted = await prisma.job.count({
-            where: { companyId, deletedAt: null, status: 'COMPLETED', actualEnd: { gte: since } },
-        });
+        const [jobsCompleted, prevJobsCompleted] = await Promise.all([
+            prisma.job.count({ where: { companyId, deletedAt: null, status: 'COMPLETED', actualEnd: { gte: since, lte: to } } }),
+            prisma.job.count({ where: { companyId, deletedAt: null, status: 'COMPLETED', actualEnd: { gte: prevSince, lt: since } } }),
+        ]);
 
         const arBuckets = await prisma.invoice.findMany({
             where: { companyId, deletedAt: null, balance: { gt: 0 }, status: { in: ['SENT', 'OVERDUE', 'PARTIAL'] } },
@@ -53,16 +64,23 @@ export const kpiService = {
 
         const membersActive = await prisma.membership.count({ where: { companyId, status: 'ACTIVE' } });
         const membersChurned = await prisma.membership.count({
-            where: { companyId, canceledAt: { gte: since } },
+            where: { companyId, canceledAt: { gte: since, lte: to } },
         });
+
+        const pctChange = (curr: number, prev: number) => (prev > 0 ? (curr - prev) / prev : 0);
 
         const totalRevenue = Number(thisRevenue._sum.total ?? 0);
         const invoiceCount = thisRevenue._count;
         const avgTicket = invoiceCount > 0 ? totalRevenue / invoiceCount : 0;
         const closeRate = estSent > 0 ? estApproved / estSent : 0;
-        const revenueChange = Number(prevRevenue._sum.total ?? 0) > 0
-            ? (totalRevenue - Number(prevRevenue._sum.total ?? 0)) / Number(prevRevenue._sum.total ?? 0)
-            : 0;
+        const revenueChange = pctChange(totalRevenue, Number(prevRevenue._sum.total ?? 0));
+
+        const prevInvoiceCount = prevRevenue._count;
+        const prevAvgTicket = prevInvoiceCount > 0 ? Number(prevRevenue._sum.total ?? 0) / prevInvoiceCount : 0;
+        const prevCloseRate = prevEstSent > 0 ? prevEstApproved / prevEstSent : 0;
+        const avgTicketChange = pctChange(avgTicket, prevAvgTicket);
+        const closeRateChange = pctChange(closeRate, prevCloseRate);
+        const jobsCompletedChange = pctChange(jobsCompleted, prevJobsCompleted);
 
         // Sales by tech (top 5)
         const salesByTech = await prisma.$queryRaw<Array<{ techId: string; name: string; revenue: number; jobs: bigint }>>`
@@ -76,6 +94,7 @@ export const kpiService = {
             WHERE j."companyId" = ${companyId}
               AND j."deletedAt" IS NULL
               AND j."actualEnd" >= ${since}
+              AND j."actualEnd" <= ${to}
               AND j."techId" IS NOT NULL
             GROUP BY j."techId", u."firstName", u."lastName", u.email
             ORDER BY revenue DESC
@@ -87,7 +106,7 @@ export const kpiService = {
             data: {
                 companyId,
                 periodStart: since,
-                periodEnd: new Date(),
+                periodEnd: to,
                 revenue: totalRevenue,
                 invoicesCount: invoiceCount,
                 avgTicket,
@@ -104,14 +123,18 @@ export const kpiService = {
 
         return {
             periodDays: days,
+            range: { from: since, to },
             revenue: totalRevenue,
             revenueChange,
             invoices: invoiceCount,
             avgTicket,
+            avgTicketChange,
             closeRate,
+            closeRateChange,
             estimatesSent: estSent,
             estimatesApproved: estApproved,
             jobsCompleted,
+            jobsCompletedChange,
             ar: { open: arOpen, over30: ar30, over60: ar60, over90: ar90 },
             members: { active: membersActive, churned: membersChurned },
             topTechs: salesByTech.map((t) => ({ ...t, jobs: Number(t.jobs) })),

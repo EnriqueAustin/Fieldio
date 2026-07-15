@@ -18,6 +18,22 @@ import { TechnicianView } from "../../components/dashboard/technician-view";
 import { useAuthStore } from "../../store/auth";
 import { Avatar, AvatarFallback } from "../../components/ui/avatar";
 import { cn } from "../../lib/utils";
+import { LineAreaChart, type LineAreaPoint } from "../../components/dashboard/charts/line-area-chart";
+import { StackedBarChart } from "../../components/dashboard/charts/stacked-bar-chart";
+import { FunnelChart } from "../../components/dashboard/charts/funnel-chart";
+
+const JOB_STATUS_SERIES = [
+    { key: "COMPLETED", label: "Completed", color: "#059669" },
+    { key: "ON_SITE", label: "On site", color: "#d97706" },
+    { key: "EN_ROUTE", label: "En route", color: "#7c3aed" },
+    { key: "ASSIGNED", label: "Assigned", color: "#2563eb" },
+    { key: "REQUESTED", label: "Requested", color: "#94a3b8" },
+    { key: "CANCELED", label: "Canceled", color: "#e11d48" },
+];
+
+function weekLabel(iso: string) {
+    return new Date(iso).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" });
+}
 
 interface DashboardStats {
     range: { from: string; to: string };
@@ -121,6 +137,12 @@ export default function DashboardPage() {
         enabled: !!user && user.role !== "TECHNICIAN",
     });
 
+    const { data: series } = useQuery({
+        queryKey: ["dashboard-timeseries"],
+        queryFn: () => api.get("/analytics/timeseries?days=90").then((res) => res.data.data.report),
+        enabled: !!user && user.role !== "TECHNICIAN",
+    });
+
     if (!user) return <SkeletonShell />;
     if (user.role === "TECHNICIAN") return <TechnicianView user={user} stats={stats ?? null} />;
     if (error) {
@@ -201,6 +223,49 @@ export default function DashboardPage() {
                     sub={`${stats.technicians.active} active right now`}
                     icon={Activity}
                     accent="bg-amber-50 text-amber-600"
+                />
+            </div>
+
+            <div className="grid gap-6 lg:grid-cols-3">
+                <div className="surface-card p-5 lg:col-span-2">
+                    <div className="flex items-center justify-between">
+                        <h3 className="font-semibold">Revenue Trend</h3>
+                        <Link href="/kpi" className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700">
+                            KPI dashboard <ArrowUpRight className="h-3 w-3" />
+                        </Link>
+                    </div>
+                    <p className="mb-3 mt-0.5 text-xs text-muted-foreground">Weekly invoiced revenue, last 90 days</p>
+                    <LineAreaChart
+                        data={(series?.weeks ?? []).map((w: any): LineAreaPoint => ({ label: weekLabel(w.weekStart), value: w.revenue }))}
+                        formatValue={(n) => `R ${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+                        title="Revenue by week"
+                    />
+                </div>
+                <div className="surface-card p-5">
+                    <h3 className="font-semibold">Quote Funnel</h3>
+                    <p className="mb-3 mt-0.5 text-xs text-muted-foreground">Sent → approved → converted</p>
+                    {series?.funnel ? (
+                        <FunnelChart
+                            formatValue={(n) => `R ${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+                            stages={[
+                                { label: "Sent", count: series.funnel.sent.count, value: series.funnel.sent.value, color: "#2563eb", href: "/estimates?status=SENT" },
+                                { label: "Approved", count: series.funnel.approved.count, value: series.funnel.approved.value, color: "#7c3aed", href: "/estimates?status=APPROVED" },
+                                { label: "Converted", count: series.funnel.converted.count, value: series.funnel.converted.value, color: "#059669", href: "/jobs" },
+                            ]}
+                        />
+                    ) : (
+                        <div className="text-xs text-slate-400">No quote data yet.</div>
+                    )}
+                </div>
+            </div>
+
+            <div className="surface-card p-5">
+                <h3 className="font-semibold">Jobs by Status Over Time</h3>
+                <p className="mb-3 mt-0.5 text-xs text-muted-foreground">Weekly job volume by status, last 90 days</p>
+                <StackedBarChart
+                    data={(series?.weeks ?? []).map((w: any) => ({ label: weekLabel(w.weekStart), values: w.jobsByStatus }))}
+                    series={JOB_STATUS_SERIES}
+                    title="Jobs by status per week"
                 />
             </div>
 
