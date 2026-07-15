@@ -57,6 +57,12 @@ export const companySettingsSchema = z.object({
         autoSendEmail: z.boolean().default(true),
         autoSendWhatsapp: z.boolean().default(true),
     }).default({}),
+    // Field quoting is OFF by default: most companies price from the office and
+    // technicians never see pricing. Companies that trust techs to quote on site
+    // can opt in, which unlocks POST /finance/estimates/field for the TECHNICIAN role.
+    fieldQuoting: z.object({
+        enabled: z.boolean().default(false),
+    }).default({}),
     contact: z.object({
         phone: z.string().optional().nullable(),
         email: z.string().optional().nullable(),
@@ -153,6 +159,9 @@ export const defaultCompanySettings: CompanySettings = {
         autoSendSms: true,
         autoSendEmail: true,
         autoSendWhatsapp: true,
+    },
+    fieldQuoting: {
+        enabled: false,
     },
     contact: {
         phone: null,

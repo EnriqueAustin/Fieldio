@@ -2,7 +2,7 @@
 
 import type { Dispatch, SetStateAction } from "react";
 import { format } from "date-fns";
-import { CheckCircle2, Clock, FileText, PenTool, Send } from "lucide-react";
+import { CheckCircle2, Clock, CreditCard, FileText, PenTool, Send } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../../ui/card";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
@@ -22,6 +22,12 @@ interface CloseoutTabProps {
     isSaving: boolean;
     onSendSummary: () => void;
     isSendingSummary: boolean;
+    // Field closeout money step. `canInvoice` gates the action to completed/completable
+    // jobs; `invoicedAt` (timestamp only, no amount) flips the UI to a "sent" state.
+    canInvoice: boolean;
+    invoicedAt?: string | null;
+    onSendInvoice: () => void;
+    isSendingInvoice: boolean;
 }
 
 export function CloseoutTab({
@@ -36,6 +42,10 @@ export function CloseoutTab({
     isSaving,
     onSendSummary,
     isSendingSummary,
+    canInvoice,
+    invoicedAt,
+    onSendInvoice,
+    isSendingInvoice,
 }: CloseoutTabProps) {
     return (
         <Card>
@@ -111,6 +121,36 @@ export function CloseoutTab({
                             : job.summaryEmailedAt
                             ? "Re-send summary"
                             : "Send job summary"}
+                    </Button>
+                </div>
+
+                {/* Field closeout money step: invoice the job + send a pay link in one tap.
+                    No amounts are shown to the tech — only who it was sent to. */}
+                <div className="flex flex-col gap-3 rounded-2xl border p-5 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                        <div className="flex items-center gap-2 font-medium">
+                            <CreditCard className="h-4 w-4" />
+                            Invoice and payment link
+                        </div>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                            {invoicedAt
+                                ? "Invoice sent to customer with a link to pay online. Tap again to re-send the link."
+                                : canInvoice
+                                ? "Send the customer their invoice and an online payment link. The office sets the pricing — you just close the loop."
+                                : "Available once the job is complete. Finish the checklist and sign-off first."}
+                        </p>
+                    </div>
+                    <Button
+                        className="shrink-0"
+                        onClick={onSendInvoice}
+                        disabled={!canInvoice || isSendingInvoice}
+                    >
+                        <CreditCard className="mr-2 h-4 w-4" />
+                        {isSendingInvoice
+                            ? "Sending…"
+                            : invoicedAt
+                            ? "Re-send payment link"
+                            : "Request invoice & send payment link"}
                     </Button>
                 </div>
 

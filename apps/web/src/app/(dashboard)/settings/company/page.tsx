@@ -67,6 +67,9 @@ const companySchema = z.object({
             email: z.string().optional(),
             website: z.string().optional(),
         }),
+        fieldQuoting: z.object({
+            enabled: z.boolean(),
+        }),
     }),
 });
 
@@ -326,6 +329,22 @@ export default function CompanySettingsPage() {
                                 <Label>WhatsApp Business Number</Label>
                                 <Input {...register("settings.integrations.whatsapp.businessNumber")} />
                             </div>
+                        </div>
+
+                        <div className="space-y-4 rounded-2xl border border-border/80 bg-white p-5">
+                            <div>
+                                <h4 className="text-sm font-semibold">Field team</h4>
+                                <p className="text-xs text-muted-foreground">Control what technicians can do on site. Pricing is never shown to technicians.</p>
+                            </div>
+                            <label className="flex items-start gap-3 rounded-xl border border-border bg-background px-4 py-3">
+                                <input type="checkbox" className="mt-1" {...register("settings.fieldQuoting.enabled")} />
+                                <span>
+                                    <span className="block font-medium">Allow technicians to create quotes in the field</span>
+                                    <span className="block text-xs text-muted-foreground">
+                                        When off, technicians can log work but cannot build or send quotes — the office does all quoting. Off by default.
+                                    </span>
+                                </span>
+                            </label>
                         </div>
 
                         <div className="grid gap-4 md:grid-cols-3">

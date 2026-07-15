@@ -529,6 +529,8 @@ export const jobsService = {
                 signatures: { orderBy: { signedAt: 'desc' } },
                 lineItems: true,
                 van: { select: { id: true, name: true } },
+                // Timestamp only — techs must never see invoice amounts/totals.
+                invoice: { select: { createdAt: true } },
             },
         });
 
@@ -542,11 +544,17 @@ export const jobsService = {
 
         // Techs record what they used (item + quantity) but must not see what the
         // company charges — strip pricing from line items before returning them.
-        return jobs.map((job) => ({
-            ...job,
-            lineItems: job.lineItems.map(({ unitPrice, total, ...rest }) => rest),
-            notes: notesByJobId.get(job.id) ?? [],
-        }));
+        // The raw `invoice` relation is dropped in favour of a bare timestamp so no
+        // amount can leak; the field console uses it only to show "invoice sent".
+        return jobs.map((job) => {
+            const { invoice, ...rest } = job;
+            return {
+                ...rest,
+                lineItems: job.lineItems.map(({ unitPrice, total, ...item }) => item),
+                invoicedAt: invoice?.createdAt ?? null,
+                notes: notesByJobId.get(job.id) ?? [],
+            };
+        });
     },
 
     getAll: async (companyId: string, page = 1, limit = 20, status?: string, branchId?: string) => {
@@ -919,6 +927,117 @@ export const jobsService = {
         }
 
         return result;
+    },
+
+    /**
+     * Prior service history for the job's customer (and property), for the field
+     * console so a tech can see what happened here before they knock. Returns the
+     * last ~5 COMPLETED jobs with date, title, tech, note excerpt, photo count and
+     * any linked warranty claims. NEVER includes pricing — no line items, amounts
+     * or totals are read or returned, regardless of caller role.
+     *
+     * RBAC: a TECHNICIAN may only view history for a job assigned to them or to
+     * their van (assigned-or-van-mate, matching the other tech-scoped endpoints).
+     * ADMIN / OFFICE / DISPATCHER may view any job in their company.
+     */
+    getSiteHistory: async (jobId: string, companyId: string, userId?: string, userRole?: string) => {
+        const job = await prisma.job.findFirst({
+            where: { id: jobId, companyId, deletedAt: null },
+            select: { id: true, customerId: true, propertyId: true, techId: true, vanId: true },
+        });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        if (userRole === 'TECHNICIAN' && userId) {
+            const isAssigned = job.techId === userId;
+            let isVanMate = false;
+            if (!isAssigned && job.vanId) {
+                const membership = await prisma.vanMember.findFirst({
+                    where: { userId, van: { id: job.vanId, companyId } },
+                });
+                isVanMate = !!membership;
+            }
+            if (!isAssigned && !isVanMate) {
+                throw new AppError('You can only view history for jobs assigned to you or your van', StatusCodes.FORBIDDEN);
+            }
+        }
+
+        // Prior completed visits for the same customer. The current job is excluded,
+        // and pricing relations (lineItems / invoice / estimate) are deliberately
+        // never selected so nothing chargeable can leak.
+        const priorJobs = await prisma.job.findMany({
+            where: {
+                companyId,
+                deletedAt: null,
+                customerId: job.customerId,
+                status: 'COMPLETED',
+                id: { not: jobId },
+            },
+            orderBy: [{ actualEnd: 'desc' }, { updatedAt: 'desc' }],
+            take: 5,
+            include: {
+                tech: { select: { id: true, email: true, firstName: true, lastName: true } },
+                photos: { select: { id: true } },
+            },
+        });
+
+        const priorJobIds = priorJobs.map((j) => j.id);
+
+        // Internal notes (stored as audit-log entries) — used for the note excerpt.
+        const notes = await getJobNotes(companyId, priorJobIds);
+        const notesByJobId = new Map<string, typeof notes>();
+        for (const note of notes) {
+            const existing = notesByJobId.get(note.jobId) ?? [];
+            existing.push(note);
+            notesByJobId.set(note.jobId, existing);
+        }
+
+        // Warranty claims linked to those jobs, if any (WarrantyClaim.jobId is a
+        // loose scalar link — there is no relation field on Job).
+        const warrantyClaims = priorJobIds.length
+            ? await prisma.warrantyClaim.findMany({
+                where: { companyId, jobId: { in: priorJobIds } },
+                select: {
+                    id: true, jobId: true, claimNumber: true, status: true,
+                    issueDescription: true, submittedDate: true, resolvedDate: true,
+                },
+            })
+            : [];
+        const claimsByJobId = new Map<string, typeof warrantyClaims>();
+        for (const claim of warrantyClaims) {
+            if (!claim.jobId) continue;
+            const existing = claimsByJobId.get(claim.jobId) ?? [];
+            existing.push(claim);
+            claimsByJobId.set(claim.jobId, existing);
+        }
+
+        return priorJobs.map((prior) => {
+            const jobNotes = notesByJobId.get(prior.id) ?? [];
+            const latestNote = jobNotes[0]; // getJobNotes orders desc
+            const techName = prior.tech
+                ? [prior.tech.firstName, prior.tech.lastName].filter(Boolean).join(' ') || prior.tech.email
+                : null;
+
+            return {
+                id: prior.id,
+                date: prior.actualEnd ?? prior.scheduledEnd ?? prior.updatedAt,
+                title: prior.title,
+                description: prior.description ?? null,
+                status: prior.status,
+                technicianName: techName,
+                isSameProperty: prior.propertyId === job.propertyId,
+                noteExcerpt: latestNote?.message ?? null,
+                noteCount: jobNotes.length,
+                photoCount: prior.photos.length,
+                warrantyClaims: (claimsByJobId.get(prior.id) ?? []).map((claim) => ({
+                    id: claim.id,
+                    claimNumber: claim.claimNumber,
+                    status: claim.status,
+                    issueDescription: claim.issueDescription,
+                    submittedDate: claim.submittedDate,
+                    resolvedDate: claim.resolvedDate,
+                })),
+            };
+        });
     },
 
     softDelete: async (id: string, companyId: string, userId: string) => {

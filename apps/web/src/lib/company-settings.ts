@@ -52,6 +52,9 @@ export type CompanySettings = {
         email?: string;
         website?: string;
     };
+    fieldQuoting: {
+        enabled: boolean;
+    };
 };
 
 export const defaultCompanySettings: CompanySettings = {
@@ -107,6 +110,9 @@ export const defaultCompanySettings: CompanySettings = {
         phone: '',
         email: '',
         website: '',
+    },
+    fieldQuoting: {
+        enabled: false,
     },
 };
 
@@ -181,6 +187,9 @@ export const normalizeCompanySettings = (input: unknown): CompanySettings => {
             phone: merged.contact.phone ?? '',
             email: merged.contact.email ?? '',
             website: merged.contact.website ?? '',
+        },
+        fieldQuoting: {
+            enabled: merged.fieldQuoting?.enabled ?? false,
         },
     };
 };

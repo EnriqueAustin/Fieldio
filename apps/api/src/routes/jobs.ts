@@ -12,6 +12,7 @@ jobRouter.get('/', catchAsync(jobsController.getAll));
 jobRouter.post('/', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(jobsController.create));
 jobRouter.post('/quick', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(jobsController.quickCreate));
 jobRouter.get('/:id', catchAsync(jobsController.getOne));
+jobRouter.get('/:id/site-history', catchAsync(jobsController.getSiteHistory));
 jobRouter.patch('/:id', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(jobsController.update));
 jobRouter.delete('/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(jobsController.softDelete));
 jobRouter.patch('/:id/status', catchAsync(jobsController.updateStatus));

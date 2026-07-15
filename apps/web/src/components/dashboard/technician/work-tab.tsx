@@ -1,6 +1,7 @@
 "use client";
 
 import { ChecklistCard } from "./checklist-card";
+import { SiteHistoryCard } from "./site-history-card";
 import { LineItemsCard } from "./line-items-card";
 import { QuoteCard } from "./quote-card";
 import { ExpensesCard } from "./expenses-card";
@@ -18,6 +19,8 @@ interface WorkTabProps {
     onToggleChecklist: (checkId: string, isCompleted: boolean) => void;
     onSendQuote: () => void;
     isSendingQuote: boolean;
+    // Field quoting is a company opt-in; the quote card is hidden entirely when off.
+    fieldQuotingEnabled: boolean;
 }
 
 export function WorkTab({
@@ -29,9 +32,12 @@ export function WorkTab({
     onToggleChecklist,
     onSendQuote,
     isSendingQuote,
+    fieldQuotingEnabled,
 }: WorkTabProps) {
     return (
         <>
+            <SiteHistoryCard job={job} />
+
             <ChecklistCard job={job} onToggle={onToggleChecklist} />
 
             <LineItemsCard
@@ -46,17 +52,19 @@ export function WorkTab({
                 onRemoveLineItem={(itemId) => lineItems.removeLineItem(job.id, itemId)}
             />
 
-            <QuoteCard
-                job={job}
-                priceBookItems={priceBookItems}
-                quoteSearch={quote.quoteSearch}
-                setQuoteSearch={quote.setQuoteSearch}
-                quoteItems={quote.quoteItems}
-                setQuoteItems={quote.setQuoteItems}
-                onAddQuoteItem={quote.addQuoteItem}
-                onSendQuote={onSendQuote}
-                isSending={isSendingQuote}
-            />
+            {fieldQuotingEnabled && (
+                <QuoteCard
+                    job={job}
+                    priceBookItems={priceBookItems}
+                    quoteSearch={quote.quoteSearch}
+                    setQuoteSearch={quote.setQuoteSearch}
+                    quoteItems={quote.quoteItems}
+                    setQuoteItems={quote.setQuoteItems}
+                    onAddQuoteItem={quote.addQuoteItem}
+                    onSendQuote={onSendQuote}
+                    isSending={isSendingQuote}
+                />
+            )}
 
             <ExpensesCard
                 newExpense={expenses.newExpense}

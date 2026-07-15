@@ -75,6 +75,9 @@ export interface TechnicianJob {
     actualStart?: string | null;
     actualEnd?: string | null;
     summaryEmailedAt?: string | null;
+    // Set once the job has been invoiced (timestamp only — never an amount) so the
+    // closeout tab can show "invoice sent" without exposing pricing to the tech.
+    invoicedAt?: string | null;
     customer: {
         id: string;
         name: string;

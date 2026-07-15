@@ -21,6 +21,7 @@ export const OFFLINE_KEYS = {
     expense: ["job", "expense"] as const,
     photo: ["job", "photo"] as const,
     fieldQuote: ["job", "fieldQuote"] as const,
+    fieldInvoice: ["job", "fieldInvoice"] as const,
 };
 
 const ASSIGNED_JOBS_KEY = ["technician-assigned-jobs"];
@@ -198,6 +199,19 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
         mutationFn: async ({ jobId, items }: { jobId: string; items: Array<{ priceBookItemId?: string; name: string; quantity: number; type: string }> }) => {
             await api.post(`/finance/estimates/field`, { jobId, items });
         },
+    });
+
+    // Field invoice: the tech taps once to invoice the job and send the customer a
+    // pay link. Amounts are computed and stripped server-side, so the queued
+    // variables carry only the jobId. Idempotent server-side (resends the link if
+    // already invoiced). onSettled refreshes the assigned-jobs list so the
+    // "invoiced" state persists after reconnect. The returned data (masked sent-to)
+    // is surfaced by the hook that fires this key.
+    qc.setMutationDefaults(OFFLINE_KEYS.fieldInvoice, {
+        mutationFn: async ({ jobId }: { jobId: string }) => {
+            return (await api.post(`/finance/jobs/${jobId}/field-invoice`, {})).data;
+        },
+        onSettled: () => invalidateFieldQueries(qc),
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.photo, {

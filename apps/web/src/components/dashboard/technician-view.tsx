@@ -14,6 +14,8 @@ import {
 } from "./technician/types";
 import { usePriceBook } from "./technician/use-price-book";
 import { useFieldQuote } from "./technician/use-field-quote";
+import { useFieldInvoice } from "./technician/use-field-invoice";
+import { useCompanySettings } from "./technician/use-company-settings";
 import { useLineItems } from "./technician/use-line-items";
 import { useExpenses } from "./technician/use-expenses";
 import { useJobNotes } from "./technician/use-notes";
@@ -33,6 +35,8 @@ export function TechnicianView({ user }: TechnicianViewProps) {
 
     const priceBookItems = usePriceBook();
     const quote = useFieldQuote();
+    const fieldInvoice = useFieldInvoice();
+    const { fieldQuotingEnabled } = useCompanySettings();
     const lineItems = useLineItems(priceBookItems);
     const expenses = useExpenses();
     const notes = useJobNotes();
@@ -187,6 +191,7 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                 }
                                 onSendQuote={() => quote.sendQuote(activeJob.id)}
                                 isSendingQuote={quote.quoteMutation.isPending}
+                                fieldQuotingEnabled={fieldQuotingEnabled}
                             />
                         </TabsContent>
 
@@ -215,6 +220,10 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                                 isSaving={signature.signatureMutation.isPending}
                                 onSendSummary={() => summaryMutation.mutate({ jobId: activeJob.id })}
                                 isSendingSummary={summaryMutation.isPending}
+                                canInvoice={activeJob.status === "COMPLETED" || canComplete}
+                                invoicedAt={activeJob.invoicedAt}
+                                onSendInvoice={() => fieldInvoice.sendInvoice(activeJob.id)}
+                                isSendingInvoice={fieldInvoice.invoiceMutation.isPending}
                             />
                         </TabsContent>
                     </Tabs>

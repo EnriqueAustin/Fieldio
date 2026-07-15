@@ -25,7 +25,15 @@ function seedJobWithPriceBook() {
         { id: 'pb_labor', companyId: COMPANY, name: 'Labor', unitPrice: 150 },
         { id: 'pb_pipe', companyId: COMPANY, name: 'Copper pipe', unitPrice: 40 },
     ]);
-    // company.findFirst returns null in notifyCustomer -> notification short-circuits.
+    // No company row is seeded by default, so field quoting is treated as disabled
+    // (default OFF) and notifyCustomer short-circuits.
+}
+
+// Opt the company into field quoting so a TECHNICIAN may quote on site.
+function enableFieldQuoting() {
+    fakePrisma.company.seed([
+        { id: COMPANY, name: 'Acme Co', settings: { fieldQuoting: { enabled: true } } },
+    ]);
 }
 
 const fieldPayload = {
@@ -42,7 +50,8 @@ beforeEach(() => {
 });
 
 describe('POST /finance/estimates/field (createFromField)', () => {
-    it('allows a TECHNICIAN to create a field quote', async () => {
+    it('allows a TECHNICIAN to create a field quote when the company has enabled it', async () => {
+        enableFieldQuoting();
         const res = await request(app)
             .post('/finance/estimates/field')
             .set('Authorization', authHeader({ role: 'TECHNICIAN' }))
@@ -90,6 +99,7 @@ describe('POST /finance/estimates/field (createFromField)', () => {
     });
 
     it('does NOT leak prices/costs back to a TECHNICIAN', async () => {
+        enableFieldQuoting();
         const res = await request(app)
             .post('/finance/estimates/field')
             .set('Authorization', authHeader({ role: 'TECHNICIAN' }))
@@ -122,6 +132,40 @@ describe('POST /finance/estimates/field (createFromField)', () => {
     it('requires authentication', async () => {
         const res = await request(app).post('/finance/estimates/field').send(fieldPayload);
         expect(res.status).toBe(401);
+    });
+});
+
+describe('field quoting company setting (default OFF) gates the TECHNICIAN', () => {
+    it('rejects a TECHNICIAN with 403 when field quoting is disabled (default)', async () => {
+        // No company row seeded -> setting defaults to disabled.
+        const res = await request(app)
+            .post('/finance/estimates/field')
+            .set('Authorization', authHeader({ role: 'TECHNICIAN' }))
+            .send(fieldPayload);
+
+        expect(res.status).toBe(403);
+        expect(res.body.message).toMatch(/field quoting/i);
+    });
+
+    it('allows a TECHNICIAN with 200/201 when the company enables field quoting', async () => {
+        enableFieldQuoting();
+        const res = await request(app)
+            .post('/finance/estimates/field')
+            .set('Authorization', authHeader({ role: 'TECHNICIAN' }))
+            .send(fieldPayload);
+
+        expect(res.status).toBe(201);
+        expect(res.body.data.estimate.id).toBeTruthy();
+    });
+
+    it('still allows OFFICE to field-quote even when the setting is disabled', async () => {
+        // No company row -> disabled, but office/admin are never gated by the flag.
+        const res = await request(app)
+            .post('/finance/estimates/field')
+            .set('Authorization', authHeader({ role: 'OFFICE' }))
+            .send(fieldPayload);
+
+        expect(res.status).toBe(201);
     });
 });
 

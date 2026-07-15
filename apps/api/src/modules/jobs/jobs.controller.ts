@@ -107,6 +107,13 @@ export const jobsController = {
         res.status(StatusCodes.OK).json({ status: 'success' });
     },
 
+    getSiteHistory: async (req: Request, res: Response) => {
+        const history = await jobsService.getSiteHistory(
+            req.params.id, req.user!.companyId, req.user!.userId, req.user!.role
+        );
+        res.status(StatusCodes.OK).json({ status: 'success', data: { history } });
+    },
+
     softDelete: async (req: Request, res: Response) => {
         await jobsService.softDelete(req.params.id, req.user!.companyId, req.user!.userId);
         res.status(StatusCodes.OK).json({ status: 'success' });
