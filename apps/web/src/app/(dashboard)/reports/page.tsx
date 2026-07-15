@@ -4,9 +4,10 @@ import { useEffect, useState } from "react";
 import api from "../../../lib/api";
 import { downloadFile } from "../../../lib/download";
 import { toast } from "../../../components/ui/use-toast";
-import { BarChart3, Clock, DollarSign, Download, TrendingUp, Users } from "lucide-react";
+import { BarChart3, Clock, DollarSign, Download, FileCheck2, TrendingUp, Users } from "lucide-react";
+import { SageReconciliation } from "../../../components/finance/sage-reconciliation";
 
-type Tab = "costing" | "timesheet" | "earnings";
+type Tab = "costing" | "timesheet" | "earnings" | "reconciliation";
 
 interface JobCostRow {
     jobId: string;
@@ -123,6 +124,7 @@ export default function ReportsPage() {
                     { key: "costing" as Tab, label: "Job Costing", icon: BarChart3 },
                     { key: "timesheet" as Tab, label: "Timesheet", icon: Clock },
                     { key: "earnings" as Tab, label: "Tech Earnings", icon: Users },
+                    { key: "reconciliation" as Tab, label: "Sage Reconciliation", icon: FileCheck2 },
                 ]).map(t => (
                     <button key={t.key} onClick={() => setTab(t.key)}
                         className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition ${tab === t.key ? "border-slate-900 text-slate-900" : "border-transparent text-muted-foreground hover:text-slate-700"}`}>
@@ -263,6 +265,8 @@ export default function ReportsPage() {
                     </div>
                 </div>
             )}
+
+            {tab === "reconciliation" && <SageReconciliation from={from} to={to} />}
         </div>
     );
 }

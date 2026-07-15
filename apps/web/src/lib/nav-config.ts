@@ -53,7 +53,8 @@ const adminGroups: NavGroup[] = [
     {
         label: "Finance",
         items: [
-            { label: "Invoices", href: "/invoices/overdue", icon: Receipt },
+            { label: "Quotes", href: "/estimates", icon: FileSignature },
+            { label: "Invoices", href: "/invoices", icon: Receipt },
             { label: "Statements", href: "/statements", icon: FileText },
             { label: "Credit Notes", href: "/credit-notes", icon: FileText },
             { label: "Dunning", href: "/dunning", icon: AlertTriangle },
@@ -83,6 +84,7 @@ const adminGroups: NavGroup[] = [
         label: "Insights",
         items: [
             { label: "KPI Dashboard", href: "/kpi", icon: TrendingUp },
+            { label: "Tech Scoreboard", href: "/scoreboard", icon: Award },
             { label: "Reports", href: "/reports", icon: BarChart3 },
         ],
     },
@@ -102,6 +104,7 @@ const dispatcherGroups: NavGroup[] = [
             { label: "Dispatch", href: "/", icon: LayoutDashboard },
             { label: "Schedule", href: "/schedule", icon: Calendar },
             { label: "Jobs", href: "/jobs", icon: Briefcase },
+            { label: "Quotes", href: "/estimates", icon: FileSignature },
             { label: "Bookings", href: "/bookings", icon: Inbox },
             { label: "Customers", href: "/customers", icon: Users },
             { label: "Inbox", href: "/inbox", icon: MessageSquare },
@@ -140,7 +143,8 @@ const officeGroups: NavGroup[] = [
     {
         label: "Finance",
         items: [
-            { label: "Invoices", href: "/invoices/overdue", icon: Receipt },
+            { label: "Quotes", href: "/estimates", icon: FileSignature },
+            { label: "Invoices", href: "/invoices", icon: Receipt },
             { label: "Statements", href: "/statements", icon: FileText },
             { label: "Credit Notes", href: "/credit-notes", icon: FileText },
             { label: "Dunning", href: "/dunning", icon: AlertTriangle },
@@ -179,6 +183,7 @@ const salesGroups: NavGroup[] = [
     {
         items: [
             { label: "Pipeline", href: "/leads", icon: Filter },
+            { label: "Quotes", href: "/estimates", icon: FileSignature },
             { label: "Customers", href: "/customers", icon: Users },
             { label: "Bookings", href: "/bookings", icon: Inbox },
             { label: "Jobs", href: "/jobs", icon: Briefcase },
@@ -205,7 +210,7 @@ const accountantGroups: NavGroup[] = [
     {
         items: [
             { label: "Dashboard", href: "/", icon: LayoutDashboard },
-            { label: "Invoices", href: "/invoices/overdue", icon: Receipt },
+            { label: "Invoices", href: "/invoices", icon: Receipt },
             { label: "Statements", href: "/statements", icon: FileText },
             { label: "Credit Notes", href: "/credit-notes", icon: FileText },
             { label: "Dunning", href: "/dunning", icon: AlertTriangle },
@@ -215,6 +220,7 @@ const accountantGroups: NavGroup[] = [
         label: "Insights",
         items: [
             { label: "KPI Dashboard", href: "/kpi", icon: TrendingUp },
+            { label: "Tech Scoreboard", href: "/scoreboard", icon: Award },
             { label: "Reports", href: "/reports", icon: BarChart3 },
             { label: "Time Tracking", href: "/time-tracking", icon: Clock },
         ],

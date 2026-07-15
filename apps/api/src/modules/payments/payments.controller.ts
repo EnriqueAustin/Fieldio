@@ -51,4 +51,44 @@ export const paymentsController = {
         });
         res.status(StatusCodes.CREATED).json({ status: 'success', data: result });
     },
+
+    // Bulk EFT reconciliation — dry-run matching of pasted/uploaded statement lines.
+    bulkMatch: async (req: Request, res: Response) => {
+        const { lines } = z
+            .object({
+                lines: z
+                    .array(
+                        z.object({
+                            date: z.string().optional(),
+                            amount: z.number().positive(),
+                            reference: z.string().optional(),
+                        })
+                    )
+                    .min(1)
+                    .max(500),
+            })
+            .parse(req.body);
+        const result = await paymentsService.bulkMatchEft(req.user!.companyId, lines);
+        res.status(StatusCodes.OK).json({ status: 'success', data: result });
+    },
+
+    // Bulk EFT reconciliation — apply confirmed matches.
+    bulkRecord: async (req: Request, res: Response) => {
+        const { matches } = z
+            .object({
+                matches: z
+                    .array(
+                        z.object({
+                            invoiceId: z.string().min(1),
+                            amount: z.number().positive(),
+                            reference: z.string().optional(),
+                        })
+                    )
+                    .min(1)
+                    .max(500),
+            })
+            .parse(req.body);
+        const result = await paymentsService.bulkRecordEft(req.user!.companyId, matches);
+        res.status(StatusCodes.OK).json({ status: 'success', data: result });
+    },
 };

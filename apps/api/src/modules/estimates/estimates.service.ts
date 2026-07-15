@@ -4,6 +4,7 @@ import { StatusCodes } from 'http-status-codes';
 import { z } from 'zod';
 import { portalService } from '../portal/portal.service';
 import { notificationService } from '../../services/notifications/notification.service';
+import { normalizeCompanySettings } from '../company/company-settings';
 
 const createEstimateSchema = z.object({
     projectId: z.string().uuid().optional().nullable(),
@@ -69,6 +70,19 @@ export const estimateService = {
         });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
 
+        // Field quoting is a company opt-in. Technicians may only quote on site when
+        // the company has enabled it; office/dispatch/admin are never gated here.
+        if (role === 'TECHNICIAN') {
+            const company = await prisma.company.findFirst({ where: { id: companyId } });
+            const settings = normalizeCompanySettings(company?.settings);
+            if (!settings.fieldQuoting.enabled) {
+                throw new AppError(
+                    'Field quoting is turned off for your company. Ask the office to enable it in company settings.',
+                    StatusCodes.FORBIDDEN
+                );
+            }
+        }
+
         // Resolve unit prices from the price book — never trust the client.
         const pbIds = parsed.items.map((i) => i.priceBookItemId).filter(Boolean) as string[];
         const pbItems = pbIds.length
@@ -129,11 +143,60 @@ export const estimateService = {
         return estimate;
     },
 
-    getAll: async (companyId: string) => {
+    getAll: async (companyId: string, status?: string) => {
+        const where: any = { companyId };
+        if (status) where.status = status;
         return prisma.estimate.findMany({
-            where: { companyId },
+            where,
             include: { customer: { select: { name: true } } },
             orderBy: { createdAt: 'desc' },
+        });
+    },
+
+    // Office-side send: mark the quote SENT and hand the customer a portal link
+    // they can review + e-sign from. Mirrors the auto-send done for field quotes.
+    send: async (id: string, companyId: string) => {
+        const estimate = await prisma.estimate.findFirst({ where: { id, companyId } });
+        if (!estimate) throw new AppError('Estimate not found', StatusCodes.NOT_FOUND);
+        if (estimate.status === 'APPROVED' || estimate.status === 'DECLINED') {
+            throw new AppError('Estimate can no longer be sent', StatusCodes.BAD_REQUEST);
+        }
+
+        const updated = await prisma.estimate.update({
+            where: { id: estimate.id },
+            data: {
+                status: estimate.status === 'DRAFT' ? 'SENT' : estimate.status,
+                sentAt: estimate.sentAt ?? new Date(),
+            },
+        });
+
+        // Best-effort notification — the quote status change is already persisted.
+        let url: string | null = null;
+        try {
+            const link = await portalService.generatePortalLink(estimate.customerId, companyId);
+            url = link.url;
+            await notificationService.notifyCustomer(estimate.customerId, companyId, 'ESTIMATE_SENT', {
+                estimateId: estimate.id,
+                total: Number(estimate.total),
+                viewUrl: link.url,
+            });
+        } catch {
+            /* non-blocking */
+        }
+
+        return { estimate: updated, url };
+    },
+
+    decline: async (id: string, companyId: string) => {
+        const estimate = await prisma.estimate.findFirst({ where: { id, companyId } });
+        if (!estimate) throw new AppError('Estimate not found', StatusCodes.NOT_FOUND);
+        if (estimate.status === 'APPROVED') {
+            throw new AppError('Cannot decline an approved estimate', StatusCodes.BAD_REQUEST);
+        }
+
+        return prisma.estimate.update({
+            where: { id: estimate.id },
+            data: { status: 'DECLINED', declinedAt: new Date() },
         });
     },
 

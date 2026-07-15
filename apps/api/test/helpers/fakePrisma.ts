@@ -15,6 +15,15 @@ const matchScalar = (rowVal: any, cond: any): boolean => {
     if (cond && typeof cond === 'object' && 'in' in cond) {
         return Array.isArray(cond.in) && cond.in.includes(rowVal);
     }
+    if (cond && typeof cond === 'object' && 'not' in cond) {
+        return rowVal !== cond.not;
+    }
+    if (cond && typeof cond === 'object' && 'notIn' in cond) {
+        return Array.isArray(cond.notIn) && !cond.notIn.includes(rowVal);
+    }
+    if (cond && typeof cond === 'object' && 'gt' in cond && typeof cond.gt === 'number') {
+        return Number(rowVal) > cond.gt;
+    }
     // Nested relation filters (e.g. `job: { customerId }`) are not modelled;
     // treat them as satisfied so they don't exclude seeded rows.
     if (cond && typeof cond === 'object') return true;
@@ -78,6 +87,33 @@ class Table {
         for (const row of affected) Object.assign(row, args.data);
         return { count: affected.length };
     }
+
+    async count(args: any = {}) {
+        return this.rows.filter((r) => matchWhere(r, args.where)).length;
+    }
+
+    // Minimal aggregate: supports _count / _sum / _avg over numeric fields,
+    // which is all the analytics KPI queries use.
+    async aggregate(args: any = {}) {
+        const rows = this.rows.filter((r) => matchWhere(r, args.where));
+        const result: Row = {};
+        if (args._count !== undefined) result._count = rows.length;
+        if (args._sum) {
+            result._sum = {};
+            for (const key of Object.keys(args._sum)) {
+                result._sum[key] = rows.reduce((s, r) => s + Number(r[key] ?? 0), 0);
+            }
+        }
+        if (args._avg) {
+            result._avg = {};
+            for (const key of Object.keys(args._avg)) {
+                result._avg[key] = rows.length
+                    ? rows.reduce((s, r) => s + Number(r[key] ?? 0), 0) / rows.length
+                    : null;
+            }
+        }
+        return result;
+    }
 }
 
 export type FakePrisma = ReturnType<typeof createFakePrisma>;
@@ -97,7 +133,18 @@ export function createFakePrisma() {
         customerPortalToken: table('customerPortalToken'),
         property: table('property'),
         invoice: table('invoice'),
+        payment: table('payment'),
+        expense: table('expense'),
         notification: table('notification'),
+        auditLog: table('auditLog'),
+        warrantyClaim: table('warrantyClaim'),
+        vanMember: table('vanMember'),
+        user: table('user'),
+        membership: table('membership'),
+        kpiSnapshot: table('kpiSnapshot'),
+        // Raw SQL is not modelled; analytics uses it only for a top-techs
+        // leaderboard, so an empty result set is a safe stand-in.
+        $queryRaw: async () => [],
         // Transactions just run the callback against the same client.
         $transaction: async (arg: any) => {
             if (typeof arg === 'function') return arg(client);

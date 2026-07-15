@@ -260,6 +260,144 @@ export const paymentsService = {
         });
     },
 
+    /**
+     * Bulk EFT reconciliation — dry run. Given parsed bank-statement lines
+     * (date, amount, reference), match each against the company's OPEN invoices
+     * by reference text and/or exact outstanding-balance amount. Nothing is
+     * written; the caller reviews/adjusts before confirming via bulkRecordEft.
+     *
+     * A line is:
+     *   - matched   → exactly one confident candidate (reference beats amount).
+     *   - ambiguous → more than one candidate; user picks.
+     *   - unmatched → no candidate at all.
+     */
+    bulkMatchEft: async (
+        companyId: string,
+        lines: { date?: string; amount: number; reference?: string }[]
+    ) => {
+        const openInvoices = await prisma.invoice.findMany({
+            where: {
+                companyId,
+                deletedAt: null,
+                status: { in: ['SENT', 'PARTIAL', 'OVERDUE'] },
+                balance: { gt: 0 },
+            },
+            include: { job: { include: { customer: { select: { name: true } } } } },
+        });
+
+        const norm = (s?: string | null) => (s ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        const view = (inv: (typeof openInvoices)[number]) => ({
+            id: inv.id,
+            invoiceNumber: inv.invoiceNumber,
+            paymentReference: inv.paymentReference,
+            customerName: inv.job?.customer?.name ?? null,
+            balance: Number(inv.balance),
+            status: inv.status,
+        });
+
+        const matched: any[] = [];
+        const ambiguous: any[] = [];
+        const unmatched: any[] = [];
+
+        lines.forEach((line, index) => {
+            const refNorm = norm(line.reference);
+            const amount = Number(line.amount);
+
+            // Reference match: an invoice number / payment reference appears in the
+            // (normalized) statement narrative. Guard against trivial short tokens.
+            const refCandidates = refNorm
+                ? openInvoices.filter((inv) => {
+                      const num = norm(inv.invoiceNumber);
+                      const ref = norm(inv.paymentReference);
+                      return (
+                          (num.length >= 3 && refNorm.includes(num)) ||
+                          (ref.length >= 3 && refNorm.includes(ref))
+                      );
+                  })
+                : [];
+
+            const amountCandidates = openInvoices.filter(
+                (inv) => Math.abs(Number(inv.balance) - amount) < 0.005
+            );
+
+            if (refCandidates.length === 1) {
+                const inv = refCandidates[0];
+                matched.push({
+                    index,
+                    line,
+                    invoice: view(inv),
+                    confidence: 'reference',
+                    amountMismatch: Math.abs(Number(inv.balance) - amount) >= 0.005,
+                });
+            } else if (refCandidates.length > 1) {
+                ambiguous.push({ index, line, reason: 'reference', candidates: refCandidates.map(view) });
+            } else if (amountCandidates.length === 1) {
+                matched.push({
+                    index,
+                    line,
+                    invoice: view(amountCandidates[0]),
+                    confidence: 'amount',
+                    amountMismatch: false,
+                });
+            } else if (amountCandidates.length > 1) {
+                ambiguous.push({ index, line, reason: 'amount', candidates: amountCandidates.map(view) });
+            } else {
+                unmatched.push({ index, line });
+            }
+        });
+
+        return {
+            matched,
+            ambiguous,
+            unmatched,
+            openInvoiceCount: openInvoices.length,
+        };
+    },
+
+    /**
+     * Bulk EFT reconciliation — apply confirmed matches. Each match records an
+     * EFT payment against its invoice (reusing the single-payment path, so
+     * balance / PAID|PARTIAL transitions and socket emits are identical).
+     * Failures are isolated per-match so one bad row never aborts the batch.
+     */
+    bulkRecordEft: async (
+        companyId: string,
+        matches: { invoiceId: string; amount: number; reference?: string }[]
+    ) => {
+        const results: {
+            invoiceId: string;
+            ok: boolean;
+            status?: string;
+            amount?: number;
+            error?: string;
+        }[] = [];
+
+        for (const m of matches) {
+            try {
+                const invoice = await prisma.invoice.findFirst({
+                    where: { id: m.invoiceId, companyId, deletedAt: null },
+                });
+                if (!invoice) throw new AppError('Invoice not found', StatusCodes.NOT_FOUND);
+                if (invoice.status === 'PAID') throw new AppError('Invoice already paid', StatusCodes.BAD_REQUEST);
+                if (invoice.status === 'VOID') throw new AppError('Invoice is void', StatusCodes.BAD_REQUEST);
+                if (!(m.amount > 0)) throw new AppError('Amount must be positive', StatusCodes.BAD_REQUEST);
+
+                const { invoice: updated } = await paymentsService._recordPayment({
+                    invoiceId: invoice.id,
+                    amount: m.amount,
+                    paymentIntentId: null,
+                    method: 'EFT',
+                });
+                results.push({ invoiceId: m.invoiceId, ok: true, status: updated.status, amount: m.amount });
+            } catch (e: any) {
+                results.push({ invoiceId: m.invoiceId, ok: false, error: e?.message ?? 'Failed to record payment' });
+            }
+        }
+
+        const recorded = results.filter((r) => r.ok).length;
+        return { results, recorded, failed: results.length - recorded };
+    },
+
     handlePayFastITN: async (body: Record<string, string>, sourceIp?: string) => {
         const PAYFAST_ALLOWED_CIDRS = [
             '197.97.145.', '41.74.179.', '102.222.168.',

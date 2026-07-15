@@ -4,6 +4,8 @@ import { errorHandler } from '../../src/middleware/error';
 import { publicPortalRouter } from '../../src/routes/portal';
 import { financeRouter } from '../../src/routes/finance';
 import { publicPaymentsRouter } from '../../src/routes/payments';
+import { analyticsRouter } from '../../src/routes/analytics';
+import { sageExportRouter } from '../../src/routes/sageExport';
 import { signAccessToken } from '../../src/utils/jwt';
 
 // Builds an Express app that mirrors the middleware chain of the real
@@ -17,15 +19,17 @@ export function buildTestApp(): Express {
     app.use('/public/portal', publicPortalRouter);
     app.use('/public/payments', publicPaymentsRouter);
 
-    // Authenticated routes: deserialize the bearer token, then mount finance.
+    // Authenticated routes: deserialize the bearer token, then mount routers.
     app.use(deserializeUser);
     app.use('/finance', financeRouter);
+    app.use('/finance/export', sageExportRouter);
+    app.use('/analytics', analyticsRouter);
 
     app.use(errorHandler);
     return app;
 }
 
-type Role = 'ADMIN' | 'OFFICE' | 'DISPATCHER' | 'TECHNICIAN';
+type Role = 'ADMIN' | 'OFFICE' | 'DISPATCHER' | 'TECHNICIAN' | 'ACCOUNTANT' | 'SALES';
 
 // Produces an Authorization header value for a user of the given role/company.
 export function authHeader(opts: { role: Role; companyId?: string; userId?: string }) {

@@ -18,8 +18,19 @@ export const estimateController = {
     },
 
     getAll: async (req: Request, res: Response) => {
-        const estimates = await estimateService.getAll(req.user!.companyId);
+        const status = req.query.status as string | undefined;
+        const estimates = await estimateService.getAll(req.user!.companyId, status);
         res.status(StatusCodes.OK).json({ status: 'success', data: { estimates } });
+    },
+
+    send: async (req: Request, res: Response) => {
+        const result = await estimateService.send(req.params.id, req.user!.companyId);
+        res.status(StatusCodes.OK).json({ status: 'success', data: result });
+    },
+
+    decline: async (req: Request, res: Response) => {
+        const estimate = await estimateService.decline(req.params.id, req.user!.companyId);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { estimate } });
     },
 
     getOne: async (req: Request, res: Response) => {

@@ -527,6 +527,10 @@ model Invoice {
   stripeCheckoutSessionId     String?
   publicToken                 String?       @unique
   paidAt                      DateTime?
+  // Sage export tracking (G-5): stamped when the invoice is included in a Sage CSV export.
+  exportedAt                  DateTime?
+  exportBatchId               String?
+  reconciledAt                DateTime?
   deletedAt                   DateTime?
   createdAt                   DateTime      @default(now())
   updatedAt                   DateTime      @updatedAt
@@ -698,6 +702,9 @@ model Expense {
   receiptUrl  String?
   category    ExpenseCategory @default(OTHER)
   date        DateTime        @default(now())
+  // Sage export tracking (G-5): stamped when the expense is included in a Sage CSV export.
+  exportedAt  DateTime?
+  exportBatchId String?
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 
