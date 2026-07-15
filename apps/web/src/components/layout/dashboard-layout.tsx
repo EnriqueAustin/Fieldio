@@ -13,6 +13,7 @@ import { NotificationBell } from "../notifications/notification-bell";
 import { CallerIdPopup } from "../notifications/caller-id-popup";
 import { getNavGroupsForRole } from "../../lib/nav-config";
 import { OfflineBanner } from "../offline/offline-banner";
+import { InstallPrompt } from "../offline/install-prompt";
 
 interface SearchResults {
     customers: Array<{ id: string; name: string; email: string | null; phone: string | null }>;
@@ -268,6 +269,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
             <MobileNav />
             <CallerIdPopup />
+            <InstallPrompt />
         </div>
     );
 }

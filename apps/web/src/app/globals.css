@@ -83,6 +83,24 @@
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     -webkit-font-smoothing: antialiased;
   }
+  /* Standalone / notch support. With viewport-fit=cover the app paints under
+     the status bar and home indicator; pad the shell to the safe area so
+     content and the fixed bottom nav clear the notch when wrapped as a PWA
+     or TWA/Capacitor app. */
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+  .h-safe-bottom {
+    height: env(safe-area-inset-bottom);
+  }
 }
 
 @layer components {

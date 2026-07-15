@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f172a" />
+    <title>Fieldio — Offline</title>
+    <style>
+        :root { color-scheme: dark; }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; margin: 0; }
+        body {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: max(1.5rem, env(safe-area-inset-top)) 1.5rem max(1.5rem, env(safe-area-inset-bottom));
+            background: #0f172a;
+            color: #e2e8f0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            text-align: center;
+        }
+        .card { max-width: 24rem; }
+        .tile {
+            width: 64px; height: 64px; margin: 0 auto 1.25rem;
+            border-radius: 18px;
+            background: linear-gradient(135deg, #3b82f6, #4f46e5);
+            box-shadow: 0 10px 30px -8px rgba(59, 130, 246, 0.5);
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 30px; color: #fff;
+        }
+        h1 { font-size: 1.25rem; margin: 0 0 0.5rem; color: #fff; }
+        p { font-size: 0.9rem; line-height: 1.5; color: #94a3b8; margin: 0 0 1.5rem; }
+        button {
+            appearance: none; border: 0; cursor: pointer;
+            background: linear-gradient(135deg, #3b82f6, #4f46e5);
+            color: #fff; font-weight: 600; font-size: 0.9rem;
+            padding: 0.7rem 1.4rem; border-radius: 0.6rem;
+        }
+        button:active { opacity: 0.85; }
+        .hint { margin-top: 1rem; font-size: 0.75rem; color: #64748b; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="tile">F</div>
+        <h1>You're offline</h1>
+        <p>Fieldio couldn't reach the network. Any work you saved on this device is safe and will sync automatically once you're back online.</p>
+        <button onclick="location.reload()">Try again</button>
+        <div class="hint">Fieldio · Field Service OS</div>
+    </div>
+    <script>
+        // Auto-retry the moment the browser reports connectivity is back.
+        window.addEventListener('online', function () { location.reload(); });
+    </script>
+</body>
+</html>
