@@ -220,3 +220,61 @@ describe('POST /vans/:id/inventory/:itemId/use', () => {
         expect(res.body.message).toMatch(/your own van/i);
     });
 });
+
+describe('GET /vans/:id/stock-usage', () => {
+    it('returns this van\'s usage trail enriched with job title and tech name', async () => {
+        seedVanWithStock({ item: { quantity: 10 } });
+        seedJob({ title: 'Geyser swap — 12 Oak Ave' });
+        fakePrisma.user.seed([{ id: TECH, companyId: COMPANY, firstName: 'Sipho', lastName: 'M' }]);
+
+        // One usage on this van, one on a different van (must be filtered out).
+        await request(app)
+            .post('/vans/van_1/inventory/item_1/use')
+            .set('Authorization', authHeader({ role: 'TECHNICIAN', userId: TECH }))
+            .send({ jobId: JOB, quantity: 2 });
+        fakePrisma.auditLog.seed([
+            {
+                id: 'al_other',
+                companyId: COMPANY,
+                userId: TECH,
+                action: 'VAN_STOCK_USED',
+                entityType: 'INVENTORY_ITEM',
+                entityId: 'item_other',
+                metadata: { vanId: 'van_other', jobId: JOB, itemName: 'Elsewhere', quantityUsed: 9, remaining: 1 },
+            },
+        ]);
+
+        const res = await request(app)
+            .get('/vans/van_1/stock-usage')
+            .set('Authorization', authHeader({ role: 'OFFICE' }));
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.usage).toHaveLength(1);
+        expect(res.body.data.usage[0]).toMatchObject({
+            itemName: 'Copper Pipe 15mm',
+            quantityUsed: 2,
+            jobTitle: 'Geyser swap — 12 Oak Ave',
+            userName: 'Sipho M',
+        });
+    });
+
+    it('forbids a technician from the office usage view', async () => {
+        seedVanWithStock();
+
+        const res = await request(app)
+            .get('/vans/van_1/stock-usage')
+            .set('Authorization', authHeader({ role: 'TECHNICIAN', userId: TECH }));
+
+        expect(res.status).toBe(403);
+    });
+
+    it('404s for a van in another company', async () => {
+        seedVanWithStock();
+
+        const res = await request(app)
+            .get('/vans/van_1/stock-usage')
+            .set('Authorization', authHeader({ role: 'OFFICE', companyId: 'other_co' }));
+
+        expect(res.status).toBe(404);
+    });
+});

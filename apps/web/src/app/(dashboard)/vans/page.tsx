@@ -26,6 +26,7 @@ import {
     Crown,
     Wrench,
     AlertCircle,
+    PackageMinus,
 } from "lucide-react";
 import { toast } from "../../../components/ui/use-toast";
 
@@ -77,6 +78,7 @@ export default function VansPage() {
     const [selectedUserId, setSelectedUserId] = useState("");
     const [selectedRole, setSelectedRole] = useState<"DRIVER" | "MEMBER">("MEMBER");
     const [serviceVan, setServiceVan] = useState<Van | null>(null);
+    const [usageVan, setUsageVan] = useState<Van | null>(null);
     const [svcType, setSvcType] = useState<"SERVICE" | "ODOMETER" | "FUEL" | "REPAIR">("SERVICE");
     const [svcOdo, setSvcOdo] = useState("");
     const [svcCost, setSvcCost] = useState("");
@@ -95,6 +97,22 @@ export default function VansPage() {
     });
 
     const techs = teamUsers.filter((u) => u.role === "TECHNICIAN" && u.status === "ACTIVE");
+
+    interface StockUsage {
+        id: string;
+        createdAt: string;
+        itemName: string;
+        quantityUsed: number;
+        remaining: number | null;
+        jobId: string | null;
+        jobTitle: string | null;
+        userName: string;
+    }
+    const { data: usage = [], isLoading: usageLoading } = useQuery<StockUsage[]>({
+        queryKey: ["van-stock-usage", usageVan?.id],
+        queryFn: () => api.get(`/vans/${usageVan!.id}/stock-usage`).then((r) => r.data.data.usage),
+        enabled: !!usageVan,
+    });
 
     const createMutation = useMutation({
         mutationFn: (data: { name: string; registration?: string }) => api.post("/vans", data),
@@ -366,6 +384,13 @@ export default function VansPage() {
                                         >
                                             <Wrench className="h-4 w-4" /> Log service
                                         </Button>
+                                        <Button
+                                            variant="outline"
+                                            className="col-span-2 gap-2"
+                                            onClick={() => setUsageVan(van)}
+                                        >
+                                            <PackageMinus className="h-4 w-4" /> Stock usage
+                                        </Button>
                                     </div>
                                 </CardContent>
                             </Card>
@@ -373,6 +398,59 @@ export default function VansPage() {
                     })}
                 </div>
             )}
+
+            <Dialog open={!!usageVan} onOpenChange={(o) => !o && setUsageVan(null)}>
+                <DialogContent className="max-h-[85vh] overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle>Stock usage · {usageVan?.name}</DialogTitle>
+                    </DialogHeader>
+                    <p className="text-xs text-muted-foreground">
+                        Parts logged as used on jobs from this van, newest first.
+                    </p>
+                    <div className="mt-3 space-y-2">
+                        {usageLoading ? (
+                            <p className="py-8 text-center text-sm text-muted-foreground">Loading usage…</p>
+                        ) : usage.length === 0 ? (
+                            <div className="rounded-xl border border-dashed p-8 text-center">
+                                <PackageMinus className="mx-auto h-8 w-8 text-slate-300" />
+                                <p className="mt-2 text-sm font-medium">No usage logged yet</p>
+                                <p className="text-xs text-muted-foreground">
+                                    Techs log parts used from the van’s stock screen.
+                                </p>
+                            </div>
+                        ) : (
+                            usage.map((u) => (
+                                <div key={u.id} className="flex items-start justify-between gap-3 rounded-xl border p-3">
+                                    <div className="min-w-0">
+                                        <p className="text-sm font-medium">{u.itemName}</p>
+                                        <p className="truncate text-xs text-muted-foreground">
+                                            {u.jobTitle ?? "Job"} · {u.userName}
+                                        </p>
+                                        <p className="text-[11px] text-muted-foreground">
+                                            {new Date(u.createdAt).toLocaleString()}
+                                        </p>
+                                    </div>
+                                    <div className="shrink-0 text-right">
+                                        <span className="inline-flex items-center rounded-full bg-rose-50 px-2 py-0.5 text-xs font-semibold text-rose-700">
+                                            −{u.quantityUsed}
+                                        </span>
+                                        {u.remaining != null && (
+                                            <p className="mt-1 text-[11px] text-muted-foreground">
+                                                {u.remaining} left
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setUsageVan(null)}>
+                            Close
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
             <Dialog open={!!serviceVan} onOpenChange={(o) => !o && setServiceVan(null)}>
                 <DialogContent>

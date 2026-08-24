@@ -65,4 +65,9 @@ export const vansController = {
         );
         res.status(StatusCodes.CREATED).json({ status: 'success', data: result });
     },
+
+    getStockUsage: async (req: Request, res: Response) => {
+        const result = await vansService.getStockUsage(req.params.id, req.user!.companyId);
+        res.status(StatusCodes.OK).json({ status: 'success', data: result });
+    },
 };

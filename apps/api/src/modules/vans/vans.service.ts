@@ -329,4 +329,65 @@ export const vansService = {
         }
         return { item: updated };
     },
+
+    /**
+     * Office/dispatch view of parts consumed on this van, per job. Reads the
+     * VAN_STOCK_USED audit trail written by `useStock` and enriches each entry
+     * with the job title and the tech's name. metadata.vanId is the source of
+     * truth (items can move vans), so we filter on it rather than the item's
+     * current van.
+     */
+    getStockUsage: async (vanId: string, companyId: string, limit = 100) => {
+        const van = await prisma.van.findFirst({ where: { id: vanId, companyId } });
+        if (!van) throw new AppError('Van not found', StatusCodes.NOT_FOUND);
+
+        const logs = await prisma.auditLog.findMany({
+            where: { companyId, action: 'VAN_STOCK_USED', entityType: 'INVENTORY_ITEM' },
+            orderBy: { createdAt: 'desc' },
+            take: limit * 4, // over-fetch: we filter to this van in memory below
+        });
+
+        const forVan = logs
+            .filter((l) => (l.metadata as Record<string, unknown> | null)?.vanId === vanId)
+            .slice(0, limit);
+
+        const jobIds = [...new Set(forVan.map((l) => (l.metadata as any)?.jobId).filter(Boolean))];
+        const userIds = [...new Set(forVan.map((l) => l.userId).filter(Boolean))];
+
+        const [jobs, users] = await Promise.all([
+            jobIds.length
+                ? prisma.job.findMany({ where: { id: { in: jobIds }, companyId }, select: { id: true, title: true } })
+                : Promise.resolve([]),
+            userIds.length
+                ? prisma.user.findMany({
+                      where: { id: { in: userIds }, companyId },
+                      select: { id: true, firstName: true, lastName: true, email: true },
+                  })
+                : Promise.resolve([]),
+        ]);
+
+        const jobTitle = new Map(jobs.map((j: any) => [j.id, j.title]));
+        const userName = new Map(
+            users.map((u: any) => [
+                u.id,
+                [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email || 'Technician',
+            ])
+        );
+
+        return {
+            usage: forVan.map((l) => {
+                const meta = (l.metadata as any) ?? {};
+                return {
+                    id: l.id,
+                    createdAt: l.createdAt,
+                    itemName: meta.itemName ?? 'Item',
+                    quantityUsed: meta.quantityUsed ?? 0,
+                    remaining: meta.remaining ?? null,
+                    jobId: meta.jobId ?? null,
+                    jobTitle: meta.jobId ? jobTitle.get(meta.jobId) ?? 'Job' : null,
+                    userName: l.userId ? userName.get(l.userId) ?? 'Technician' : 'Technician',
+                };
+            }),
+        };
+    },
 };
