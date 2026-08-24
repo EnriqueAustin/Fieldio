@@ -1,6 +1,14 @@
 import rateLimit from 'express-rate-limit';
 import { StatusCodes } from 'http-status-codes';
 
+/**
+ * Opt-in bypass for local development and end-to-end test runs, where a suite
+ * legitimately logs in many times in a short window. Gated on NODE_ENV so it can
+ * never take effect in production even if the flag leaks into that environment.
+ */
+const skipInNonProd = () =>
+    process.env.NODE_ENV !== 'production' && process.env.DISABLE_RATE_LIMIT === 'true';
+
 export const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 10,
@@ -11,6 +19,7 @@ export const authLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: false,
+    skip: skipInNonProd,
 });
 
 export const apiLimiter = rateLimit({
@@ -22,6 +31,7 @@ export const apiLimiter = rateLimit({
     },
     standardHeaders: true,
     legacyHeaders: false,
+    skip: skipInNonProd,
 });
 
 export const publicEndpointLimiter = rateLimit({
