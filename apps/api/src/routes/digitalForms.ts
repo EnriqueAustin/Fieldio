@@ -9,6 +9,7 @@ digitalFormsRouter.use(requireUser);
 
 digitalFormsRouter.post('/templates', restrictTo('ADMIN', 'OFFICE'), catchAsync(digitalFormsController.createTemplate));
 digitalFormsRouter.get('/templates', catchAsync(digitalFormsController.getTemplates));
+digitalFormsRouter.patch('/templates/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(digitalFormsController.updateTemplate));
 
 // Tech-facing: forms + this job's submissions + the caller's CoC permission.
 digitalFormsRouter.get('/jobs/:jobId/forms', catchAsync(digitalFormsController.getJobForms));

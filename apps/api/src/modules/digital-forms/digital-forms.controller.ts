@@ -13,6 +13,15 @@ export const digitalFormsController = {
         res.status(StatusCodes.OK).json({ status: 'success', data: { templates } });
     },
 
+    updateTemplate: async (req: Request, res: Response) => {
+        const template = await digitalFormsService.updateTemplate(
+            req.user!.companyId,
+            req.params.id,
+            req.body
+        );
+        res.status(StatusCodes.OK).json({ status: 'success', data: { template } });
+    },
+
     getJobForms: async (req: Request, res: Response) => {
         const data = await digitalFormsService.getJobForms(
             req.user!.companyId,

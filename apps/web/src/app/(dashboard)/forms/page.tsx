@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import {
     FileSignature,
     Plus,
@@ -11,6 +11,8 @@ import {
     FileText,
     Eye,
     ShieldCheck,
+    Lock,
+    Unlock,
 } from "lucide-react";
 import api from "../../../lib/api";
 import { useAuthStore } from "../../../store/auth";
@@ -42,6 +44,8 @@ interface FormSchema {
     fields: FormField[];
     /** CoC / compliance certificate — only users with the canIssueCoC permission may submit. */
     requiresCoc?: boolean;
+    /** When set, a tech can't mark the job complete until this form is submitted. */
+    requiredForCompletion?: boolean;
 }
 
 interface FormTemplate {
@@ -114,6 +118,7 @@ export default function DigitalFormsPage() {
     const [description, setDescription] = useState("");
     const [fields, setFields] = useState<FormField[]>([]);
     const [requiresCoc, setRequiresCoc] = useState(false);
+    const [requiredForCompletion, setRequiredForCompletion] = useState(false);
 
     const { data: templates, isLoading: templatesLoading } = useQuery({
         queryKey: ["form-templates"],
@@ -127,6 +132,29 @@ export default function DigitalFormsPage() {
             api.get("/digital-forms/submissions").then((r) => r.data.data.submissions as FormSubmission[]),
     });
 
+    // Inline toggle of the "required to complete" gate on an existing template,
+    // so the office doesn't have to recreate a form to flip it.
+    const toggleRequiredMutation = useMutation({
+        mutationFn: ({ template, next }: { template: FormTemplate; next: boolean }) => {
+            const schema = (template.schema as FormSchema) ?? { fields: [] };
+            return api.patch(`/digital-forms/templates/${template.id}`, {
+                schema: { ...schema, requiredForCompletion: next },
+            });
+        },
+        onSuccess: async (_data, { next }) => {
+            await qc.invalidateQueries({ queryKey: ["form-templates"] });
+            toast({
+                title: next ? "Form now required to complete jobs" : "Completion gate removed",
+            });
+        },
+        onError: (err: any) =>
+            toast({
+                title: "Could not update template",
+                description: err?.response?.data?.message ?? "Please try again.",
+                variant: "destructive",
+            }),
+    });
+
     const templateNameById = useMemo(() => {
         const map = new Map<string, string>();
         (templates ?? []).forEach((t) => map.set(t.id, t.name));
@@ -138,6 +166,7 @@ export default function DigitalFormsPage() {
         setDescription("");
         setFields([]);
         setRequiresCoc(false);
+        setRequiredForCompletion(false);
     };
 
     const loadStarter = () => {
@@ -145,6 +174,8 @@ export default function DigitalFormsPage() {
         setDescription(COC_STARTER.description);
         setFields(COC_STARTER.fields.map((f) => ({ ...f })));
         setRequiresCoc(true);
+        // A geyser/plumbing CoC must be issued on site before the job closes.
+        setRequiredForCompletion(true);
     };
 
     const addField = () =>
@@ -187,7 +218,7 @@ export default function DigitalFormsPage() {
             await api.post("/digital-forms/templates", {
                 name: trimmedName,
                 description: description.trim() || undefined,
-                schema: { fields: cleanFields, requiresCoc },
+                schema: { fields: cleanFields, requiresCoc, requiredForCompletion },
             });
             await qc.invalidateQueries({ queryKey: ["form-templates"] });
             toast({ title: "Form template created" });
@@ -278,6 +309,23 @@ export default function DigitalFormsPage() {
                                         <span className="block text-xs text-amber-700">
                                             Only team members granted the “Issue CoC” permission can submit this form. Set
                                             that permission per user under Team.
+                                        </span>
+                                    </span>
+                                </label>
+
+                                <label className="flex items-start gap-2.5 rounded-xl border border-blue-200 bg-blue-50/60 p-3">
+                                    <input
+                                        type="checkbox"
+                                        checked={requiredForCompletion}
+                                        onChange={(e) => setRequiredForCompletion(e.target.checked)}
+                                        className="mt-0.5"
+                                    />
+                                    <span className="text-sm">
+                                        <span className="font-medium text-blue-900">
+                                            Required to complete the job
+                                        </span>
+                                        <span className="block text-xs text-blue-700">
+                                            The technician can’t mark a job complete until this form is submitted on site.
                                         </span>
                                     </span>
                                 </label>
@@ -432,26 +480,65 @@ export default function DigitalFormsPage() {
                                 </p>
                             </div>
                         ) : (
-                            (templates ?? []).map((t) => (
-                                <div key={t.id} className="flex items-start justify-between gap-3 px-5 py-3.5">
-                                    <div className="min-w-0">
-                                        <div className="flex items-center gap-2">
-                                            <p className="text-sm font-medium">{t.name}</p>
-                                            {(t.schema as FormSchema)?.requiresCoc && (
-                                                <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
-                                                    <ShieldCheck className="h-3 w-3" /> CoC · restricted
-                                                </span>
+                            (templates ?? []).map((t) => {
+                                const required = Boolean((t.schema as FormSchema)?.requiredForCompletion);
+                                return (
+                                    <div key={t.id} className="flex items-start justify-between gap-3 px-5 py-3.5">
+                                        <div className="min-w-0">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <p className="text-sm font-medium">{t.name}</p>
+                                                {(t.schema as FormSchema)?.requiresCoc && (
+                                                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                                                        <ShieldCheck className="h-3 w-3" /> CoC · restricted
+                                                    </span>
+                                                )}
+                                                {required && (
+                                                    <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700">
+                                                        <Lock className="h-3 w-3" /> Required to complete
+                                                    </span>
+                                                )}
+                                            </div>
+                                            {t.description && (
+                                                <p className="truncate text-xs text-muted-foreground">{t.description}</p>
                                             )}
                                         </div>
-                                        {t.description && (
-                                            <p className="truncate text-xs text-muted-foreground">{t.description}</p>
-                                        )}
+                                        <div className="flex shrink-0 items-center gap-2">
+                                            {canManage && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        toggleRequiredMutation.mutate({ template: t, next: !required })
+                                                    }
+                                                    disabled={toggleRequiredMutation.isPending}
+                                                    title={
+                                                        required
+                                                            ? "Remove the completion gate"
+                                                            : "Require this form before a job can be completed"
+                                                    }
+                                                    className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition ${
+                                                        required
+                                                            ? "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                                                            : "border-border text-muted-foreground hover:bg-slate-50"
+                                                    }`}
+                                                >
+                                                    {required ? (
+                                                        <>
+                                                            <Unlock className="h-3 w-3" /> Un-require
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Lock className="h-3 w-3" /> Require
+                                                        </>
+                                                    )}
+                                                </button>
+                                            )}
+                                            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600">
+                                                {getFields(t).length} field{getFields(t).length !== 1 ? "s" : ""}
+                                            </span>
+                                        </div>
                                     </div>
-                                    <span className="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600">
-                                        {getFields(t).length} field{getFields(t).length !== 1 ? "s" : ""}
-                                    </span>
-                                </div>
-                            ))
+                                );
+                            })
                         )}
                     </div>
                 </div>
