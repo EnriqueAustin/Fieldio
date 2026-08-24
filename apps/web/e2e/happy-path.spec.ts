@@ -1,43 +1,31 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Field Service Workflow', () => {
-    // Assuming we have a seed user or we create one.
-    // Ideally we seed the DB before tests, but for now we'll assume the default seed exists:
-    // User: admin@fieldio.com / password123 (from verify script)
+/**
+ * Office/admin happy path against the standard demo seed
+ * (packages/database/prisma/seed.ts): admin `admin@aquaflow.co.za` /
+ * password123. Login redirects to the dashboard index (`/`).
+ */
+const ADMIN = { email: 'admin@aquaflow.co.za', password: 'password123' };
 
-    test('should allow login and navigation to dashboard', async ({ page }) => {
+test.describe('Office happy path', () => {
+    test('logs in and lands on the dashboard', async ({ page }) => {
         await page.goto('/login');
-
-        // Login
-        await page.fill('input[type="email"]', 'admin@fieldio.com');
-        await page.fill('input[type="password"]', 'password123');
+        await page.fill('input[type="email"]', ADMIN.email);
+        await page.fill('input[type="password"]', ADMIN.password);
         await page.click('button[type="submit"]');
 
-        // Verify Redirect to Dashboard
-        await expect(page).toHaveURL('/dashboard');
-        await expect(page.locator('h3:has-text("Welcome back")')).toBeVisible(); // Assuming welcome text or similar
+        await expect(page).toHaveURL('/');
+        await expect(page.getByRole('heading', { name: /Welcome back/i })).toBeVisible();
     });
 
-    test('should creating a job', async ({ page }) => {
-        // Login First (or use reuse state, but simple for now)
+    test('navigates to the jobs list', async ({ page }) => {
         await page.goto('/login');
-        await page.fill('input[type="email"]', 'admin@fieldio.com');
-        await page.fill('input[type="password"]', 'password123');
+        await page.fill('input[type="email"]', ADMIN.email);
+        await page.fill('input[type="password"]', ADMIN.password);
         await page.click('button[type="submit"]');
-        await page.waitForURL('/dashboard');
-
-        // Go to Calendar/Schedule to create job (or Jobs list)
-        await page.goto('/schedule');
-
-        // Click "New Job" button
-        await page.click('button:has-text("New Job")'); // Adjust selector as needed
-
-        // If using a modal/page, fill form
-        // ... (This depends on exact UI implementation details which might vary)
-        // Since we didn't implement the FULL "Create Job" form on a separate page yet (it was part of Calendar flow or simplified in previous chats),
-        // I'll test navigation to Jobs page.
+        await page.waitForURL('/');
 
         await page.goto('/jobs');
-        await expect(page.locator('h3:has-text("Jobs")')).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Jobs' })).toBeVisible();
     });
 });

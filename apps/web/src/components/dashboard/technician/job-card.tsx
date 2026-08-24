@@ -25,6 +25,7 @@ export function JobCard({ job, active = false, onSelect }: JobCardProps) {
     return (
         <button
             type="button"
+            data-testid="job-card"
             onClick={() => onSelect(job.id)}
             className={`w-full rounded-2xl border p-4 text-left transition active:scale-[0.99] min-h-[44px] ${
                 active
