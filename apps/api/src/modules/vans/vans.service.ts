@@ -2,6 +2,7 @@ import { prisma } from '@fieldio/database';
 import { AppError } from '../../middleware/error';
 import { StatusCodes } from 'http-status-codes';
 import { z } from 'zod';
+import { socketService } from '../../services/socket.service';
 
 const createVanSchema = z.object({
     name: z.string().min(1),
@@ -23,6 +24,11 @@ const updateVanSchema = z.object({
 const addMemberSchema = z.object({
     userId: z.string().uuid(),
     role: z.enum(['DRIVER', 'MEMBER']).default('MEMBER'),
+});
+
+const useStockSchema = z.object({
+    jobId: z.string().uuid(),
+    quantity: z.number().int().positive().default(1),
 });
 
 export const vansService = {
@@ -159,5 +165,168 @@ export const vansService = {
             return items.map(({ unitCost, ...rest }) => rest);
         }
         return items;
+    },
+
+    /**
+     * Tech-initiated restock request for a single van item. Creates an OPEN
+     * InventoryAlert (the same record the office already triages / drafts POs
+     * from) so no new model or migration is needed. De-dupes against any open
+     * alert for the same item so repeated taps don't spam the office queue.
+     */
+    requestRestock: async (
+        vanId: string,
+        itemId: string,
+        companyId: string,
+        userId: string,
+        role?: string,
+    ) => {
+        const van = await prisma.van.findFirst({ where: { id: vanId, companyId } });
+        if (!van) throw new AppError('Van not found', StatusCodes.NOT_FOUND);
+
+        // Techs may only request restock for a van they belong to.
+        if (role === 'TECHNICIAN') {
+            const membership = await prisma.vanMember.findFirst({
+                where: { userId, van: { id: vanId, companyId } },
+            });
+            if (!membership) {
+                throw new AppError('You can only request restock for your own van', StatusCodes.FORBIDDEN);
+            }
+        }
+
+        const item = await prisma.inventoryItem.findFirst({ where: { id: itemId, companyId, vanId } });
+        if (!item) throw new AppError('Item not found on this van', StatusCodes.NOT_FOUND);
+
+        // Target: an existing par level if configured, else reorderQty / minLevel.
+        const target = await prisma.vanInventoryTarget.findFirst({
+            where: { companyId, vanId, inventoryItemId: itemId, active: true },
+        });
+        const targetQty = target?.parLevel || item.reorderQty || Math.max(item.minLevel * 2, item.minLevel + 1, 1);
+
+        // De-dupe: reuse the existing open alert if one is already queued.
+        const existing = await prisma.inventoryAlert.findFirst({
+            where: { companyId, vanId, inventoryItemId: itemId, status: 'OPEN' },
+        });
+        if (existing) return { alert: existing, alreadyRequested: true };
+
+        const alert = await prisma.inventoryAlert.create({
+            data: {
+                companyId,
+                vanId,
+                inventoryItemId: itemId,
+                status: 'OPEN',
+                message: `Restock requested: ${item.name} on ${van.name} (${item.quantity} on hand).`,
+                currentQty: item.quantity,
+                targetQty,
+            },
+        });
+
+        socketService.emitToCompany(companyId, 'inventory:alert', {
+            vanId,
+            itemId,
+            current: item.quantity,
+            target: targetQty,
+            requested: true,
+        });
+
+        return { alert, alreadyRequested: false };
+    },
+
+    /**
+     * Record stock consumed on a job. Decrements the van item's quantity and
+     * writes an AuditLog row attributing the drop to a job, so the office can
+     * see *why* van stock moved (audit #9 "used on job") without a new model or
+     * migration. Techs may only draw from a van they crew, for a job assigned to
+     * them or their van. Returns the updated item, with cost stripped for techs.
+     */
+    useStock: async (
+        vanId: string,
+        itemId: string,
+        companyId: string,
+        userId: string,
+        role: string | undefined,
+        input: unknown,
+    ) => {
+        const { jobId, quantity } = useStockSchema.parse(input);
+
+        const van = await prisma.van.findFirst({ where: { id: vanId, companyId } });
+        if (!van) throw new AppError('Van not found', StatusCodes.NOT_FOUND);
+
+        // Techs may only draw from a van they belong to.
+        if (role === 'TECHNICIAN') {
+            const membership = await prisma.vanMember.findFirst({
+                where: { userId, van: { id: vanId, companyId } },
+            });
+            if (!membership) {
+                throw new AppError('You can only use stock from your own van', StatusCodes.FORBIDDEN);
+            }
+        }
+
+        const item = await prisma.inventoryItem.findFirst({ where: { id: itemId, companyId, vanId } });
+        if (!item) throw new AppError('Item not found on this van', StatusCodes.NOT_FOUND);
+        if (item.quantity < quantity) {
+            throw new AppError('Not enough stock on the van to use that quantity', StatusCodes.BAD_REQUEST);
+        }
+
+        // The job must exist in the company; a tech must be assigned to it (or its van).
+        const job = await prisma.job.findFirst({ where: { id: jobId, companyId, deletedAt: null } });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+        if (role === 'TECHNICIAN') {
+            const assigned = job.techId === userId || (job.vanId != null && job.vanId === vanId);
+            if (!assigned) {
+                throw new AppError('You can only log usage against a job assigned to you', StatusCodes.FORBIDDEN);
+            }
+        }
+
+        const remaining = item.quantity - quantity;
+        const updated = await prisma.inventoryItem.update({
+            where: { id: itemId },
+            data: { quantity: remaining },
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                companyId,
+                userId,
+                action: 'VAN_STOCK_USED',
+                entityId: itemId,
+                entityType: 'INVENTORY_ITEM',
+                metadata: { vanId, jobId, itemName: item.name, quantityUsed: quantity, remaining },
+            },
+        });
+
+        // Auto-raise a restock request when usage drops the item to/below par.
+        if (remaining <= item.minLevel) {
+            const openAlert = await prisma.inventoryAlert.findFirst({
+                where: { companyId, vanId, inventoryItemId: itemId, status: 'OPEN' },
+            });
+            if (!openAlert) {
+                await prisma.inventoryAlert.create({
+                    data: {
+                        companyId,
+                        vanId,
+                        inventoryItemId: itemId,
+                        status: 'OPEN',
+                        message: `Low after job usage: ${item.name} on ${van.name} (${remaining} on hand).`,
+                        currentQty: remaining,
+                        targetQty: item.reorderQty || Math.max(item.minLevel * 2, item.minLevel + 1, 1),
+                    },
+                });
+            }
+        }
+
+        socketService.emitToCompany(companyId, 'inventory:used', {
+            vanId,
+            itemId,
+            jobId,
+            quantityUsed: quantity,
+            remaining,
+        });
+
+        // Strip cost for techs, mirroring getVanInventory.
+        if (role === 'TECHNICIAN') {
+            const { unitCost, ...rest } = updated as Record<string, unknown>;
+            return { item: rest };
+        }
+        return { item: updated };
     },
 };

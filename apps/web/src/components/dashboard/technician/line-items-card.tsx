@@ -50,35 +50,35 @@ export function LineItemsCard({
                             placeholder="Search price book (parts, services)…"
                             value={pbSearch}
                             onChange={(e) => setPbSearch(e.target.value)}
-                            className="w-full rounded-lg border border-border bg-background pl-9 pr-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                            className="w-full rounded-lg border border-border bg-background pl-9 pr-3 h-11 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                         />
                     </div>
                     {filteredPB.length > 0 && (
-                        <div className="max-h-32 overflow-y-auto rounded-lg border divide-y">
+                        <div className="max-h-52 overflow-y-auto rounded-lg border divide-y">
                             {filteredPB.slice(0, 6).map((item) => (
                                 <button
                                     key={item.id}
                                     onClick={() => onSelectPBItem(item)}
-                                    className="w-full flex items-center justify-between p-2.5 text-left hover:bg-slate-50 text-sm"
+                                    className="w-full flex items-center justify-between gap-2 px-3 min-h-[44px] py-2 text-left hover:bg-slate-50 text-sm"
                                 >
-                                    <div className="flex items-center gap-2">
-                                        {item.type === "MATERIAL" ? <Package className="h-4 w-4 text-slate-400" /> : <Wrench className="h-4 w-4 text-slate-400" />}
-                                        <span className="font-medium">{item.name}</span>
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        {item.type === "MATERIAL" ? <Package className="h-4 w-4 text-slate-400 shrink-0" /> : <Wrench className="h-4 w-4 text-slate-400 shrink-0" />}
+                                        <span className="font-medium truncate">{item.name}</span>
                                     </div>
-                                    {item.sku && <span className="text-xs text-muted-foreground">{item.sku}</span>}
+                                    {item.sku && <span className="text-xs text-muted-foreground shrink-0">{item.sku}</span>}
                                 </button>
                             ))}
                         </div>
                     )}
 
-                    <div className="grid grid-cols-[1fr,80px,auto] gap-2 items-end">
+                    <div className="grid grid-cols-[1fr,72px,auto] gap-2 items-end">
                         <div className="space-y-1">
                             <label className="text-xs font-medium">Item</label>
                             <input
                                 placeholder="Name"
                                 value={newItem.name}
                                 onChange={(e) => setNewItem({ ...newItem, name: e.target.value, priceBookItemId: "" })}
-                                className="w-full rounded-lg border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                                className="w-full rounded-lg border border-border px-3 h-11 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                             />
                         </div>
                         <div className="space-y-1">
@@ -86,17 +86,19 @@ export function LineItemsCard({
                             <input
                                 type="number"
                                 min="1"
+                                inputMode="numeric"
                                 value={newItem.quantity}
                                 onChange={(e) => setNewItem({ ...newItem, quantity: parseInt(e.target.value) || 1 })}
-                                className="w-full rounded-lg border border-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                                className="w-full rounded-lg border border-border px-3 h-11 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                             />
                         </div>
                         <Button
-                            size="sm"
                             onClick={onAddLineItem}
                             disabled={!newItem.name}
+                            className="h-11 w-11 shrink-0"
+                            aria-label="Add line item"
                         >
-                            <Plus className="h-4 w-4" />
+                            <Plus className="h-5 w-5" />
                         </Button>
                     </div>
                 </div>
@@ -109,7 +111,7 @@ export function LineItemsCard({
                 ) : (
                     <div className="space-y-2">
                         {job.lineItems.map((item) => (
-                            <div key={item.id} className="flex items-center justify-between rounded-xl border p-3 group">
+                            <div key={item.id} className="flex items-center justify-between gap-2 rounded-xl border p-3">
                                 <div className="flex items-center gap-3 min-w-0">
                                     {item.type === "MATERIAL" ? <Package className="h-4 w-4 text-slate-400 shrink-0" /> : <Wrench className="h-4 w-4 text-slate-400 shrink-0" />}
                                     <div className="min-w-0">
@@ -118,10 +120,12 @@ export function LineItemsCard({
                                     </div>
                                 </div>
                                 <button
+                                    type="button"
                                     onClick={() => onRemoveLineItem(item.id)}
-                                    className="opacity-0 group-hover:opacity-100 text-rose-500 hover:text-rose-600 transition"
+                                    aria-label={`Remove ${item.name}`}
+                                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-rose-500 hover:bg-rose-50 hover:text-rose-600 active:scale-95 transition"
                                 >
-                                    <Trash2 className="h-3.5 w-3.5" />
+                                    <Trash2 className="h-5 w-5" />
                                 </button>
                             </div>
                         ))}

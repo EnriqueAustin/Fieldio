@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2 } from "lucide-react";
 import api from "../../lib/api";
 import { Card, CardContent } from "../ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import {
     getAddress,
     JOB_STATUS_FLOW,
@@ -25,13 +24,21 @@ import { useJobSummary } from "./technician/use-job-summary";
 import { useJobProgress } from "./technician/use-job-progress";
 import { OverviewCards } from "./technician/overview-cards";
 import { JobList } from "./technician/job-list";
-import { ActiveJobHeader } from "./technician/active-job-header";
-import { WorkTab } from "./technician/work-tab";
-import { MediaTab } from "./technician/media-tab";
-import { CloseoutTab } from "./technician/closeout-tab";
+import { JobDetail } from "./technician/job-detail";
+import { TechnicianHome } from "./technician/technician-home";
+import { PullToRefresh } from "./technician/pull-to-refresh";
+
+/** True once the job is on-site with a full checklist and a captured signature. */
+function jobCanComplete(job: TechnicianJob) {
+    const done = job.checklist.filter((item) => item.isCompleted).length;
+    return job.status === "ON_SITE" && done === job.checklist.length && job.signatures.length > 0;
+}
 
 export function TechnicianView({ user }: TechnicianViewProps) {
+    // Desktop two-pane selection AND the job opened on mobile share this id.
     const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+    // null = mobile home list; an id = focused mobile job screen.
+    const [mobileJobId, setMobileJobId] = useState<string | null>(null);
 
     const priceBookItems = usePriceBook();
     const quote = useFieldQuote();
@@ -54,7 +61,7 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         refetchInterval: 30_000,
     });
 
-    const assignedJobs = assignedJobsQuery.data ?? [];
+    const assignedJobs = useMemo(() => assignedJobsQuery.data ?? [], [assignedJobsQuery.data]);
 
     useEffect(() => {
         if (!selectedJobId && assignedJobs.length > 0) {
@@ -65,12 +72,34 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         }
     }, [assignedJobs, selectedJobId]);
 
+    // Reset per-job media/signature drafts whenever the worked job changes.
     useEffect(() => {
         notes.reset();
         photos.reset();
         signature.reset();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedJobId]);
+
+    // Browser/system back closes the mobile job screen.
+    useEffect(() => {
+        const onPop = () => setMobileJobId(null);
+        window.addEventListener("popstate", onPop);
+        return () => window.removeEventListener("popstate", onPop);
+    }, []);
+
+    const openMobileJob = useCallback((jobId: string) => {
+        setSelectedJobId(jobId);
+        setMobileJobId(jobId);
+        window.history.pushState({ techJob: jobId }, "");
+    }, []);
+
+    const closeMobileJob = useCallback(() => {
+        if (window.history.state?.techJob) {
+            window.history.back(); // triggers popstate → clears mobileJobId
+        } else {
+            setMobileJobId(null);
+        }
+    }, []);
 
     const activeJob = useMemo(() => {
         if (!assignedJobs.length) return null;
@@ -86,6 +115,11 @@ export function TechnicianView({ user }: TechnicianViewProps) {
             null
         );
     }, [assignedJobs]);
+
+    const mobileJob = useMemo(
+        () => (mobileJobId ? assignedJobs.find((job) => job.id === mobileJobId) ?? null : null),
+        [assignedJobs, mobileJobId]
+    );
 
     if (assignedJobsQuery.isLoading) {
         return <div className="rounded-2xl border border-border bg-card p-6">Loading field workflow...</div>;
@@ -127,108 +161,100 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         return null;
     }
 
-    const checklistCompleted = activeJob.checklist.filter((item) => item.isCompleted).length;
-    const checklistRequired = activeJob.checklist.length;
-    const canComplete =
-        activeJob.status === "ON_SITE" &&
-        checklistCompleted === checklistRequired &&
-        activeJob.signatures.length > 0;
+    const techName = user.email.split("@")[0];
 
-    const nextStatus = JOB_STATUS_FLOW[activeJob.status];
-    const mapsHref = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(getAddress(activeJob))}`;
-    const customerPhoneHref = activeJob.customer.phone ? `tel:${activeJob.customer.phone}` : null;
+    // Detail-view props shared by mobile full-screen and desktop pane.
+    const detailFor = (job: TechnicianJob) => {
+        const checklistCompleted = job.checklist.filter((item) => item.isCompleted).length;
+        const checklistRequired = job.checklist.length;
+        const canComplete = jobCanComplete(job);
+        const nextStatus = JOB_STATUS_FLOW[job.status] ?? null;
+        const mapsHref = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(getAddress(job))}`;
+        return { checklistCompleted, checklistRequired, canComplete, nextStatus, mapsHref };
+    };
+
+    const activeDetail = detailFor(activeJob);
+    const activeMapsHref = activeDetail.mapsHref;
+    const activePhoneHref = activeJob.customer.phone ? `tel:${activeJob.customer.phone}` : null;
 
     return (
-        <div className="space-y-6 pb-20">
-            <div className="flex flex-col gap-2">
-                <h2 className="text-2xl font-bold tracking-tight">
-                    Field workflow for {user.email.split("@")[0]}
-                </h2>
-                <p className="text-muted-foreground">
-                    Live assigned jobs, completion steps, and customer-ready handoff from one screen.
-                </p>
+        <>
+            {/* ---- Mobile / tablet: two-screen flow ---- */}
+            <div className="md:hidden">
+                {mobileJob ? (
+                    <JobDetail
+                        job={mobileJob}
+                        {...detailFor(mobileJob)}
+                        priceBookItems={priceBookItems}
+                        fieldQuotingEnabled={fieldQuotingEnabled}
+                        lineItems={lineItems}
+                        quote={quote}
+                        expenses={expenses}
+                        notes={notes}
+                        photos={photos}
+                        signature={signature}
+                        summaryMutation={summaryMutation}
+                        fieldInvoice={fieldInvoice}
+                        statusMutation={statusMutation}
+                        checklistMutation={checklistMutation}
+                        quoteSending={quote.quoteMutation.isPending}
+                        mobile
+                        onBack={closeMobileJob}
+                    />
+                ) : (
+                    <PullToRefresh onRefresh={() => assignedJobsQuery.refetch()}>
+                        <TechnicianHome
+                            name={techName}
+                            jobs={assignedJobs}
+                            nextJob={nextJob}
+                            onOpenJob={openMobileJob}
+                            statusMutation={statusMutation}
+                            canCompleteNext={jobCanComplete(nextJob)}
+                        />
+                    </PullToRefresh>
+                )}
             </div>
 
-            <OverviewCards
-                nextJob={nextJob}
-                openJobsCount={assignedJobs.length}
-                checklistCompleted={checklistCompleted}
-                checklistRequired={checklistRequired}
-                signoffCaptured={activeJob.signatures.length > 0}
-                mapsHref={mapsHref}
-                customerPhoneHref={customerPhoneHref}
-                onOpenJob={setSelectedJobId}
-            />
+            {/* ---- Desktop: two-pane layout ---- */}
+            <div className="hidden space-y-6 pb-20 md:block">
+                <div className="flex items-baseline justify-between gap-3">
+                    <h2 className="text-2xl font-bold tracking-tight">Field console</h2>
+                    <span className="text-sm text-muted-foreground">{techName}</span>
+                </div>
 
-            <div className="grid gap-6 xl:grid-cols-[320px,1fr]">
-                <JobList jobs={assignedJobs} activeJobId={activeJob.id} onSelectJob={setSelectedJobId} />
+                <OverviewCards
+                    nextJob={nextJob}
+                    openJobsCount={assignedJobs.length}
+                    checklistCompleted={activeDetail.checklistCompleted}
+                    checklistRequired={activeDetail.checklistRequired}
+                    signoffCaptured={activeJob.signatures.length > 0}
+                    mapsHref={activeMapsHref}
+                    customerPhoneHref={activePhoneHref}
+                    onOpenJob={setSelectedJobId}
+                />
 
-                <div className="space-y-6">
-                    <ActiveJobHeader
+                <div className="grid gap-6 xl:grid-cols-[340px,1fr]">
+                    <JobList jobs={assignedJobs} activeJobId={activeJob.id} onSelectJob={setSelectedJobId} />
+
+                    <JobDetail
                         job={activeJob}
-                        nextStatus={nextStatus}
-                        canComplete={canComplete}
-                        mapsHref={mapsHref}
-                        onChangeStatus={(status) => statusMutation.mutate({ jobId: activeJob.id, status })}
+                        {...activeDetail}
+                        priceBookItems={priceBookItems}
+                        fieldQuotingEnabled={fieldQuotingEnabled}
+                        lineItems={lineItems}
+                        quote={quote}
+                        expenses={expenses}
+                        notes={notes}
+                        photos={photos}
+                        signature={signature}
+                        summaryMutation={summaryMutation}
+                        fieldInvoice={fieldInvoice}
+                        statusMutation={statusMutation}
+                        checklistMutation={checklistMutation}
+                        quoteSending={quote.quoteMutation.isPending}
                     />
-
-                    <Tabs defaultValue="work">
-                        <TabsList className="grid w-full grid-cols-3">
-                            <TabsTrigger value="work">Work</TabsTrigger>
-                            <TabsTrigger value="media">Media</TabsTrigger>
-                            <TabsTrigger value="closeout">Done</TabsTrigger>
-                        </TabsList>
-
-                        <TabsContent value="work" className="space-y-4">
-                            <WorkTab
-                                job={activeJob}
-                                priceBookItems={priceBookItems}
-                                lineItems={lineItems}
-                                quote={quote}
-                                expenses={expenses}
-                                onToggleChecklist={(checkId, isCompleted) =>
-                                    checklistMutation.mutate({ jobId: activeJob.id, checkId, isCompleted })
-                                }
-                                onSendQuote={() => quote.sendQuote(activeJob.id)}
-                                isSendingQuote={quote.quoteMutation.isPending}
-                                fieldQuotingEnabled={fieldQuotingEnabled}
-                            />
-                        </TabsContent>
-
-                        <TabsContent value="media" className="space-y-4">
-                            <MediaTab
-                                job={activeJob}
-                                notes={notes}
-                                photos={photos}
-                                onSaveNote={() => notes.saveNote(activeJob.id)}
-                                onUploadPhoto={() =>
-                                    photos.photoFile && photos.queuePhotoUpload(activeJob.id, photos.photoFile, photos.photoCaption)
-                                }
-                            />
-                        </TabsContent>
-
-                        <TabsContent value="closeout">
-                            <CloseoutTab
-                                job={activeJob}
-                                checklistCompleted={checklistCompleted}
-                                checklistRequired={checklistRequired}
-                                signerName={signature.signerName}
-                                setSignerName={signature.setSignerName}
-                                signatureDataUrl={signature.signatureDataUrl}
-                                setSignatureDataUrl={signature.setSignatureDataUrl}
-                                onSaveSignature={() => signature.saveSignature(activeJob.id)}
-                                isSaving={signature.signatureMutation.isPending}
-                                onSendSummary={() => summaryMutation.mutate({ jobId: activeJob.id })}
-                                isSendingSummary={summaryMutation.isPending}
-                                canInvoice={activeJob.status === "COMPLETED" || canComplete}
-                                invoicedAt={activeJob.invoicedAt}
-                                onSendInvoice={() => fieldInvoice.sendInvoice(activeJob.id)}
-                                isSendingInvoice={fieldInvoice.invoiceMutation.isPending}
-                            />
-                        </TabsContent>
-                    </Tabs>
                 </div>
             </div>
-        </div>
+        </>
     );
 }

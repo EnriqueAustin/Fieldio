@@ -22,6 +22,7 @@ export const OFFLINE_KEYS = {
     photo: ["job", "photo"] as const,
     fieldQuote: ["job", "fieldQuote"] as const,
     fieldInvoice: ["job", "fieldInvoice"] as const,
+    formSubmit: ["job", "formSubmit"] as const,
 };
 
 const ASSIGNED_JOBS_KEY = ["technician-assigned-jobs"];
@@ -212,6 +213,30 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
             return (await api.post(`/finance/jobs/${jobId}/field-invoice`, {})).data;
         },
         onSettled: () => invalidateFieldQueries(qc),
+    });
+
+    // Field form / CoC submission. The submission is a separate entity (not part
+    // of the assigned-jobs list), so we patch the per-job forms cache optimistically
+    // and reconcile onSettled. Prices never appear on forms, so nothing to strip.
+    qc.setMutationDefaults(OFFLINE_KEYS.formSubmit, {
+        mutationFn: async ({ jobId, templateId, data, signatureUrl }: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string }) => {
+            await api.post(`/digital-forms/submissions`, { jobId, templateId, data, signatureUrl });
+        },
+        onMutate: async ({ jobId, templateId }: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string }) => {
+            await qc.cancelQueries({ queryKey: ["job-forms", jobId] });
+            qc.setQueryData(["job-forms", jobId], (old: any) => {
+                if (!old) return old;
+                return {
+                    ...old,
+                    submissions: [
+                        { id: tempId(), templateId, createdAt: new Date().toISOString(), user: null, pending: true },
+                        ...(old.submissions ?? []),
+                    ],
+                };
+            });
+        },
+        onSettled: (_data, _error, variables: any) =>
+            qc.invalidateQueries({ queryKey: ["job-forms", variables?.jobId] }),
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.photo, {

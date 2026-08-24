@@ -1,12 +1,32 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
-import { format, startOfWeek, endOfWeek } from "date-fns";
-import { Calendar, MapPin, Phone, Clock, Truck, CheckCircle2, Play, PauseCircle } from "lucide-react";
+import {
+    format,
+    startOfWeek,
+    endOfWeek,
+    startOfDay,
+    isToday,
+    isTomorrow,
+    isBefore,
+} from "date-fns";
+import {
+    Calendar,
+    MapPin,
+    Phone,
+    Clock,
+    Truck,
+    CheckCircle2,
+    Play,
+    PauseCircle,
+    AlertTriangle,
+    ChevronDown,
+    Layers,
+} from "lucide-react";
 import api from "../../../lib/api";
 import { OFFLINE_KEYS } from "../../../lib/offline-mutations";
 import { Button } from "../../../components/ui/button";
@@ -34,6 +54,7 @@ const STATUS_LABELS: Record<string, string> = {
     ASSIGNED: "Assigned",
     EN_ROUTE: "En route",
     ON_SITE: "On site",
+    PAUSED: "Paused",
     COMPLETED: "Completed",
     CANCELED: "Canceled",
 };
@@ -43,8 +64,75 @@ const STATUS_STYLES: Record<string, string> = {
     ASSIGNED: "bg-blue-100 text-blue-700",
     EN_ROUTE: "bg-violet-100 text-violet-700",
     ON_SITE: "bg-amber-100 text-amber-700",
+    PAUSED: "bg-orange-100 text-orange-700",
     COMPLETED: "bg-emerald-100 text-emerald-700",
     CANCELED: "bg-rose-100 text-rose-700",
+};
+
+// A job as returned by /jobs/assigned/me (pricing already stripped server-side).
+type AssignedJob = {
+    id: string;
+    title: string;
+    status: string;
+    priority: string;
+    scheduledStart: string | null;
+    scheduledEnd: string | null;
+    customer?: { name: string; phone?: string | null } | null;
+    property?: { addressLine1: string; city?: string | null } | null;
+    van?: { name: string } | null;
+};
+
+// The shared shape both the week feed and the assigned feed normalise into so the
+// mobile agenda card can render either.
+type AgendaJob = {
+    id: string;
+    title: string;
+    start: string | null;
+    end: string | null;
+    status: string;
+    priority: string;
+    customerName: string;
+    customerPhone?: string | null;
+    address: string;
+    vanName?: string | null;
+};
+
+const fromWeekEvent = (e: WeekEvent): AgendaJob => ({
+    id: e.id,
+    title: e.title,
+    start: e.start,
+    end: e.end,
+    status: e.extendedProps.status,
+    priority: e.extendedProps.priority,
+    customerName: e.extendedProps.customerName,
+    customerPhone: e.extendedProps.customerPhone,
+    address: e.extendedProps.address,
+    vanName: e.extendedProps.vanName,
+});
+
+const fromAssigned = (j: AssignedJob): AgendaJob => ({
+    id: j.id,
+    title: j.customer?.name ? `${j.title} - ${j.customer.name}` : j.title,
+    start: j.scheduledStart,
+    end: j.scheduledEnd,
+    status: j.status,
+    priority: j.priority,
+    customerName: j.customer?.name ?? "",
+    customerPhone: j.customer?.phone,
+    address: j.property ? `${j.property.addressLine1}${j.property.city ? `, ${j.property.city}` : ""}` : "",
+    vanName: j.van?.name,
+});
+
+// Best-effort suburb: the segment after the last comma of "line1, city".
+const suburbOf = (address: string) => {
+    const parts = address.split(",").map((p) => p.trim()).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : "";
+};
+
+const dayHeading = (d: Date) => {
+    if (isToday(d)) return "Today";
+    if (isTomorrow(d)) return "Tomorrow";
+    return format(d, "EEEE d MMM");
 };
 
 export default function MySchedulePage() {
@@ -52,6 +140,7 @@ export default function MySchedulePage() {
     const queryClient = useQueryClient();
     const calendarRef = useRef<FullCalendar | null>(null);
     const [selectedEvent, setSelectedEvent] = useState<WeekEvent | null>(null);
+    const [expandedId, setExpandedId] = useState<string | null>(null);
     const [range, setRange] = useState(() => {
         const start = startOfWeek(new Date(), { weekStartsOn: 1 });
         const end = endOfWeek(new Date(), { weekStartsOn: 1 });
@@ -69,8 +158,18 @@ export default function MySchedulePage() {
         },
     });
     const events = eventsQuery.data ?? [];
-    const isLoading = eventsQuery.isLoading;
     const rangeLabel = `${format(new Date(range.start), "d MMM")} – ${format(new Date(range.end), "d MMM yyyy")}`;
+
+    // All open jobs (any date) — the source of the backlog / overdue counts so
+    // "Jobs this week = 0" isn't misleading when older jobs are still open.
+    const assignedQuery = useQuery({
+        queryKey: ["my-open-jobs"],
+        queryFn: async () => {
+            const response = await api.get("/jobs/assigned/me");
+            return response.data.data.jobs as AssignedJob[];
+        },
+    });
+    const openJobs = assignedQuery.data ?? [];
 
     // Status changes route through the offline mutation default — they queue
     // when there's no signal and patch the calendar optimistically.
@@ -84,6 +183,7 @@ export default function MySchedulePage() {
                 ? { ...cur, extendedProps: { ...cur.extendedProps, status } }
                 : cur
         );
+        queryClient.invalidateQueries({ queryKey: ["my-open-jobs"] });
     };
 
     // "On my way" notifies the customer (SMS) — inherently an online action.
@@ -91,7 +191,10 @@ export default function MySchedulePage() {
         mutationFn: async (jobId: string) => {
             await api.post(`/schedule/jobs/${jobId}/on-my-way`);
         },
-        onSettled: () => queryClient.invalidateQueries({ queryKey: ["my-week"] }),
+        onSettled: () => {
+            queryClient.invalidateQueries({ queryKey: ["my-week"] });
+            queryClient.invalidateQueries({ queryKey: ["my-open-jobs"] });
+        },
     });
     const onMyWay = (jobId: string) => onMyWayMutation.mutate(jobId);
 
@@ -102,9 +205,219 @@ export default function MySchedulePage() {
     const todayJobs = events.filter(
         (e) => e.start && format(new Date(e.start), "yyyy-MM-dd") === format(new Date(), "yyyy-MM-dd")
     );
-    const upcomingJobs = events.filter(
-        (e) => e.start && new Date(e.start) > new Date()
+    const upcomingJobs = events.filter((e) => e.start && new Date(e.start) > new Date());
+
+    // ---- Mobile agenda grouping ---------------------------------------------
+    const todayStart = startOfDay(new Date());
+
+    // Overdue = open jobs scheduled before today (or with no date at all).
+    const overdue = useMemo(
+        () =>
+            openJobs
+                .filter((j) => {
+                    if (j.status === "COMPLETED" || j.status === "CANCELED") return false;
+                    if (!j.scheduledStart) return true;
+                    return isBefore(new Date(j.scheduledStart), todayStart);
+                })
+                .map(fromAssigned)
+                .sort((a, b) => (a.start ?? "").localeCompare(b.start ?? "")),
+        [openJobs, todayStart]
     );
+
+    // The week's scheduled jobs grouped by day, today first then ascending.
+    const dayGroups = useMemo(() => {
+        const groups = new Map<string, { date: Date; jobs: AgendaJob[] }>();
+        for (const e of events) {
+            if (!e.start) continue;
+            const d = new Date(e.start);
+            const key = format(d, "yyyy-MM-dd");
+            const bucket = groups.get(key) ?? { date: startOfDay(d), jobs: [] };
+            bucket.jobs.push(fromWeekEvent(e));
+            groups.set(key, bucket);
+        }
+        return Array.from(groups.values())
+            .map((g) => ({
+                ...g,
+                jobs: g.jobs.sort((a, b) => (a.start ?? "").localeCompare(b.start ?? "")),
+            }))
+            .sort((a, b) => {
+                // Today always first, then chronological.
+                const at = isToday(a.date) ? -Infinity : a.date.getTime();
+                const bt = isToday(b.date) ? -Infinity : b.date.getTime();
+                return at - bt;
+            });
+    }, [events]);
+
+    const openCount = openJobs.filter(
+        (j) => j.status !== "COMPLETED" && j.status !== "CANCELED"
+    ).length;
+
+    const renderActions = (job: AgendaJob) => (
+        <div className="space-y-2 border-t pt-3">
+            <Button asChild variant="outline" className="w-full min-h-[44px]">
+                <a
+                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(job.address)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                >
+                    <MapPin className="mr-2 h-4 w-4" />
+                    Open in Maps
+                </a>
+            </Button>
+            {job.customerPhone && (
+                <Button asChild variant="outline" className="w-full min-h-[44px]">
+                    <a href={`tel:${job.customerPhone}`}>
+                        <Phone className="mr-2 h-4 w-4" />
+                        Call {job.customerName || "customer"}
+                    </a>
+                </Button>
+            )}
+            {job.status === "ASSIGNED" && (
+                <Button
+                    disabled={onMyWayMutation.isPending}
+                    onClick={() => onMyWay(job.id)}
+                    className="w-full min-h-[44px] bg-violet-600 hover:bg-violet-700 gap-2"
+                >
+                    <Truck className="h-4 w-4" /> On my way (notify customer)
+                </Button>
+            )}
+            {job.status === "EN_ROUTE" && (
+                <Button
+                    onClick={() => setStatus(job.id, "ON_SITE")}
+                    className="w-full min-h-[44px] bg-amber-500 hover:bg-amber-600 gap-2"
+                >
+                    <Play className="h-4 w-4" /> Arrived / Start work
+                </Button>
+            )}
+            {job.status === "ON_SITE" && (
+                <div className="grid grid-cols-2 gap-2">
+                    <Button
+                        onClick={() => setStatus(job.id, "PAUSED")}
+                        variant="outline"
+                        className="min-h-[44px] gap-1"
+                    >
+                        <PauseCircle className="h-4 w-4" /> Pause
+                    </Button>
+                    <Button
+                        onClick={() => router.push(`/jobs/${job.id}`)}
+                        className="min-h-[44px] bg-emerald-600 hover:bg-emerald-700 gap-1"
+                    >
+                        <CheckCircle2 className="h-4 w-4" /> Finish
+                    </Button>
+                </div>
+            )}
+            {job.status === "PAUSED" && (
+                <Button
+                    onClick={() => setStatus(job.id, "ON_SITE")}
+                    className="w-full min-h-[44px] bg-amber-500 hover:bg-amber-600 gap-2"
+                >
+                    <Play className="h-4 w-4" /> Resume
+                </Button>
+            )}
+            <Button
+                onClick={() => router.push(`/jobs/${job.id}`)}
+                variant="outline"
+                className="w-full min-h-[44px]"
+            >
+                Open full job
+            </Button>
+        </div>
+    );
+
+    const AgendaCard = ({ job, overdue: isOverdue }: { job: AgendaJob; overdue?: boolean }) => {
+        const expanded = expandedId === job.id;
+        const suburb = suburbOf(job.address);
+        const emergency = job.priority === "EMERGENCY";
+        return (
+            <div
+                className={`rounded-2xl border bg-white ${
+                    isOverdue ? "border-rose-200" : "border-border"
+                }`}
+            >
+                <button
+                    onClick={() => setExpandedId(expanded ? null : job.id)}
+                    className="flex w-full min-h-[56px] items-center gap-3 p-4 text-left"
+                >
+                    <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                            {emergency && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-rose-600 px-2 py-0.5 text-[10px] font-semibold text-white">
+                                    <AlertTriangle className="h-3 w-3" /> Emergency
+                                </span>
+                            )}
+                            <span
+                                className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                    STATUS_STYLES[job.status] ?? ""
+                                }`}
+                            >
+                                {STATUS_LABELS[job.status] ?? job.status}
+                            </span>
+                        </div>
+                        <p className="mt-1 truncate text-sm font-semibold">{job.title}</p>
+                        <p className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+                            <span className="inline-flex items-center gap-1">
+                                <Clock className="h-3 w-3" />
+                                {job.start ? format(new Date(job.start), "p") : "No time set"}
+                            </span>
+                            {suburb && (
+                                <span className="inline-flex min-w-0 items-center gap-1">
+                                    <MapPin className="h-3 w-3 shrink-0" />
+                                    <span className="truncate">{suburb}</span>
+                                </span>
+                            )}
+                        </p>
+                    </div>
+                    <ChevronDown
+                        className={`h-5 w-5 shrink-0 text-muted-foreground transition-transform ${
+                            expanded ? "rotate-180" : ""
+                        }`}
+                    />
+                </button>
+                {expanded && (
+                    <div className="space-y-3 px-4 pb-4 text-sm">
+                        <div className="space-y-2 rounded-xl bg-slate-50 p-3">
+                            <div className="flex items-start gap-2">
+                                <Clock className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                                <div>
+                                    {job.start && <p>{format(new Date(job.start), "EEEE d MMM, p")}</p>}
+                                    {job.end && (
+                                        <p className="text-muted-foreground">
+                                            to {format(new Date(job.end), "p")}
+                                        </p>
+                                    )}
+                                    {!job.start && <p className="text-muted-foreground">No time scheduled</p>}
+                                </div>
+                            </div>
+                            {job.address && (
+                                <div className="flex items-start gap-2">
+                                    <MapPin className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                                    <p>{job.address}</p>
+                                </div>
+                            )}
+                            {job.customerPhone && (
+                                <div className="flex items-center gap-2">
+                                    <Phone className="h-4 w-4 text-muted-foreground" />
+                                    <a
+                                        href={`tel:${job.customerPhone}`}
+                                        className="text-blue-600 hover:underline"
+                                    >
+                                        {job.customerPhone}
+                                    </a>
+                                </div>
+                            )}
+                            {job.vanName && (
+                                <div className="flex items-center gap-2">
+                                    <Truck className="h-4 w-4 text-muted-foreground" />
+                                    <span className="text-muted-foreground">{job.vanName}</span>
+                                </div>
+                            )}
+                        </div>
+                        {renderActions(job)}
+                    </div>
+                )}
+            </div>
+        );
+    };
 
     return (
         <div className="space-y-6">
@@ -115,8 +428,8 @@ export default function MySchedulePage() {
                 </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3">
-                <div className="surface-card p-5">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
+                <div className="surface-card p-4 md:p-5">
                     <div className="flex items-center justify-between">
                         <div className="icon-tile bg-blue-50 text-blue-600">
                             <Calendar className="h-5 w-5" />
@@ -126,7 +439,7 @@ export default function MySchedulePage() {
                     <p className="mt-3 text-sm font-medium">Jobs this week</p>
                     <p className="text-xs text-muted-foreground">{rangeLabel}</p>
                 </div>
-                <div className="surface-card p-5">
+                <div className="surface-card p-4 md:p-5">
                     <div className="flex items-center justify-between">
                         <div className="icon-tile bg-amber-50 text-amber-600">
                             <Clock className="h-5 w-5" />
@@ -134,9 +447,21 @@ export default function MySchedulePage() {
                         <span className="text-2xl font-semibold">{todayJobs.length}</span>
                     </div>
                     <p className="mt-3 text-sm font-medium">Today</p>
-                    <p className="text-xs text-muted-foreground">Jobs scheduled for today</p>
+                    <p className="text-xs text-muted-foreground">Scheduled for today</p>
                 </div>
-                <div className="surface-card p-5">
+                <div className="surface-card p-4 md:p-5">
+                    <div className="flex items-center justify-between">
+                        <div className="icon-tile bg-indigo-50 text-indigo-600">
+                            <Layers className="h-5 w-5" />
+                        </div>
+                        <span className="text-2xl font-semibold">{openCount}</span>
+                    </div>
+                    <p className="mt-3 text-sm font-medium">Open jobs</p>
+                    <p className="text-xs text-muted-foreground">
+                        {overdue.length > 0 ? `${overdue.length} overdue` : "All up to date"}
+                    </p>
+                </div>
+                <div className="surface-card p-4 md:p-5">
                     <div className="flex items-center justify-between">
                         <div className="icon-tile bg-emerald-50 text-emerald-600">
                             <MapPin className="h-5 w-5" />
@@ -144,11 +469,57 @@ export default function MySchedulePage() {
                         <span className="text-2xl font-semibold">{upcomingJobs.length}</span>
                     </div>
                     <p className="mt-3 text-sm font-medium">Upcoming</p>
-                    <p className="text-xs text-muted-foreground">Remaining jobs ahead</p>
+                    <p className="text-xs text-muted-foreground">Later this week</p>
                 </div>
             </div>
 
-            <div className="grid gap-6 xl:grid-cols-[1fr_340px]">
+            {/* Mobile: agenda / day list (default below md) */}
+            <div className="space-y-5 md:hidden">
+                {overdue.length > 0 && (
+                    <section className="space-y-2">
+                        <h2 className="flex items-center gap-2 text-sm font-semibold text-rose-700">
+                            <AlertTriangle className="h-4 w-4" />
+                            Overdue ({overdue.length})
+                        </h2>
+                        <div className="space-y-2">
+                            {overdue.map((job) => (
+                                <AgendaCard key={job.id} job={job} overdue />
+                            ))}
+                        </div>
+                    </section>
+                )}
+
+                {dayGroups.length === 0 && overdue.length === 0 ? (
+                    <Card>
+                        <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+                            <Calendar className="h-8 w-8 text-slate-300" />
+                            <p className="mt-3 text-sm font-medium">Nothing scheduled</p>
+                            <p className="text-xs text-muted-foreground">
+                                No jobs for this week yet.
+                            </p>
+                        </CardContent>
+                    </Card>
+                ) : (
+                    dayGroups.map((group) => (
+                        <section key={group.date.toISOString()} className="space-y-2">
+                            <h2 className="flex items-center justify-between text-sm font-semibold">
+                                <span>{dayHeading(group.date)}</span>
+                                <span className="text-xs font-normal text-muted-foreground">
+                                    {group.jobs.length} job{group.jobs.length !== 1 ? "s" : ""}
+                                </span>
+                            </h2>
+                            <div className="space-y-2">
+                                {group.jobs.map((job) => (
+                                    <AgendaCard key={job.id} job={job} />
+                                ))}
+                            </div>
+                        </section>
+                    ))
+                )}
+            </div>
+
+            {/* Desktop: FullCalendar week grid + details side panel (md and up) */}
+            <div className="hidden gap-6 md:grid xl:grid-cols-[1fr_340px]">
                 <Card className="overflow-hidden">
                     <CardHeader className="border-b border-border/70">
                         <CardTitle>Week view</CardTitle>

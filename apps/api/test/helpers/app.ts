@@ -6,6 +6,9 @@ import { financeRouter } from '../../src/routes/finance';
 import { publicPaymentsRouter } from '../../src/routes/payments';
 import { analyticsRouter } from '../../src/routes/analytics';
 import { sageExportRouter } from '../../src/routes/sageExport';
+import { vanRouter } from '../../src/routes/vans';
+import { digitalFormsRouter } from '../../src/routes/digitalForms';
+import { searchRouter } from '../../src/routes/search';
 import { signAccessToken } from '../../src/utils/jwt';
 
 // Builds an Express app that mirrors the middleware chain of the real
@@ -24,6 +27,9 @@ export function buildTestApp(): Express {
     app.use('/finance', financeRouter);
     app.use('/finance/export', sageExportRouter);
     app.use('/analytics', analyticsRouter);
+    app.use('/vans', vanRouter);
+    app.use('/digital-forms', digitalFormsRouter);
+    app.use('/search', searchRouter);
 
     app.use(errorHandler);
     return app;

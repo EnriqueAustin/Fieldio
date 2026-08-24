@@ -152,3 +152,77 @@ export function getJobTiming(job: TechnicianJob) {
     }
     return "Schedule pending";
 }
+
+/** Shorter suburb/city label for job cards. */
+export function getLocationLabel(job: TechnicianJob) {
+    return [job.property.city, job.property.state].filter(Boolean).join(", ") || "No address";
+}
+
+// Priority badge — only surfaced for the two that matter in the field. EMERGENCY
+// is loud red; HIGH is amber. LOW/MEDIUM return null (no badge, less noise).
+export const PRIORITY_BADGE: Record<
+    TechnicianJob["priority"],
+    { label: string; className: string } | null
+> = {
+    LOW: null,
+    MEDIUM: null,
+    HIGH: { label: "High", className: "bg-amber-100 text-amber-800 ring-1 ring-amber-300" },
+    EMERGENCY: {
+        label: "Emergency",
+        className: "bg-red-600 text-white ring-1 ring-red-700 animate-pulse",
+    },
+};
+
+export type JobTimeGroup = "overdue" | "today" | "upcoming";
+
+export const JOB_GROUP_ORDER: JobTimeGroup[] = ["overdue", "today", "upcoming"];
+
+export const JOB_GROUP_LABELS: Record<JobTimeGroup, string> = {
+    overdue: "Overdue",
+    today: "Today",
+    upcoming: "Upcoming",
+};
+
+/** Bucket a job as Overdue / Today / Upcoming based on scheduledStart vs today.
+ *  Overdue = scheduled before today and not yet completed. Unscheduled jobs fall
+ *  into Upcoming so they never masquerade as urgent. */
+export function getJobTimeGroup(job: TechnicianJob): JobTimeGroup {
+    if (!job.scheduledStart) return "upcoming";
+    const scheduled = new Date(job.scheduledStart);
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startTomorrow = new Date(startToday);
+    startTomorrow.setDate(startTomorrow.getDate() + 1);
+    if (job.status !== "COMPLETED" && scheduled < startToday) return "overdue";
+    if (scheduled >= startToday && scheduled < startTomorrow) return "today";
+    return "upcoming";
+}
+
+/** Group + time-sort assigned jobs for the mobile home list. */
+export function groupJobs(jobs: TechnicianJob[]): { group: JobTimeGroup; jobs: TechnicianJob[] }[] {
+    const byTime = (a: TechnicianJob, b: TechnicianJob) => {
+        const at = a.scheduledStart ? new Date(a.scheduledStart).getTime() : Number.POSITIVE_INFINITY;
+        const bt = b.scheduledStart ? new Date(b.scheduledStart).getTime() : Number.POSITIVE_INFINITY;
+        return at - bt;
+    };
+    return JOB_GROUP_ORDER.map((group) => ({
+        group,
+        jobs: jobs.filter((job) => getJobTimeGroup(job) === group).sort(byTime),
+    })).filter((section) => section.jobs.length > 0);
+}
+
+/** The single primary status action for a job, or null once completed/canceled.
+ *  Shared by the sticky action bar, the up-next hero, and the job header. */
+export function getPrimaryAction(
+    job: TechnicianJob
+): { label: string; nextStatus: TechnicianJob["status"] } | null {
+    const next = JOB_STATUS_FLOW[job.status];
+    if (!next) return null;
+    const label =
+        job.status === "ASSIGNED"
+            ? "Start route"
+            : job.status === "EN_ROUTE"
+            ? "Arrive on site"
+            : "Complete job";
+    return { label, nextStatus: next };
+}

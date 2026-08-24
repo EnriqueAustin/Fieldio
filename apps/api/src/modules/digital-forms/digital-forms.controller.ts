@@ -13,11 +13,22 @@ export const digitalFormsController = {
         res.status(StatusCodes.OK).json({ status: 'success', data: { templates } });
     },
 
+    getJobForms: async (req: Request, res: Response) => {
+        const data = await digitalFormsService.getJobForms(
+            req.user!.companyId,
+            req.user!.userId,
+            req.user!.role,
+            req.params.jobId
+        );
+        res.status(StatusCodes.OK).json({ status: 'success', data });
+    },
+
     submitForm: async (req: Request, res: Response) => {
         const submission = await digitalFormsService.submitForm(
             req.user!.companyId,
             req.user!.userId,
-            req.body
+            req.body,
+            req.user!.role
         );
         res.status(StatusCodes.CREATED).json({ status: 'success', data: { submission } });
     },
