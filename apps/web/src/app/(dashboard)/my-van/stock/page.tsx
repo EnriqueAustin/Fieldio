@@ -1,19 +1,21 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../../../../lib/api";
-import { Button } from "../../../../components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../../../../components/ui/card";
+import { Card, CardContent } from "../../../../components/ui/card";
 import {
     AlertTriangle,
+    Check,
+    ClipboardList,
     Minus,
     Package,
+    PackagePlus,
     Plus,
     Search,
     Truck,
+    X,
 } from "lucide-react";
-import { cn } from "../../../../lib/utils";
 
 interface InventoryItem {
     id: string;
@@ -23,6 +25,13 @@ interface InventoryItem {
     minLevel: number;
     // unitCost is intentionally not exposed to technicians — the API strips it.
     location: "WAREHOUSE" | "VAN";
+}
+
+interface ActiveJob {
+    id: string;
+    title: string;
+    status: string;
+    customer?: { name: string } | null;
 }
 
 interface VanInfo {
@@ -39,6 +48,11 @@ interface VanInfo {
 export default function MyVanStockPage() {
     const qc = useQueryClient();
     const [query, setQuery] = useState("");
+    const [requested, setRequested] = useState<Record<string, boolean>>({});
+    // "Use on job" sheet state.
+    const [usingItem, setUsingItem] = useState<InventoryItem | null>(null);
+    const [useQty, setUseQty] = useState(1);
+    const [useJobId, setUseJobId] = useState<string | null>(null);
 
     const { data: vanData } = useQuery<VanInfo | null>({
         queryKey: ["my-van"],
@@ -67,10 +81,66 @@ export default function MyVanStockPage() {
     const lowCount = items.filter((i) => i.quantity <= i.minLevel).length;
     const totalUnits = items.reduce((s, i) => s + i.quantity, 0);
 
-    const updateQuantity = async (id: string, newQty: number) => {
+    const quantityMutation = useMutation({
+        mutationFn: ({ id, quantity }: { id: string; quantity: number }) =>
+            api.patch(`/operations/inventory/${id}`, { quantity }),
+        // Optimistic bump so the stepper feels instant with gloves on.
+        onMutate: async ({ id, quantity }) => {
+            await qc.cancelQueries({ queryKey: ["van-inventory", vanData?.id] });
+            const prev = qc.getQueryData<InventoryItem[]>(["van-inventory", vanData?.id]);
+            qc.setQueryData<InventoryItem[]>(["van-inventory", vanData?.id], (old) =>
+                (old ?? []).map((i) => (i.id === id ? { ...i, quantity } : i))
+            );
+            return { prev };
+        },
+        onError: (_e, _v, ctx) => {
+            if (ctx?.prev) qc.setQueryData(["van-inventory", vanData?.id], ctx.prev);
+        },
+        onSettled: () => qc.invalidateQueries({ queryKey: ["van-inventory", vanData?.id] }),
+    });
+
+    const restockMutation = useMutation({
+        mutationFn: (itemId: string) =>
+            api.post(`/vans/${vanData!.id}/inventory/${itemId}/request-restock`),
+        onSuccess: (_data, itemId) => {
+            setRequested((r) => ({ ...r, [itemId]: true }));
+        },
+    });
+
+    // Tech's own active jobs, fetched only while the "Use on job" sheet is open.
+    const { data: activeJobs = [] } = useQuery<ActiveJob[]>({
+        queryKey: ["my-active-jobs"],
+        queryFn: () =>
+            api.get("/jobs/assigned/me").then((r) =>
+                (r.data?.data?.jobs ?? []).filter(
+                    (j: ActiveJob) => j.status !== "COMPLETED" && j.status !== "CANCELED"
+                )
+            ),
+        enabled: !!usingItem,
+    });
+
+    const useStockMutation = useMutation({
+        mutationFn: ({ itemId, jobId, quantity }: { itemId: string; jobId: string; quantity: number }) =>
+            api.post(`/vans/${vanData!.id}/inventory/${itemId}/use`, { jobId, quantity }),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ["van-inventory", vanData?.id] });
+            closeUseSheet();
+        },
+    });
+
+    const updateQuantity = (id: string, newQty: number) => {
         if (newQty < 0) return;
-        await api.patch(`/operations/inventory/${id}`, { quantity: newQty });
-        qc.invalidateQueries({ queryKey: ["van-inventory"] });
+        quantityMutation.mutate({ id, quantity: newQty });
+    };
+
+    const openUseSheet = (item: InventoryItem) => {
+        setUsingItem(item);
+        setUseQty(1);
+        setUseJobId(null);
+    };
+    const closeUseSheet = () => {
+        setUsingItem(null);
+        setUseJobId(null);
     };
 
     if (!vanData) {
@@ -93,6 +163,65 @@ export default function MyVanStockPage() {
         );
     }
 
+    // Reusable +/- stepper (≥44px targets).
+    const Stepper = ({ item }: { item: InventoryItem }) => (
+        <div className="inline-flex items-center rounded-xl border border-border bg-white">
+            <button
+                aria-label={`Decrease ${item.name}`}
+                onClick={() => updateQuantity(item.id, item.quantity - 1)}
+                disabled={item.quantity <= 0}
+                className="flex h-11 w-11 items-center justify-center rounded-l-xl hover:bg-slate-50 disabled:opacity-40 active:scale-95"
+            >
+                <Minus className="h-4 w-4" />
+            </button>
+            <span className="w-12 text-center text-base font-semibold tabular-nums">
+                {item.quantity}
+            </span>
+            <button
+                aria-label={`Increase ${item.name}`}
+                onClick={() => updateQuantity(item.id, item.quantity + 1)}
+                className="flex h-11 w-11 items-center justify-center rounded-r-xl hover:bg-slate-50 active:scale-95"
+            >
+                <Plus className="h-4 w-4" />
+            </button>
+        </div>
+    );
+
+    const UseOnJobButton = ({ item, className = "" }: { item: InventoryItem; className?: string }) => (
+        <button
+            onClick={() => openUseSheet(item)}
+            disabled={item.quantity <= 0}
+            className={`inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-border bg-white px-4 text-sm font-medium transition hover:bg-slate-50 active:scale-95 disabled:opacity-40 disabled:active:scale-100 ${className}`}
+        >
+            <ClipboardList className="h-4 w-4" /> Use on job
+        </button>
+    );
+
+    const RestockButton = ({ item, className = "" }: { item: InventoryItem; className?: string }) => {
+        const done = requested[item.id];
+        return (
+            <button
+                onClick={() => !done && restockMutation.mutate(item.id)}
+                disabled={done || restockMutation.isPending}
+                className={`inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border px-4 text-sm font-medium transition active:scale-95 disabled:active:scale-100 ${
+                    done
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : "border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100"
+                } ${className}`}
+            >
+                {done ? (
+                    <>
+                        <Check className="h-4 w-4" /> Restock requested
+                    </>
+                ) : (
+                    <>
+                        <PackagePlus className="h-4 w-4" /> Request restock
+                    </>
+                )}
+            </button>
+        );
+    };
+
     return (
         <div className="space-y-6">
             <div>
@@ -103,8 +232,8 @@ export default function MyVanStockPage() {
                 </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3">
-                <div className="surface-card p-5">
+            <div className="grid grid-cols-3 gap-3 md:gap-4">
+                <div className="surface-card p-4 md:p-5">
                     <div className="flex items-center justify-between">
                         <div className="icon-tile bg-blue-50 text-blue-600">
                             <Package className="h-5 w-5" />
@@ -113,7 +242,7 @@ export default function MyVanStockPage() {
                     </div>
                     <p className="mt-3 text-sm font-medium">Items on van</p>
                 </div>
-                <div className="surface-card p-5">
+                <div className="surface-card p-4 md:p-5">
                     <div className="flex items-center justify-between">
                         <div className="icon-tile bg-rose-50 text-rose-600">
                             <AlertTriangle className="h-5 w-5" />
@@ -122,14 +251,12 @@ export default function MyVanStockPage() {
                     </div>
                     <p className="mt-3 text-sm font-medium">Low stock</p>
                 </div>
-                <div className="surface-card p-5">
+                <div className="surface-card p-4 md:p-5">
                     <div className="flex items-center justify-between">
                         <div className="icon-tile bg-emerald-50 text-emerald-600">
                             <Package className="h-5 w-5" />
                         </div>
-                        <span className="text-2xl font-semibold">
-                            {totalUnits}
-                        </span>
+                        <span className="text-2xl font-semibold">{totalUnits}</span>
                     </div>
                     <p className="mt-3 text-sm font-medium">Total units</p>
                 </div>
@@ -143,12 +270,74 @@ export default function MyVanStockPage() {
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         placeholder="Search parts on your van…"
-                        className="w-full rounded-lg border border-border bg-background/60 pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]"
+                        className="min-h-[44px] w-full rounded-lg border border-border bg-background/60 pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]"
                     />
                 </div>
             </div>
 
-            <div className="surface-card overflow-hidden">
+            {/* Mobile: card list (default below md) */}
+            <div className="space-y-3 md:hidden">
+                {filtered.length === 0 ? (
+                    <Card>
+                        <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+                            <Package className="h-8 w-8 text-slate-300" />
+                            <p className="mt-3 text-sm font-medium">No stock found</p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                                {items.length === 0
+                                    ? "Your van has no stock assigned yet."
+                                    : "Adjust your search."}
+                            </p>
+                        </CardContent>
+                    </Card>
+                ) : (
+                    filtered.map((item) => {
+                        const low = item.quantity <= item.minLevel;
+                        return (
+                            <div
+                                key={item.id}
+                                className={`rounded-2xl border bg-white p-4 ${
+                                    low ? "border-rose-200" : "border-border"
+                                }`}
+                            >
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <p className="font-semibold leading-tight">{item.name}</p>
+                                        <p className="mt-0.5 text-xs font-mono text-muted-foreground">
+                                            {item.sku || "No SKU"}
+                                        </p>
+                                    </div>
+                                    {low ? (
+                                        <span className="status-pill shrink-0 bg-rose-50 text-rose-700 ring-rose-200">
+                                            <AlertTriangle className="h-3 w-3" />
+                                            Low
+                                        </span>
+                                    ) : (
+                                        <span className="status-pill shrink-0 bg-emerald-50 text-emerald-700 ring-emerald-200">
+                                            <span className="status-pill-dot bg-emerald-500" />
+                                            In stock
+                                        </span>
+                                    )}
+                                </div>
+
+                                <div className="mt-4 flex items-center justify-between gap-3">
+                                    <Stepper item={item} />
+                                    <span className="text-xs text-muted-foreground">
+                                        Min {item.minLevel}
+                                    </span>
+                                </div>
+
+                                <div className="mt-3 flex flex-col gap-2">
+                                    <UseOnJobButton item={item} className="w-full" />
+                                    {low && <RestockButton item={item} className="w-full" />}
+                                </div>
+                            </div>
+                        );
+                    })
+                )}
+            </div>
+
+            {/* Desktop: table (md and up) */}
+            <div className="surface-card hidden overflow-hidden md:block">
                 <table className="w-full">
                     <thead>
                         <tr className="border-b border-border/60 bg-slate-50/50">
@@ -156,12 +345,13 @@ export default function MyVanStockPage() {
                             <th className="px-6 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">SKU</th>
                             <th className="px-6 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Quantity</th>
                             <th className="px-6 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Status</th>
+                            <th className="px-6 py-3 text-right text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Actions</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-border/60">
                         {filtered.length === 0 ? (
                             <tr>
-                                <td colSpan={4}>
+                                <td colSpan={5}>
                                     <div className="flex flex-col items-center py-16 text-center">
                                         <Package className="h-8 w-8 text-slate-300" />
                                         <p className="mt-3 text-sm font-medium">No stock found</p>
@@ -188,23 +378,7 @@ export default function MyVanStockPage() {
                                             {item.sku || "—"}
                                         </td>
                                         <td className="px-6 py-3.5">
-                                            <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-white">
-                                                <button
-                                                    onClick={() => updateQuantity(item.id, item.quantity - 1)}
-                                                    className="h-7 w-7 flex items-center justify-center hover:bg-slate-50 rounded-l-lg"
-                                                >
-                                                    <Minus className="h-3 w-3" />
-                                                </button>
-                                                <span className="w-10 text-center text-sm font-medium tabular-nums">
-                                                    {item.quantity}
-                                                </span>
-                                                <button
-                                                    onClick={() => updateQuantity(item.id, item.quantity + 1)}
-                                                    className="h-7 w-7 flex items-center justify-center hover:bg-slate-50 rounded-r-lg"
-                                                >
-                                                    <Plus className="h-3 w-3" />
-                                                </button>
-                                            </div>
+                                            <Stepper item={item} />
                                         </td>
                                         <td className="px-6 py-3.5">
                                             {low ? (
@@ -219,6 +393,12 @@ export default function MyVanStockPage() {
                                                 </span>
                                             )}
                                         </td>
+                                        <td className="px-6 py-3.5 text-right">
+                                            <div className="flex items-center justify-end gap-2">
+                                                <UseOnJobButton item={item} />
+                                                {low && <RestockButton item={item} />}
+                                            </div>
+                                        </td>
                                     </tr>
                                 );
                             })
@@ -226,6 +406,107 @@ export default function MyVanStockPage() {
                     </tbody>
                 </table>
             </div>
+
+            {/* "Use on job" sheet: pick a job, set quantity, log the draw. */}
+            {usingItem && (
+                <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
+                    <div className="absolute inset-0 bg-black/40" onClick={closeUseSheet} />
+                    <div className="relative z-10 w-full max-w-md rounded-t-2xl bg-white p-5 shadow-xl sm:rounded-2xl">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h2 className="text-lg font-semibold leading-tight">Use on job</h2>
+                                <p className="text-sm text-muted-foreground">
+                                    {usingItem.name} · {usingItem.quantity} on van
+                                </p>
+                            </div>
+                            <button
+                                aria-label="Close"
+                                onClick={closeUseSheet}
+                                className="flex h-9 w-9 items-center justify-center rounded-full hover:bg-slate-100"
+                            >
+                                <X className="h-5 w-5" />
+                            </button>
+                        </div>
+
+                        {/* Quantity */}
+                        <div className="mt-5 flex items-center justify-between">
+                            <span className="text-sm font-medium">Quantity used</span>
+                            <div className="inline-flex items-center rounded-xl border border-border bg-white">
+                                <button
+                                    aria-label="Decrease quantity"
+                                    onClick={() => setUseQty((q) => Math.max(1, q - 1))}
+                                    disabled={useQty <= 1}
+                                    className="flex h-11 w-11 items-center justify-center rounded-l-xl hover:bg-slate-50 disabled:opacity-40 active:scale-95"
+                                >
+                                    <Minus className="h-4 w-4" />
+                                </button>
+                                <span className="w-12 text-center text-base font-semibold tabular-nums">{useQty}</span>
+                                <button
+                                    aria-label="Increase quantity"
+                                    onClick={() => setUseQty((q) => Math.min(usingItem.quantity, q + 1))}
+                                    disabled={useQty >= usingItem.quantity}
+                                    className="flex h-11 w-11 items-center justify-center rounded-r-xl hover:bg-slate-50 disabled:opacity-40 active:scale-95"
+                                >
+                                    <Plus className="h-4 w-4" />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Job picker */}
+                        <div className="mt-5">
+                            <span className="text-sm font-medium">Which job?</span>
+                            <div className="mt-2 max-h-56 space-y-2 overflow-y-auto">
+                                {activeJobs.length === 0 ? (
+                                    <p className="py-4 text-center text-sm text-muted-foreground">
+                                        No active jobs assigned to you.
+                                    </p>
+                                ) : (
+                                    activeJobs.map((j) => (
+                                        <button
+                                            key={j.id}
+                                            onClick={() => setUseJobId(j.id)}
+                                            className={`flex min-h-[52px] w-full items-center justify-between gap-3 rounded-xl border px-4 py-2 text-left transition ${
+                                                useJobId === j.id
+                                                    ? "border-blue-500 bg-blue-50"
+                                                    : "border-border hover:bg-slate-50"
+                                            }`}
+                                        >
+                                            <div className="min-w-0">
+                                                <p className="truncate text-sm font-medium">{j.title}</p>
+                                                <p className="truncate text-xs text-muted-foreground">
+                                                    {j.customer?.name ?? ""}
+                                                </p>
+                                            </div>
+                                            {useJobId === j.id && <Check className="h-5 w-5 shrink-0 text-blue-600" />}
+                                        </button>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+
+                        <button
+                            onClick={() =>
+                                useJobId &&
+                                useStockMutation.mutate({
+                                    itemId: usingItem.id,
+                                    jobId: useJobId,
+                                    quantity: useQty,
+                                })
+                            }
+                            disabled={!useJobId || useStockMutation.isPending}
+                            className="mt-6 flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white transition hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:active:scale-100"
+                        >
+                            <ClipboardList className="h-4 w-4" />
+                            {useStockMutation.isPending ? "Logging…" : `Use ${useQty} on job`}
+                        </button>
+                        {useStockMutation.isError && (
+                            <p className="mt-2 text-center text-xs text-rose-600">
+                                Couldn’t log usage. Please try again.
+                            </p>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

@@ -42,4 +42,27 @@ export const vansController = {
         const items = await vansService.getVanInventory(req.params.id, req.user!.companyId, req.user!.role);
         res.status(StatusCodes.OK).json({ status: 'success', data: { items } });
     },
+
+    requestRestock: async (req: Request, res: Response) => {
+        const result = await vansService.requestRestock(
+            req.params.id,
+            req.params.itemId,
+            req.user!.companyId,
+            req.user!.userId,
+            req.user!.role,
+        );
+        res.status(StatusCodes.CREATED).json({ status: 'success', data: result });
+    },
+
+    useStock: async (req: Request, res: Response) => {
+        const result = await vansService.useStock(
+            req.params.id,
+            req.params.itemId,
+            req.user!.companyId,
+            req.user!.userId,
+            req.user!.role,
+            req.body,
+        );
+        res.status(StatusCodes.CREATED).json({ status: 'success', data: result });
+    },
 };

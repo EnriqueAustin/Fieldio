@@ -25,7 +25,7 @@ const EMPTY_RESULTS: SearchResults = { customers: [], jobs: [], invoices: [] };
 
 /** Debounced global quick-search wired to GET /search. Replaces the old
  *  decorative topbar input — keyboard-and-click navigable to records. */
-function GlobalSearch() {
+function GlobalSearch({ isTechnician = false }: { isTechnician?: boolean }) {
     const router = useRouter();
     const [query, setQuery] = useState("");
     const [results, setResults] = useState<SearchResults>(EMPTY_RESULTS);
@@ -75,7 +75,7 @@ function GlobalSearch() {
                 value={query}
                 onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
                 onFocus={() => setOpen(true)}
-                placeholder="Search jobs, customers, invoices…"
+                placeholder={isTechnician ? "Search jobs, customers…" : "Search jobs, customers, invoices…"}
                 className="w-full rounded-lg border border-border bg-background/60 pl-9 pr-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]"
             />
             {showPanel && (
@@ -116,7 +116,7 @@ function GlobalSearch() {
                                     ))}
                                 </div>
                             )}
-                            {results.invoices.length > 0 && (
+                            {!isTechnician && results.invoices.length > 0 && (
                                 <div>
                                     <div className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Invoices</div>
                                     {results.invoices.map((inv) => (
@@ -241,7 +241,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <header className="sticky top-0 z-20 border-b border-border/60 bg-white/80 backdrop-blur-md">
                     <div className="flex h-16 items-center gap-4 px-6 lg:px-8">
                         <div className="flex flex-1 items-center gap-3 max-w-md">
-                            <GlobalSearch />
+                            <GlobalSearch isTechnician={user?.role === "TECHNICIAN"} />
                         </div>
                         <div className="flex items-center gap-2">
                             <NotificationBell />

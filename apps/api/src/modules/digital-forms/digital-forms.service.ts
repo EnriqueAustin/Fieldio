@@ -18,6 +18,34 @@ const submitFormSchema = z.object({
     signatureUrl: z.string().optional(),
 });
 
+/**
+ * A technician may only touch forms for a job assigned to them (or their van).
+ * Mirrors the assignment guard used in jobs.service (line items / status).
+ * OFFICE/ADMIN callers are unrestricted. Returns the job so callers can reuse it.
+ */
+async function assertJobAccess(companyId: string, userId: string, userRole: string | undefined, jobId: string) {
+    const job = await prisma.job.findFirst({ where: { id: jobId, companyId, deletedAt: null } });
+    if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+    if (userRole === 'TECHNICIAN') {
+        let hasAccess = job.techId === userId;
+        if (!hasAccess && job.vanId) {
+            const membership = await prisma.vanMember.findFirst({
+                where: { userId, van: { id: job.vanId, companyId } },
+            });
+            hasAccess = !!membership;
+        }
+        if (!hasAccess) {
+            throw new AppError(
+                'You can only work with forms for jobs assigned to you or your van',
+                StatusCodes.FORBIDDEN
+            );
+        }
+    }
+
+    return job;
+}
+
 export const digitalFormsService = {
     createTemplate: async (companyId: string, input: z.infer<typeof createTemplateSchema>) => {
         const parsed = createTemplateSchema.parse(input);
@@ -38,9 +66,47 @@ export const digitalFormsService = {
         });
     },
 
-    submitForm: async (companyId: string, userId: string, input: z.infer<typeof submitFormSchema>) => {
+    // Forms surfaced to a technician for a specific job: all active company
+    // templates, this job's submissions, and whether the caller may issue CoCs.
+    // Assignment is enforced so a tech can't read another crew's job forms.
+    getJobForms: async (companyId: string, userId: string, userRole: string | undefined, jobId: string) => {
+        await assertJobAccess(companyId, userId, userRole, jobId);
+
+        const [templates, submissions, submitter] = await Promise.all([
+            prisma.digitalFormTemplate.findMany({
+                where: { companyId, active: true },
+                orderBy: { name: 'asc' },
+            }),
+            prisma.digitalFormSubmission.findMany({
+                where: { companyId, jobId },
+                select: {
+                    id: true,
+                    templateId: true,
+                    signatureUrl: true,
+                    createdAt: true,
+                    user: { select: { firstName: true, lastName: true } },
+                },
+                orderBy: { createdAt: 'desc' },
+            }),
+            prisma.user.findFirst({
+                where: { id: userId, companyId },
+                select: { permissions: true },
+            }),
+        ]);
+
+        const canIssueCoC = Boolean((submitter?.permissions as Record<string, unknown> | null)?.canIssueCoC);
+
+        return { templates, submissions, canIssueCoC };
+    },
+
+    submitForm: async (companyId: string, userId: string, input: z.infer<typeof submitFormSchema>, userRole?: string) => {
         const parsed = submitFormSchema.parse(input);
-        
+
+        // Technicians may only submit against jobs assigned to them / their van.
+        if (parsed.jobId) {
+            await assertJobAccess(companyId, userId, userRole, parsed.jobId);
+        }
+
         const template = await prisma.digitalFormTemplate.findFirst({
             where: { id: parsed.templateId, companyId, active: true },
         });

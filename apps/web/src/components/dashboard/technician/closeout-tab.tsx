@@ -111,7 +111,7 @@ export function CloseoutTab({
                     </div>
                     <Button
                         variant="outline"
-                        className="shrink-0"
+                        className="h-11 shrink-0"
                         onClick={onSendSummary}
                         disabled={isSendingSummary}
                     >
@@ -141,7 +141,7 @@ export function CloseoutTab({
                         </p>
                     </div>
                     <Button
-                        className="shrink-0"
+                        className="h-11 shrink-0"
                         onClick={onSendInvoice}
                         disabled={!canInvoice || isSendingInvoice}
                     >
@@ -161,6 +161,7 @@ export function CloseoutTab({
                         </label>
                         <Input
                             id="signer-name"
+                            className="h-11"
                             value={signerName}
                             onChange={(event) => setSignerName(event.target.value)}
                             placeholder="Name of person approving the completed work"
@@ -169,6 +170,7 @@ export function CloseoutTab({
                     <SignaturePad onChange={setSignatureDataUrl} disabled={isSaving} />
                     <div className="flex justify-end">
                         <Button
+                            className="h-11"
                             onClick={onSaveSignature}
                             disabled={!signerName.trim() || !signatureDataUrl}
                         >

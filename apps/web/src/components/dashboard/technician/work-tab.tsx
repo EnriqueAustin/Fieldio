@@ -1,6 +1,7 @@
 "use client";
 
 import { ChecklistCard } from "./checklist-card";
+import { FormsCard } from "./forms-card";
 import { SiteHistoryCard } from "./site-history-card";
 import { LineItemsCard } from "./line-items-card";
 import { QuoteCard } from "./quote-card";
@@ -39,6 +40,9 @@ export function WorkTab({
             <SiteHistoryCard job={job} />
 
             <ChecklistCard job={job} onToggle={onToggleChecklist} />
+
+            {/* On-site forms & CoC — self-contained (renders nothing if no templates). */}
+            <FormsCard jobId={job.id} />
 
             <LineItemsCard
                 job={job}

@@ -1,0 +1,153 @@
+"use client";
+
+import { format } from "date-fns";
+import { MapPin, Navigation, Phone, Clock } from "lucide-react";
+import { Card, CardContent } from "../../ui/card";
+import { JobCard } from "./job-card";
+import {
+    getAddress,
+    getJobTiming,
+    getPrimaryAction,
+    groupJobs,
+    JOB_GROUP_LABELS,
+    PRIORITY_BADGE,
+    type TechnicianJob,
+} from "./types";
+import type { useJobProgress } from "./use-job-progress";
+import { useJobForms } from "./use-forms";
+
+interface TechnicianHomeProps {
+    name: string;
+    jobs: TechnicianJob[];
+    nextJob: TechnicianJob;
+    onOpenJob: (jobId: string) => void;
+    statusMutation: ReturnType<typeof useJobProgress>["statusMutation"];
+    canCompleteNext: boolean;
+}
+
+/** Mobile field home: compact header, an "Up next" hero with inline actions, and
+ *  the day's jobs grouped Overdue / Today / Upcoming, time-sorted. */
+export function TechnicianHome({
+    name,
+    jobs,
+    nextJob,
+    onOpenJob,
+    statusMutation,
+    canCompleteNext,
+}: TechnicianHomeProps) {
+    const sections = groupJobs(jobs);
+    const mapsHref = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(getAddress(nextJob))}`;
+    const phoneHref = nextJob.customer.phone ? `tel:${nextJob.customer.phone}` : null;
+    // Keep the hero "Complete job" gate consistent with the job screen: a required
+    // compliance form blocks completion too. Cached, so no duplicate fetch.
+    const { requiredPending: nextJobFormsPending } = useJobForms(nextJob.id);
+    const primary = getPrimaryAction(nextJob);
+    const primaryDisabled =
+        primary?.nextStatus === "COMPLETED" && (!canCompleteNext || nextJobFormsPending);
+    const priority = PRIORITY_BADGE[nextJob.priority];
+
+    return (
+        <div className="space-y-5 pb-24">
+            {/* Compact header */}
+            <div className="flex items-baseline justify-between gap-3">
+                <h2 className="text-xl font-bold tracking-tight">Hi {name}</h2>
+                <span className="text-sm text-muted-foreground">{format(new Date(), "EEE, MMM d")}</span>
+            </div>
+
+            {/* Up next hero */}
+            <Card className="overflow-hidden border-l-4 border-l-blue-500">
+                <CardContent className="space-y-4 p-4">
+                    <div>
+                        <div className="text-xs font-semibold uppercase tracking-wide text-blue-600">Up next</div>
+                        <button
+                            type="button"
+                            onClick={() => onOpenJob(nextJob.id)}
+                            className="mt-1 w-full text-left"
+                        >
+                            <div className="flex flex-wrap items-center gap-2">
+                                {priority && (
+                                    <span
+                                        className={`rounded-full px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide ${priority.className}`}
+                                    >
+                                        {priority.label}
+                                    </span>
+                                )}
+                                <span className="text-lg font-semibold">{nextJob.title}</span>
+                            </div>
+                            <div className="mt-0.5 text-sm text-muted-foreground">{nextJob.customer.name}</div>
+                        </button>
+                    </div>
+
+                    <div className="space-y-1.5 text-sm text-muted-foreground">
+                        <div className="flex items-center gap-2">
+                            <Clock className="h-4 w-4 shrink-0" />
+                            <span>{getJobTiming(nextJob)}</span>
+                        </div>
+                        <div className="flex items-start gap-2">
+                            <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
+                            <span>{getAddress(nextJob)}</span>
+                        </div>
+                    </div>
+
+                    {primary && (
+                        <button
+                            type="button"
+                            disabled={primaryDisabled || statusMutation.isPending}
+                            onClick={() => statusMutation.mutate({ jobId: nextJob.id, status: primary.nextStatus })}
+                            className="flex min-h-[52px] w-full items-center justify-center rounded-xl bg-primary text-base font-semibold text-primary-foreground transition active:scale-[0.99] disabled:opacity-50"
+                        >
+                            {primary.label}
+                        </button>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3">
+                        <a
+                            href={mapsHref}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-slate-300 text-sm font-semibold active:scale-[0.98]"
+                        >
+                            <Navigation className="h-4 w-4" />
+                            Navigate
+                        </a>
+                        {phoneHref ? (
+                            <a
+                                href={phoneHref}
+                                className="flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-slate-300 text-sm font-semibold active:scale-[0.98]"
+                            >
+                                <Phone className="h-4 w-4" />
+                                Call
+                            </a>
+                        ) : (
+                            <span className="flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-dashed border-slate-200 text-sm font-semibold text-muted-foreground">
+                                <Phone className="h-4 w-4" />
+                                No phone
+                            </span>
+                        )}
+                    </div>
+                </CardContent>
+            </Card>
+
+            {/* Grouped job list */}
+            {sections.map(({ group, jobs: groupJobsList }) => (
+                <div key={group} className="space-y-2">
+                    <div className="flex items-center gap-2 px-1">
+                        <span
+                            className={`text-xs font-bold uppercase tracking-wide ${
+                                group === "overdue" ? "text-red-600" : "text-muted-foreground"
+                            }`}
+                        >
+                            {JOB_GROUP_LABELS[group]}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{groupJobsList.length}</span>
+                    </div>
+                    <div className="space-y-2">
+                        {groupJobsList.map((job) => (
+                            <JobCard key={job.id} job={job} onSelect={onOpenJob} />
+                        ))}
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+}
