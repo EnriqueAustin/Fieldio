@@ -19,6 +19,7 @@ vanRouter.delete('/:id/members/:userId', restrictTo('ADMIN', 'OFFICE', 'DISPATCH
 vanRouter.get('/:id/inventory', catchAsync(vansController.getVanInventory));
 vanRouter.post('/:id/inventory/:itemId/request-restock', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'TECHNICIAN'), catchAsync(vansController.requestRestock));
 vanRouter.post('/:id/inventory/:itemId/use', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'TECHNICIAN'), catchAsync(vansController.useStock));
+vanRouter.get('/:id/stock-usage', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(vansController.getStockUsage));
 
 vanRouter.get('/:id/service-logs', catchAsync(async (req: Request, res: Response) => {
     const logs = await vanServiceService.listLogs(req.params.id, req.user!.companyId);
