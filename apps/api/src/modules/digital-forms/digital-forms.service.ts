@@ -9,6 +9,15 @@ const createTemplateSchema = z.object({
     schema: z.record(z.any()),
 });
 
+const updateTemplateSchema = z
+    .object({
+        name: z.string().min(1).optional(),
+        description: z.string().optional().nullable(),
+        schema: z.record(z.any()).optional(),
+        active: z.boolean().optional(),
+    })
+    .refine((v) => Object.keys(v).length > 0, { message: 'No fields to update' });
+
 const submitFormSchema = z.object({
     templateId: z.string().uuid(),
     jobId: z.string().uuid().optional(),
@@ -55,6 +64,22 @@ export const digitalFormsService = {
                 name: parsed.name,
                 description: parsed.description,
                 schema: parsed.schema,
+            },
+        });
+    },
+
+    updateTemplate: async (companyId: string, id: string, input: z.infer<typeof updateTemplateSchema>) => {
+        const parsed = updateTemplateSchema.parse(input);
+        const template = await prisma.digitalFormTemplate.findFirst({ where: { id, companyId } });
+        if (!template) throw new AppError('Template not found', StatusCodes.NOT_FOUND);
+
+        return prisma.digitalFormTemplate.update({
+            where: { id },
+            data: {
+                ...(parsed.name !== undefined ? { name: parsed.name } : {}),
+                ...(parsed.description !== undefined ? { description: parsed.description } : {}),
+                ...(parsed.schema !== undefined ? { schema: parsed.schema } : {}),
+                ...(parsed.active !== undefined ? { active: parsed.active } : {}),
             },
         });
     },

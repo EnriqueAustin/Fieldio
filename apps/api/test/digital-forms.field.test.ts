@@ -94,6 +94,51 @@ describe('GET /digital-forms/jobs/:jobId/forms', () => {
     });
 });
 
+describe('PATCH /digital-forms/templates/:id', () => {
+    it('lets OFFICE flip requiredForCompletion on an existing template', async () => {
+        fakePrisma.digitalFormTemplate.seed([
+            { id: TPL_PLAIN, companyId: COMPANY, name: 'Site Safety Check', active: true, schema: { fields: [] } },
+        ]);
+
+        const res = await request(app)
+            .patch(`/digital-forms/templates/${TPL_PLAIN}`)
+            .set('Authorization', authHeader({ role: 'OFFICE' }))
+            .send({ schema: { fields: [], requiredForCompletion: true } });
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.template.schema.requiredForCompletion).toBe(true);
+
+        const tpl = await fakePrisma.digitalFormTemplate.findFirst({ where: { id: TPL_PLAIN } });
+        expect((tpl.schema as any).requiredForCompletion).toBe(true);
+    });
+
+    it('forbids a TECHNICIAN from editing templates', async () => {
+        fakePrisma.digitalFormTemplate.seed([
+            { id: TPL_PLAIN, companyId: COMPANY, name: 'Site Safety Check', active: true, schema: { fields: [] } },
+        ]);
+
+        const res = await request(app)
+            .patch(`/digital-forms/templates/${TPL_PLAIN}`)
+            .set('Authorization', authHeader({ role: 'TECHNICIAN', userId: TECH }))
+            .send({ active: false });
+
+        expect(res.status).toBe(403);
+    });
+
+    it('404s when the template is in another company', async () => {
+        fakePrisma.digitalFormTemplate.seed([
+            { id: TPL_PLAIN, companyId: COMPANY, name: 'Site Safety Check', active: true, schema: { fields: [] } },
+        ]);
+
+        const res = await request(app)
+            .patch(`/digital-forms/templates/${TPL_PLAIN}`)
+            .set('Authorization', authHeader({ role: 'OFFICE', companyId: 'other_co' }))
+            .send({ active: false });
+
+        expect(res.status).toBe(404);
+    });
+});
+
 describe('POST /digital-forms/submissions (CoC gating)', () => {
     it('lets the assigned tech submit an ordinary form', async () => {
         seedJob();
