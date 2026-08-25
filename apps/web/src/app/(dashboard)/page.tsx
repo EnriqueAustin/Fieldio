@@ -15,12 +15,15 @@ import {
     AlertCircle,
 } from "lucide-react";
 import { TechnicianView } from "../../components/dashboard/technician-view";
+import { DispatchView } from "../../components/dashboard/dispatch-view";
+import { SalesView } from "../../components/dashboard/sales-view";
 import { useAuthStore } from "../../store/auth";
 import { Avatar, AvatarFallback } from "../../components/ui/avatar";
-import { cn } from "../../lib/utils";
+import { cn, displayName, firstNameOf } from "../../lib/utils";
 import { LineAreaChart, type LineAreaPoint } from "../../components/dashboard/charts/line-area-chart";
 import { StackedBarChart } from "../../components/dashboard/charts/stacked-bar-chart";
 import { FunnelChart } from "../../components/dashboard/charts/funnel-chart";
+import { EmptyState, SkeletonShell, StatCard, StatusPill, formatMoney } from "../../components/dashboard/shared";
 
 const JOB_STATUS_SERIES = [
     { key: "COMPLETED", label: "Completed", color: "#059669" },
@@ -47,86 +50,12 @@ interface DashboardStats {
     activeTechs: any[];
 }
 
-const STATUS_STYLES: Record<string, string> = {
-    REQUESTED: "bg-slate-50 text-slate-700 ring-slate-200",
-    ASSIGNED: "bg-blue-50 text-blue-700 ring-blue-200",
-    EN_ROUTE: "bg-violet-50 text-violet-700 ring-violet-200",
-    ON_SITE: "bg-amber-50 text-amber-700 ring-amber-200",
-    COMPLETED: "bg-emerald-50 text-emerald-700 ring-emerald-200",
-    CANCELED: "bg-rose-50 text-rose-700 ring-rose-200",
-};
-
-const STATUS_DOT: Record<string, string> = {
-    REQUESTED: "bg-slate-400",
-    ASSIGNED: "bg-blue-500",
-    EN_ROUTE: "bg-violet-500",
-    ON_SITE: "bg-amber-500",
-    COMPLETED: "bg-emerald-500",
-    CANCELED: "bg-rose-500",
-};
-
-const formatMoney = (amount: number) =>
-    new Intl.NumberFormat("en-ZA", {
-        style: "currency",
-        currency: "ZAR",
-        maximumFractionDigits: 2,
-    }).format(Number(amount || 0));
-
-function StatusPill({ status }: { status: string }) {
-    return (
-        <span className={cn("status-pill", STATUS_STYLES[status] ?? STATUS_STYLES.REQUESTED)}>
-            <span className={cn("status-pill-dot", STATUS_DOT[status] ?? "bg-slate-400")} />
-            {status.replace(/_/g, " ")}
-        </span>
-    );
-}
-
-function StatCard({
-    label,
-    value,
-    sub,
-    icon: Icon,
-    accent,
-    delta,
-}: {
-    label: string;
-    value: string;
-    sub?: string;
-    icon: any;
-    accent: string;
-    delta?: { value: string; positive?: boolean };
-}) {
-    return (
-        <div className="surface-card p-5 hover:shadow-md hover:-translate-y-0.5 transition-all">
-            <div className="flex items-start justify-between">
-                <div className={cn("icon-tile", accent)}>
-                    <Icon className="h-5 w-5" />
-                </div>
-                {delta && (
-                    <span
-                        className={cn(
-                            "stat-chip",
-                            delta.positive
-                                ? "bg-emerald-50 text-emerald-700"
-                                : "bg-rose-50 text-rose-700"
-                        )}
-                    >
-                        <TrendingUp className="h-3 w-3" />
-                        {delta.value}
-                    </span>
-                )}
-            </div>
-            <div className="mt-4">
-                <p className="text-sm text-muted-foreground">{label}</p>
-                <p className="mt-1 text-2xl font-semibold tracking-tight">{value}</p>
-                {sub && <p className="mt-1 text-xs text-muted-foreground">{sub}</p>}
-            </div>
-        </div>
-    );
-}
-
 export default function DashboardPage() {
     const { user } = useAuthStore();
+    // Revenue analytics are restricted to ADMIN/OFFICE/ACCOUNTANT server-side, so
+    // the other roles get a home built from data they are allowed to read.
+    const usesRevenueDashboard =
+        !!user && ["ADMIN", "OFFICE", "ACCOUNTANT"].includes(user.role);
 
     const { data: stats, error } = useQuery<DashboardStats>({
         queryKey: ["dashboard-stats"],
@@ -134,17 +63,19 @@ export default function DashboardPage() {
             if (!res.data?.data?.stats) throw new Error("Invalid data format received from server");
             return res.data.data.stats;
         }),
-        enabled: !!user && user.role !== "TECHNICIAN",
+        enabled: usesRevenueDashboard,
     });
 
     const { data: series } = useQuery({
         queryKey: ["dashboard-timeseries"],
         queryFn: () => api.get("/analytics/timeseries?days=90").then((res) => res.data.data.report),
-        enabled: !!user && user.role !== "TECHNICIAN",
+        enabled: usesRevenueDashboard,
     });
 
     if (!user) return <SkeletonShell />;
     if (user.role === "TECHNICIAN") return <TechnicianView user={user} stats={stats ?? null} />;
+    if (user.role === "SALES") return <SalesView user={user} />;
+    if (!usesRevenueDashboard) return <DispatchView user={user} />;
     if (error) {
         return (
             <div className="surface-card flex items-center gap-3 p-6 text-rose-700">
@@ -163,7 +94,7 @@ export default function DashboardPage() {
         <div className="space-y-8">
             <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
                 <div>
-                    <h1 className="page-title">Welcome back, {user.email.split("@")[0]}</h1>
+                    <h1 className="page-title">Welcome back, {firstNameOf(user)}</h1>
                     <p className="page-subtitle">
                         Here&apos;s what&apos;s happening with your business today.
                     </p>
@@ -186,25 +117,29 @@ export default function DashboardPage() {
             </div>
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <StatCard
-                    label="Revenue In Range"
-                    value={formatMoney(stats.revenue.total)}
-                    sub={`${formatMoney(stats.revenue.outstanding)} outstanding`}
-                    icon={DollarSign}
-                    accent="bg-emerald-50 text-emerald-600"
-                    delta={{
-                        value: `${stats.estimates.conversionRate}% close`,
-                        positive: stats.estimates.conversionRate >= 50,
-                    }}
-                />
-                <StatCard
-                    label="Active Jobs"
-                    value={String(stats.jobs.active)}
-                    sub={`${stats.jobs.completed} completed | ${completionRate}% rate`}
-                    icon={Briefcase}
-                    accent="bg-blue-50 text-blue-600"
-                />
                 <Link href="/invoices/overdue">
+                    <StatCard
+                        label="Revenue In Range"
+                        value={formatMoney(stats.revenue.total)}
+                        sub={`${formatMoney(stats.revenue.outstanding)} outstanding`}
+                        icon={DollarSign}
+                        accent="bg-emerald-50 text-emerald-600"
+                        delta={{
+                            value: `${stats.invoices.overdue} overdue`,
+                            positive: stats.invoices.overdue === 0,
+                        }}
+                    />
+                </Link>
+                <Link href="/jobs">
+                    <StatCard
+                        label="Active Jobs"
+                        value={String(stats.jobs.active)}
+                        sub={`${stats.jobs.completed} completed | ${completionRate}% rate`}
+                        icon={Briefcase}
+                        accent="bg-blue-50 text-blue-600"
+                    />
+                </Link>
+                <Link href="/customers">
                     <StatCard
                         label="Customers"
                         value={String(stats.customers.total)}
@@ -212,18 +147,20 @@ export default function DashboardPage() {
                         icon={Users}
                         accent="bg-violet-50 text-violet-600"
                         delta={{
-                            value: `${stats.invoices.overdue} overdue`,
-                            positive: stats.invoices.overdue === 0,
+                            value: `${stats.estimates.conversionRate}% quote close`,
+                            positive: stats.estimates.conversionRate >= 50,
                         }}
                     />
                 </Link>
-                <StatCard
-                    label="Technician Utilization"
-                    value={`${stats.technicians.utilizationRate}%`}
-                    sub={`${stats.technicians.active} active right now`}
-                    icon={Activity}
-                    accent="bg-amber-50 text-amber-600"
-                />
+                <Link href="/kpi">
+                    <StatCard
+                        label="Technician Utilization"
+                        value={`${stats.technicians.utilizationRate}%`}
+                        sub={`${stats.technicians.active} active right now`}
+                        icon={Activity}
+                        accent="bg-amber-50 text-amber-600"
+                    />
+                </Link>
             </div>
 
             <div className="grid gap-6 lg:grid-cols-3">
@@ -345,7 +282,7 @@ export default function DashboardPage() {
                                         </Avatar>
                                         <div className="min-w-0 flex-1">
                                             <p className="truncate text-sm font-medium">
-                                                {t.tech?.email?.split("@")[0]}
+                                                {displayName(t.tech)}
                                             </p>
                                             <p className="flex items-center gap-1 truncate text-xs text-muted-foreground">
                                                 <Clock className="h-3 w-3" />
@@ -359,43 +296,6 @@ export default function DashboardPage() {
                         )}
                     </div>
                 </div>
-            </div>
-        </div>
-    );
-}
-
-function EmptyState({
-    icon: Icon,
-    title,
-    hint,
-}: {
-    icon: any;
-    title: string;
-    hint: string;
-}) {
-    return (
-        <div className="flex flex-col items-center justify-center px-6 py-10 text-center">
-            <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-400">
-                <Icon className="h-5 w-5" />
-            </div>
-            <p className="text-sm font-medium">{title}</p>
-            <p className="mt-1 max-w-[220px] text-xs text-muted-foreground">{hint}</p>
-        </div>
-    );
-}
-
-function SkeletonShell() {
-    return (
-        <div className="space-y-8">
-            <div className="h-10 w-72 animate-pulse rounded-lg bg-slate-200/70" />
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                {[...Array(4)].map((_, i) => (
-                    <div key={i} className="surface-card h-32 animate-pulse p-5" />
-                ))}
-            </div>
-            <div className="grid gap-6 lg:grid-cols-7">
-                <div className="surface-card h-72 animate-pulse lg:col-span-4" />
-                <div className="surface-card h-72 animate-pulse lg:col-span-3" />
             </div>
         </div>
     );

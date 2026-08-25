@@ -71,7 +71,7 @@ const httpServer = createServer(app);
 
 socketService.init(httpServer);
 
-import { authLimiter, apiLimiter, publicEndpointLimiter, bookingLimiter, webhookLimiter } from './middleware/rateLimit';
+import { authLimiter, credentialIpLimiter, refreshLimiter, apiLimiter, publicEndpointLimiter, bookingLimiter, webhookLimiter } from './middleware/rateLimit';
 
 // Security
 app.disable('x-powered-by');
@@ -115,7 +115,6 @@ app.post(
 );
 
 // Rate limiting
-app.use('/auth', authLimiter);
 app.use('/public/payments', publicEndpointLimiter);
 app.use('/public/portal', publicEndpointLimiter);
 app.use('/public/bookings', bookingLimiter);
@@ -128,6 +127,14 @@ app.use(pinoHttp({ logger }));
 app.use(express.json({ limit: config.API_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: config.API_BODY_LIMIT }));
 app.use(cookieParser());
+
+// Credential endpoints are limited per account, which needs the parsed body —
+// so these mount after express.json(), unlike the limiters above.
+app.use('/auth/login', credentialIpLimiter, authLimiter);
+app.use('/auth/register', credentialIpLimiter, authLimiter);
+app.use('/auth/refresh', refreshLimiter);
+app.use('/auth/forgot-password', credentialIpLimiter, authLimiter);
+app.use('/auth/reset-password', credentialIpLimiter, authLimiter);
 
 // Public (no-auth) routes
 app.use('/public/payments', publicPaymentsRouter);

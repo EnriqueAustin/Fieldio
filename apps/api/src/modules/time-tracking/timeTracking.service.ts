@@ -2,6 +2,16 @@ import { prisma } from '@fieldio/database';
 import { AppError } from '../../middleware/error';
 import { StatusCodes } from 'http-status-codes';
 
+
+/**
+ * Never spread a raw User row into a response: it carries passwordHash and pay
+ * rates. Timesheets only ever need to name the person.
+ */
+const TIMESHEET_INCLUDE = {
+    user: { select: { id: true, email: true, firstName: true, lastName: true } },
+    job: { select: { id: true, title: true, status: true, customer: { select: { name: true } } } },
+} as const;
+
 export const timeTrackingService = {
     startEntry: async (companyId: string, userId: string, data: any) => {
         // Check if there's an ongoing entry for this user
@@ -67,10 +77,10 @@ export const timeTrackingService = {
         });
     },
 
-    getOne: async (id: string, companyId: string) => {
+    getOne: async (id: string, companyId: string, scopeToUserId?: string) => {
         const entry = await prisma.timeEntry.findFirst({
-            where: { id, companyId },
-            include: { user: true, job: true }
+            where: { id, companyId, ...(scopeToUserId ? { userId: scopeToUserId } : {}) },
+            include: TIMESHEET_INCLUDE
         });
         if (!entry) throw new AppError('Time entry not found', StatusCodes.NOT_FOUND);
         return entry;
@@ -88,7 +98,7 @@ export const timeTrackingService = {
                 skip,
                 take: limit,
                 orderBy: { startTime: 'desc' },
-                include: { user: true, job: true }
+                include: TIMESHEET_INCLUDE
             }),
             prisma.timeEntry.count({ where })
         ]);

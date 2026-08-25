@@ -93,6 +93,7 @@ const adminGroups: NavGroup[] = [
         items: [
             { label: "Team", href: "/settings/users", icon: UserCog },
             { label: "Notifications", href: "/settings/notifications", icon: Bell },
+            { label: "My Account", href: "/settings/account", icon: UserCog },
             { label: "Company", href: "/settings/company", icon: Building2 },
         ],
     },
@@ -124,6 +125,7 @@ const dispatcherGroups: NavGroup[] = [
         label: "Settings",
         items: [
             { label: "Notifications", href: "/settings/notifications", icon: Bell },
+            { label: "My Account", href: "/settings/account", icon: UserCog },
         ],
     },
 ];
@@ -155,6 +157,7 @@ const officeGroups: NavGroup[] = [
         label: "Settings",
         items: [
             { label: "Notifications", href: "/settings/notifications", icon: Bell },
+            { label: "My Account", href: "/settings/account", icon: UserCog },
         ],
     },
 ];
@@ -175,6 +178,7 @@ const csrGroups: NavGroup[] = [
         label: "Settings",
         items: [
             { label: "Notifications", href: "/settings/notifications", icon: Bell },
+            { label: "My Account", href: "/settings/account", icon: UserCog },
         ],
     },
 ];
@@ -202,6 +206,7 @@ const salesGroups: NavGroup[] = [
         label: "Settings",
         items: [
             { label: "Notifications", href: "/settings/notifications", icon: Bell },
+            { label: "My Account", href: "/settings/account", icon: UserCog },
         ],
     },
 ];
@@ -229,6 +234,7 @@ const accountantGroups: NavGroup[] = [
         label: "Settings",
         items: [
             { label: "Notifications", href: "/settings/notifications", icon: Bell },
+            { label: "My Account", href: "/settings/account", icon: UserCog },
         ],
     },
 ];
@@ -252,6 +258,7 @@ const technicianGroups: NavGroup[] = [
         label: "Settings",
         items: [
             { label: "Notifications", href: "/settings/notifications", icon: Bell },
+            { label: "My Account", href: "/settings/account", icon: UserCog },
         ],
     },
 ];

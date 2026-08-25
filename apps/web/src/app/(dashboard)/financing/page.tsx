@@ -23,7 +23,8 @@ import {
     XCircle,
     Percent,
 } from "lucide-react";
-import { cn } from "../../../lib/utils";
+import { cn, formatZAR } from "../../../lib/utils";
+import { useCan } from "../../../lib/permissions";
 
 interface FinancingOption {
     id: string;
@@ -60,6 +61,8 @@ export default function FinancingPage() {
     const qc = useQueryClient();
     const [tab, setTab] = useState<"applications" | "options">("applications");
     const [optionDialogOpen, setOptionDialogOpen] = useState(false);
+    // Financing products are admin-configured; sales and office only work applications.
+    const canManageOptions = useCan("manageFinancingOptions");
 
     const { data: options } = useQuery({
         queryKey: ["financing-options"],
@@ -121,7 +124,7 @@ export default function FinancingPage() {
                 <div className="surface-card p-5">
                     <div className="flex items-center justify-between">
                         <div className="icon-tile bg-indigo-50 text-indigo-600"><DollarSign className="h-5 w-5" /></div>
-                        <span className="text-2xl font-semibold">{totalFinanced.toFixed(0)}</span>
+                        <span className="text-2xl font-semibold">{formatZAR(totalFinanced, { decimals: 0 })}</span>
                     </div>
                     <p className="mt-3 text-sm font-medium">Total Financed</p>
                 </div>
@@ -138,6 +141,7 @@ export default function FinancingPage() {
                 <div className="space-y-4">
                     <div className="flex items-center justify-between">
                         <h2 className="text-lg font-semibold">Financing Options</h2>
+                        {canManageOptions && (
                         <Dialog open={optionDialogOpen} onOpenChange={setOptionDialogOpen}>
                             <DialogTrigger asChild>
                                 <Button className="gap-2 bg-slate-900 hover:bg-slate-800"><Plus className="h-4 w-4" /> New Option</Button>
@@ -179,6 +183,7 @@ export default function FinancingPage() {
                                 <DialogFooter><Button onClick={createOption}>Create Option</Button></DialogFooter>
                             </DialogContent>
                         </Dialog>
+                        )}
                     </div>
 
                     <div className="grid gap-4 md:grid-cols-3">
@@ -189,8 +194,8 @@ export default function FinancingPage() {
                                 <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                                     <div><span className="text-muted-foreground">Term:</span> <span className="font-medium">{opt.termMonths} mo</span></div>
                                     <div><span className="text-muted-foreground">Rate:</span> <span className="font-medium">{opt.interestRate}%</span></div>
-                                    <div><span className="text-muted-foreground">Min:</span> <span className="font-medium">{Number(opt.minAmount).toFixed(0)}</span></div>
-                                    {opt.maxAmount && <div><span className="text-muted-foreground">Max:</span> <span className="font-medium">{Number(opt.maxAmount).toFixed(0)}</span></div>}
+                                    <div><span className="text-muted-foreground">Min:</span> <span className="font-medium">{formatZAR(opt.minAmount, { decimals: 0 })}</span></div>
+                                    {opt.maxAmount && <div><span className="text-muted-foreground">Max:</span> <span className="font-medium">{formatZAR(opt.maxAmount, { decimals: 0 })}</span></div>}
                                 </div>
                             </div>
                         ))}
@@ -232,8 +237,8 @@ export default function FinancingPage() {
                                             <p>{app.financingOption.name}</p>
                                             <p className="text-xs text-muted-foreground">{app.financingOption.termMonths}mo @ {app.financingOption.interestRate}%</p>
                                         </td>
-                                        <td className="px-6 py-3.5 text-sm font-medium">{Number(app.amount).toFixed(2)}</td>
-                                        <td className="px-6 py-3.5 text-sm">{app.monthlyPayment ? Number(app.monthlyPayment).toFixed(2) : "—"}</td>
+                                        <td className="px-6 py-3.5 text-sm font-medium">{formatZAR(app.amount)}</td>
+                                        <td className="px-6 py-3.5 text-sm">{app.monthlyPayment ? formatZAR(app.monthlyPayment) : "—"}</td>
                                         <td className="px-6 py-3.5">
                                             <span className={cn("status-pill", statusColors[app.status])}>{app.status.replace("_", " ")}</span>
                                         </td>

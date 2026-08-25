@@ -5,6 +5,9 @@ import { catchAsync } from '../utils/catchAsync';
 
 export const jobTemplatesRouter = Router();
 jobTemplatesRouter.use(requireUser);
+// Templates carry default line-item pricing, and only the office side creates
+// jobs from them.
+jobTemplatesRouter.use(restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES'));
 
 jobTemplatesRouter.get('/', catchAsync(jobTemplatesController.list));
 jobTemplatesRouter.post('/', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(jobTemplatesController.create));

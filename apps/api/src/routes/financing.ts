@@ -7,14 +7,18 @@ export const financingRouter = Router();
 
 financingRouter.use(requireUser);
 
+// Sales offers financing at the point of quote, so they work applications too;
+// the financing products themselves stay admin-configured.
+const canWorkApplications = restrictTo('ADMIN', 'OFFICE', 'SALES');
+
 // Options (admin config)
 financingRouter.get('/options', catchAsync(financingController.getOptions));
 financingRouter.post('/options', restrictTo('ADMIN'), catchAsync(financingController.createOption));
 financingRouter.put('/options/:id', restrictTo('ADMIN'), catchAsync(financingController.updateOption));
 
 // Applications
-financingRouter.get('/applications', restrictTo('ADMIN', 'OFFICE'), catchAsync(financingController.getApplications));
-financingRouter.get('/applications/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(financingController.getApplication));
-financingRouter.post('/applications', restrictTo('ADMIN', 'OFFICE'), catchAsync(financingController.createApplication));
-financingRouter.put('/applications/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(financingController.updateApplication));
-financingRouter.get('/estimate/:estimateId', restrictTo('ADMIN', 'OFFICE'), catchAsync(financingController.getByEstimate));
+financingRouter.get('/applications', canWorkApplications, catchAsync(financingController.getApplications));
+financingRouter.get('/applications/:id', canWorkApplications, catchAsync(financingController.getApplication));
+financingRouter.post('/applications', canWorkApplications, catchAsync(financingController.createApplication));
+financingRouter.put('/applications/:id', canWorkApplications, catchAsync(financingController.updateApplication));
+financingRouter.get('/estimate/:estimateId', canWorkApplications, catchAsync(financingController.getByEstimate));
