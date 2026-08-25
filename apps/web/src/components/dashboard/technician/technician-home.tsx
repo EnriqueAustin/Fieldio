@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import { format } from "date-fns";
-import { MapPin, Navigation, Phone, Clock } from "lucide-react";
+import { MapPin, Navigation, Phone, Clock, ChevronDown } from "lucide-react";
 import { Card, CardContent } from "../../ui/card";
 import { JobCard } from "./job-card";
 import {
@@ -35,7 +36,13 @@ export function TechnicianHome({
     statusMutation,
     canCompleteNext,
 }: TechnicianHomeProps) {
-    const sections = groupJobs(jobs);
+    // The hero already shows this job in full, directly above the list — repeating
+    // it as the first card read as a duplicate assignment.
+    const sections = groupJobs(jobs.filter((job) => job.id !== nextJob.id));
+    // A technician's day is today. Everything further out is collapsed so the
+    // screen opens on what they are actually driving to, not a wall of next week.
+    const [showAllUpcoming, setShowAllUpcoming] = useState(false);
+    const UPCOMING_PREVIEW = 3;
     const mapsHref = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(getAddress(nextJob))}`;
     const phoneHref = nextJob.customer.phone ? `tel:${nextJob.customer.phone}` : null;
     // Keep the hero "Complete job" gate consistent with the job screen: a required
@@ -47,7 +54,7 @@ export function TechnicianHome({
     const priority = PRIORITY_BADGE[nextJob.priority];
 
     return (
-        <div className="space-y-5 pb-24">
+        <div className="space-y-5 pb-4">
             {/* Compact header */}
             <div className="flex items-baseline justify-between gap-3">
                 <h2 className="text-xl font-bold tracking-tight">Hi {name}</h2>
@@ -129,25 +136,43 @@ export function TechnicianHome({
             </Card>
 
             {/* Grouped job list */}
-            {sections.map(({ group, jobs: groupJobsList }) => (
-                <div key={group} className="space-y-2">
-                    <div className="flex items-center gap-2 px-1">
-                        <span
-                            className={`text-xs font-bold uppercase tracking-wide ${
-                                group === "overdue" ? "text-red-600" : "text-muted-foreground"
-                            }`}
-                        >
-                            {JOB_GROUP_LABELS[group]}
-                        </span>
-                        <span className="text-xs text-muted-foreground">{groupJobsList.length}</span>
+            {sections.map(({ group, jobs: groupJobsList }) => {
+                const collapsed = group === "upcoming" && !showAllUpcoming;
+                const visible = collapsed ? groupJobsList.slice(0, UPCOMING_PREVIEW) : groupJobsList;
+                const hiddenCount = groupJobsList.length - visible.length;
+
+                return (
+                    <div key={group} className="space-y-2">
+                        <div className="flex items-center gap-2 px-1">
+                            <span
+                                className={`text-xs font-bold uppercase tracking-wide ${
+                                    group === "overdue" ? "text-red-600" : "text-muted-foreground"
+                                }`}
+                            >
+                                {JOB_GROUP_LABELS[group]}
+                            </span>
+                            <span className="text-xs text-muted-foreground">{groupJobsList.length}</span>
+                        </div>
+                        <div className="space-y-2">
+                            {visible.map((job) => (
+                                <JobCard key={job.id} job={job} onSelect={onOpenJob} />
+                            ))}
+                        </div>
+                        {group === "upcoming" && groupJobsList.length > UPCOMING_PREVIEW && (
+                            <button
+                                type="button"
+                                onClick={() => setShowAllUpcoming((v) => !v)}
+                                className="flex min-h-[48px] w-full items-center justify-center gap-1 rounded-xl border border-dashed border-slate-300 text-sm font-semibold text-muted-foreground active:scale-[0.99]"
+                            >
+                                {collapsed ? `Show ${hiddenCount} more` : "Show less"}
+                                <ChevronDown
+                                    className={`h-4 w-4 transition-transform ${collapsed ? "" : "rotate-180"}`}
+                                />
+                            </button>
+                        )}
                     </div>
-                    <div className="space-y-2">
-                        {groupJobsList.map((job) => (
-                            <JobCard key={job.id} job={job} onSelect={onOpenJob} />
-                        ))}
-                    </div>
-                </div>
-            ))}
+                );
+            })}
         </div>
     );
 }

@@ -285,9 +285,13 @@ export function getNavGroupsForRole(role?: string | null): NavGroup[] {
 
 export type MobileNavItem = { label: string; href: string; icon: LucideIcon };
 
+// The clock is a technician's most-used control after the job list itself, so it
+// earns a tab. It previously lived only in the sidebar, which is hidden on the
+// phone that is the only device most technicians use.
 const technicianMobile: MobileNavItem[] = [
     { label: "Jobs", href: "/", icon: Briefcase },
     { label: "Schedule", href: "/my-schedule", icon: Calendar },
+    { label: "Time", href: "/time-tracking", icon: Clock },
     { label: "Van", href: "/my-van/stock", icon: Package },
     { label: "Inbox", href: "/inbox", icon: MessageSquare },
 ];
