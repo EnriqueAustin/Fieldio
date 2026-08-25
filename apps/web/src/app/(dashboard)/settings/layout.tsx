@@ -2,8 +2,18 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Building2, Users, BookOpen, Bell, Clock } from "lucide-react";
+import { Building2, Users, BookOpen, Bell, Clock, KeyRound } from "lucide-react";
 import { cn } from "../../../lib/utils";
+import { useAuthStore } from "../../../store/auth";
+
+// Workspace settings only an owner can change. Everyone else would just get a
+// 403 on arrival, so the tab is not offered to them.
+const ADMIN_ONLY = [
+    "/settings/company",
+    "/settings/users",
+    "/settings/price-book",
+    "/settings/business-hours",
+];
 
 const tabs = [
     { href: "/settings/company", label: "Company", icon: Building2 },
@@ -11,10 +21,13 @@ const tabs = [
     { href: "/settings/price-book", label: "Price Book", icon: BookOpen },
     { href: "/settings/notifications", label: "Notifications", icon: Bell },
     { href: "/settings/business-hours", label: "Business Hours", icon: Clock },
+    { href: "/settings/account", label: "My Account", icon: KeyRound },
 ];
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
+    const role = useAuthStore((s) => s.user?.role);
+    const visibleTabs = tabs.filter((t) => role === "ADMIN" || !ADMIN_ONLY.includes(t.href));
 
     return (
         <div className="space-y-6">
@@ -26,7 +39,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
             {/* Tabs */}
             <div className="border-b border-border/70 -mx-1 overflow-x-auto scrollbar-thin">
                 <nav className="flex gap-1 px-1 min-w-max">
-                    {tabs.map((tab) => {
+                    {visibleTabs.map((tab) => {
                         const active = pathname === tab.href || pathname.startsWith(tab.href + "/");
                         return (
                             <Link

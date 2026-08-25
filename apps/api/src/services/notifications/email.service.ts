@@ -70,6 +70,10 @@ const send = async (params: {
     }
 };
 
+/** The product bills in South African rand; never render amounts as dollars. */
+const money = (value: number | string) =>
+    new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(Number(value || 0));
+
 const escapeHtml = (str: string): string =>
     str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
@@ -102,6 +106,25 @@ export const emailService = {
             html: wrap('Welcome to Fieldio', `<p>Hi ${escapeHtml(name)},</p><p>Your account is ready.</p>`),
         }),
 
+    sendPasswordReset: (email: string, name: string, token: string, companyId?: string) => {
+        const link = `${config.WEB_URL}/reset-password?token=${encodeURIComponent(token)}`;
+        return send({
+            to: email,
+            subject: 'Reset your Fieldio password',
+            template: 'password_reset',
+            companyId,
+            // Deliberately no token in the log payload — the log is readable by
+            // anyone with database access and the token is a credential.
+            html: wrap(
+                'Reset your password',
+                `<p>Hi ${escapeHtml(name)},</p>
+                 <p>Use the link below to choose a new password. It expires in one hour.</p>
+                 <p><a href="${escapeHtml(link)}" style="display:inline-block;background:#0f172a;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;">Choose a new password</a></p>
+                 <p style="color:#6b7280;font-size:13px;">If you did not ask for this, you can ignore this email — your password stays unchanged.</p>`
+            ),
+        });
+    },
+
     sendJobAssigned: (email: string, jobTitle: string, jobId: string, companyId?: string) =>
         send({
             to: email,
@@ -122,13 +145,13 @@ export const emailService = {
     ) =>
         send({
             to: email,
-            subject: `Invoice ${invoice.id.slice(0, 8)} — $${Number(invoice.total).toFixed(2)}`,
+            subject: `Invoice ${invoice.id.slice(0, 8)} — ${money(invoice.total)}`,
             template: 'invoice_sent',
             companyId,
             payload: { invoiceId: invoice.id },
             html: wrap(
                 'Your invoice is ready',
-                `<p>Total due: <strong>$${Number(invoice.total).toFixed(2)}</strong></p>
+                `<p>Total due: <strong>${money(invoice.total)}</strong></p>
                  <p><a href="${escapeHtml(invoice.payUrl)}" style="display:inline-block; background:#111827; color:#fff; padding:12px 20px; border-radius:8px; text-decoration:none;">View &amp; pay invoice</a></p>`
             ),
         }),
@@ -146,7 +169,7 @@ export const emailService = {
             payload: { invoiceId: invoice.id },
             html: wrap(
                 'Payment received',
-                `<p>We received your payment of <strong>$${Number(invoice.amount).toFixed(2)}</strong>. Thank you!</p>`
+                `<p>We received your payment of <strong>${money(invoice.amount)}</strong>. Thank you!</p>`
             ),
         }),
 
@@ -163,7 +186,7 @@ export const emailService = {
             payload: { estimateId: estimate.id },
             html: wrap(
                 'Estimate ready',
-                `<p>Total: <strong>$${Number(estimate.total).toFixed(2)}</strong></p>
+                `<p>Total: <strong>${money(estimate.total)}</strong></p>
                  <p><a href="${escapeHtml(estimate.viewUrl)}">View estimate</a></p>`
             ),
         }),

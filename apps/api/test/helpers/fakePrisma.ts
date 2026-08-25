@@ -33,7 +33,41 @@ const matchScalar = (rowVal: any, cond: any): boolean => {
 const matchWhere = (row: Row, where: Row = {}): boolean =>
     Object.entries(where).every(([key, cond]) => matchScalar(row[key], cond));
 
-const applySelectInclude = (row: Row) => ({ ...row }); // selects/includes return the row as-is here
+/**
+ * Applies `select` / `include` the way Prisma does, recursively.
+ *
+ * This matters beyond fidelity: several endpoints exist specifically to keep
+ * fields out of a response (password hashes, pay rates, pricing hidden from
+ * technicians). If the fake handed back the whole seeded row regardless, those
+ * tests would pass without proving anything.
+ */
+const project = (value: any, spec: any): any => {
+    if (value === null || value === undefined) return value;
+    if (Array.isArray(value)) return value.map((v) => project(v, spec));
+    if (typeof value !== 'object' || value instanceof Date) return value;
+
+    if (spec?.select) {
+        const out: Row = {};
+        for (const [key, sub] of Object.entries<any>(spec.select)) {
+            if (!sub) continue;
+            out[key] = sub === true ? value[key] : project(value[key], sub);
+        }
+        return out;
+    }
+
+    if (spec?.include) {
+        const out: Row = { ...value };
+        for (const [key, sub] of Object.entries<any>(spec.include)) {
+            if (!sub) continue;
+            out[key] = sub === true ? value[key] : project(value[key], sub);
+        }
+        return out;
+    }
+
+    return { ...value };
+};
+
+const applySelectInclude = (row: Row, args: any = {}) => project(row, args);
 
 class Table {
     rows: Row[] = [];
@@ -46,7 +80,7 @@ class Table {
 
     async findFirst(args: any = {}) {
         const found = this.rows.find((r) => matchWhere(r, args.where));
-        return found ? applySelectInclude(found) : null;
+        return found ? applySelectInclude(found, args) : null;
     }
 
     async findUnique(args: any = {}) {
@@ -54,7 +88,7 @@ class Table {
     }
 
     async findMany(args: any = {}) {
-        return this.rows.filter((r) => matchWhere(r, args.where)).map(applySelectInclude);
+        return this.rows.filter((r) => matchWhere(r, args.where)).map((r) => applySelectInclude(r, args));
     }
 
     async create(args: any) {
@@ -66,7 +100,7 @@ class Table {
             ...args.data,
         };
         this.rows.push(row);
-        return applySelectInclude(row);
+        return applySelectInclude(row, args);
     }
 
     async createMany(args: any) {
@@ -79,7 +113,7 @@ class Table {
         const row = this.rows.find((r) => matchWhere(r, args.where));
         if (!row) throw new Error(`Record to update not found in ${this.prefix}`);
         Object.assign(row, args.data, { updatedAt: new Date('2026-07-14T00:00:00.000Z') });
-        return applySelectInclude(row);
+        return applySelectInclude(row, args);
     }
 
     async updateMany(args: any) {
@@ -146,6 +180,7 @@ export function createFakePrisma() {
         digitalFormTemplate: table('digitalFormTemplate'),
         digitalFormSubmission: table('digitalFormSubmission'),
         user: table('user'),
+        timeEntry: table('timeEntry'),
         membership: table('membership'),
         kpiSnapshot: table('kpiSnapshot'),
         // Raw SQL is not modelled; analytics uses it only for a top-techs

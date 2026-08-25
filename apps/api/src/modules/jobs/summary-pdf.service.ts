@@ -5,6 +5,7 @@ import { emailService } from '../../services/notifications/email.service';
 import { whatsappService } from '../../services/notifications/whatsapp.service';
 import { logger } from '../../utils/logger';
 import { normalizeCompanySettings } from '../company/company-settings';
+import { PUBLIC_USER_SELECT } from '../../utils/publicSelects';
 
 const fmtCurrency = (n: number, currency: string) =>
     new Intl.NumberFormat(undefined, { style: 'currency', currency, currencyDisplay: 'narrowSymbol' })
@@ -136,7 +137,7 @@ export const jobSummaryService = {
             include: {
                 customer: true,
                 property: true,
-                tech: true,
+                tech: { select: PUBLIC_USER_SELECT },
                 checklist: true,
                 lineItems: true,
                 photos: { orderBy: { createdAt: 'asc' } },

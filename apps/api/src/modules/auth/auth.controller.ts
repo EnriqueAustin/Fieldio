@@ -82,6 +82,29 @@ export const authController = {
         });
     },
 
+    forgotPassword: async (req: Request, res: Response) => {
+        await authService.requestPasswordReset(req.body);
+        // Always the same answer, whether or not the address is on file.
+        res.status(StatusCodes.OK).json({
+            status: 'success',
+            message: 'If that email is registered, a reset link is on its way.',
+        });
+    },
+
+    resetPassword: async (req: Request, res: Response) => {
+        await authService.resetPassword(req.body);
+        res.clearCookie('refreshToken', COOKIE_OPTIONS);
+        res.status(StatusCodes.OK).json({
+            status: 'success',
+            message: 'Password updated. Sign in with your new password.',
+        });
+    },
+
+    changePassword: async (req: Request, res: Response) => {
+        await authService.changePassword(req.user!.userId, req.body);
+        res.status(StatusCodes.OK).json({ status: 'success', message: 'Password updated.' });
+    },
+
     logout: async (req: Request, res: Response) => {
         const refreshToken = req.cookies?.refreshToken;
         await authService.logout(refreshToken);

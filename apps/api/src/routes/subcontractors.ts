@@ -6,15 +6,18 @@ import { catchAsync } from '../utils/catchAsync';
 export const subcontractorRouter = Router();
 
 subcontractorRouter.use(requireUser);
-subcontractorRouter.use(restrictTo('ADMIN', 'OFFICE'));
+// Dispatchers assign field work to subcontractors, so they can read the roster
+// and job assignments; creating/editing subs and payouts stays office-side.
+subcontractorRouter.use(restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'));
+const officeOnly = restrictTo('ADMIN', 'OFFICE');
 
 subcontractorRouter.get('/', catchAsync(subcontractorController.getAll));
 subcontractorRouter.get('/expiring-docs', catchAsync(subcontractorController.getExpiringDocs));
-subcontractorRouter.get('/payout-summary', catchAsync(subcontractorController.getPayoutSummary));
+subcontractorRouter.get('/payout-summary', officeOnly, catchAsync(subcontractorController.getPayoutSummary));
 subcontractorRouter.get('/:id', catchAsync(subcontractorController.getOne));
-subcontractorRouter.post('/', catchAsync(subcontractorController.create));
-subcontractorRouter.put('/:id', catchAsync(subcontractorController.update));
-subcontractorRouter.delete('/:id', catchAsync(subcontractorController.delete));
+subcontractorRouter.post('/', officeOnly, catchAsync(subcontractorController.create));
+subcontractorRouter.put('/:id', officeOnly, catchAsync(subcontractorController.update));
+subcontractorRouter.delete('/:id', officeOnly, catchAsync(subcontractorController.delete));
 
 // Assignments
 subcontractorRouter.post('/assignments', catchAsync(subcontractorController.createAssignment));

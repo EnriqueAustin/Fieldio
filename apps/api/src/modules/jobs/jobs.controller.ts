@@ -35,7 +35,7 @@ export const jobsController = {
     },
 
     getOne: async (req: Request, res: Response) => {
-        const job = await jobsService.getOne(req.params.id, req.user!.companyId);
+        const job = await jobsService.getOne(req.params.id, req.user!.companyId, req.user!.userId, req.user!.role);
         res.status(StatusCodes.OK).json({ status: 'success', data: { job } });
     },
 

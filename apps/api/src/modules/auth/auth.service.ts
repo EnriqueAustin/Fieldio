@@ -10,6 +10,7 @@ import {
     verifyRefreshToken,
 } from '../../utils/jwt';
 import { z } from 'zod';
+import { emailService } from '../../services/notifications/email.service';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -35,6 +36,27 @@ const loginSchema = z.object({
     email: z.string().email(),
     password: z.string(),
 });
+
+// Same strength rule as registration — reset and change must not be a back door
+// around it.
+const passwordRule = z.string().min(8).regex(
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/,
+    'Password must contain at least one uppercase letter, one lowercase letter, and one digit'
+);
+
+const forgotPasswordSchema = z.object({ email: z.string().email() });
+
+const resetPasswordSchema = z.object({
+    token: z.string().min(32),
+    password: passwordRule,
+});
+
+const changePasswordSchema = z.object({
+    currentPassword: z.string().min(1),
+    newPassword: passwordRule,
+});
+
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
 function hashToken(token: string): string {
     return crypto.createHash('sha256').update(token).digest('hex');
@@ -193,5 +215,87 @@ export const authService = {
         if (refreshToken) {
             await authService.revokeRefreshToken(refreshToken);
         }
+    },
+
+    /**
+     * Issues a reset token and emails the link. Returns nothing about whether
+     * the address exists — the caller always reports success so the endpoint
+     * can't be used to enumerate accounts.
+     */
+    requestPasswordReset: async (raw: unknown) => {
+        const { email } = forgotPasswordSchema.parse(raw);
+
+        const user = await prisma.user.findUnique({
+            where: { email },
+            include: { company: true },
+        });
+        if (!user || user.status !== 'ACTIVE') return;
+
+        // Only one live reset link at a time, so an old email can't be replayed.
+        await prisma.passwordResetToken.updateMany({
+            where: { userId: user.id, usedAt: null },
+            data: { usedAt: new Date() },
+        });
+
+        const rawToken = crypto.randomBytes(32).toString('hex');
+        await prisma.passwordResetToken.create({
+            data: {
+                userId: user.id,
+                tokenHash: hashToken(rawToken),
+                expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+            },
+        });
+
+        await emailService.sendPasswordReset(
+            user.email,
+            [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email,
+            rawToken,
+            user.companyId
+        );
+    },
+
+    resetPassword: async (raw: unknown) => {
+        const { token, password } = resetPasswordSchema.parse(raw);
+
+        const stored = await prisma.passwordResetToken.findUnique({
+            where: { tokenHash: hashToken(token) },
+            include: { user: true },
+        });
+
+        if (!stored || stored.usedAt || stored.expiresAt < new Date()) {
+            throw new AppError('This reset link is invalid or has expired', StatusCodes.BAD_REQUEST);
+        }
+
+        const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+        await prisma.$transaction([
+            prisma.user.update({
+                where: { id: stored.userId },
+                data: { passwordHash },
+            }),
+            prisma.passwordResetToken.update({
+                where: { id: stored.id },
+                data: { usedAt: new Date() },
+            }),
+        ]);
+
+        // A reset usually means the old password leaked or was forgotten on a
+        // device that still holds a session, so drop every existing session.
+        await authService.revokeAllUserTokens(stored.userId);
+    },
+
+    changePassword: async (userId: string, raw: unknown) => {
+        const { currentPassword, newPassword } = changePasswordSchema.parse(raw);
+
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        if (!user) throw new AppError('User not found', StatusCodes.NOT_FOUND);
+
+        if (!(await bcrypt.compare(currentPassword, user.passwordHash))) {
+            throw new AppError('Current password is incorrect', StatusCodes.UNAUTHORIZED);
+        }
+
+        await prisma.user.update({
+            where: { id: userId },
+            data: { passwordHash: await bcrypt.hash(newPassword, BCRYPT_ROUNDS) },
+        });
     },
 };

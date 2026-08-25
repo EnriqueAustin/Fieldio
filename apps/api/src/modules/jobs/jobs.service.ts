@@ -4,6 +4,7 @@ import { StatusCodes } from 'http-status-codes';
 import { z } from 'zod';
 import { socketService } from '../../services/socket.service';
 import { notificationService } from '../../services/notifications/notification.service';
+import { PUBLIC_USER_SELECT } from '../../utils/publicSelects';
 
 const createJobSchema = z.object({
     projectId: z.string().uuid().optional().nullable(),
@@ -156,7 +157,7 @@ export const jobsService = {
                     scheduledStart: parsed.scheduledStart ? new Date(parsed.scheduledStart) : null,
                     scheduledEnd: parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null,
                 },
-                include: { customer: true, property: true, tech: true, van: true },
+                include: { customer: true, property: true, tech: { select: PUBLIC_USER_SELECT }, van: true },
             });
 
             if (parsed.lineItems?.length) {
@@ -258,7 +259,7 @@ export const jobsService = {
                     : undefined,
                 status: wasUnassigned && (parsed.techId || parsed.vanId) ? 'ASSIGNED' : undefined,
             },
-            include: { customer: true, property: true, tech: true, van: true },
+            include: { customer: true, property: true, tech: { select: PUBLIC_USER_SELECT }, van: true },
         });
 
         await prisma.auditLog.create({
@@ -457,7 +458,7 @@ export const jobsService = {
         return { deleted: true };
     },
 
-    getOne: async (id: string, companyId: string) => {
+    getOne: async (id: string, companyId: string, userId?: string, userRole?: string) => {
         const job = await prisma.job.findFirst({
             where: { id, companyId, deletedAt: null },
             include: {
@@ -477,6 +478,25 @@ export const jobsService = {
         });
 
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        // A technician may only open a job that is theirs or their van's — the
+        // same rule the assigned-jobs feed enforces.
+        if (userRole === 'TECHNICIAN' && userId) {
+            const isAssigned = job.techId === userId;
+            let isVanMate = false;
+            if (!isAssigned && job.vanId) {
+                const membership = await prisma.vanMember.findFirst({
+                    where: { userId, van: { id: job.vanId, companyId } },
+                });
+                isVanMate = !!membership;
+            }
+            if (!isAssigned && !isVanMate) {
+                throw new AppError(
+                    'You can only view jobs assigned to you or your van',
+                    StatusCodes.FORBIDDEN
+                );
+            }
+        }
 
         const notes = await getJobNotes(companyId, [job.id]);
 
@@ -500,6 +520,31 @@ export const jobsService = {
             totalExpenses,
             margin: totalRevenue - materialsCost - totalExpenses,
         };
+
+        // Techs record what they used but must never see what the company
+        // charges, so drop every priced field before the job leaves the server.
+        if (userRole === 'TECHNICIAN') {
+            const { invoice, estimate, expenses, purchaseOrders, ...rest } = job;
+            return {
+                ...rest,
+                lineItems: job.lineItems.map(({ unitPrice, total, ...item }) => item),
+                // Supplier orders carry buy prices — the tech sees what was
+                // ordered and whether it landed, never what it cost.
+                purchaseOrders: purchaseOrders.map((po) => ({
+                    id: po.id,
+                    orderNumber: po.orderNumber,
+                    status: po.status,
+                    expectedDate: po.expectedDate,
+                    receivedAt: po.receivedAt,
+                    supplier: po.supplier,
+                    items: Array.isArray(po.items)
+                        ? (po.items as any[]).map((i) => ({ name: i?.name, qty: i?.qty }))
+                        : [],
+                })),
+                invoicedAt: invoice?.createdAt ?? null,
+                notes,
+            };
+        }
 
         return { ...job, notes, costSummary };
     },
@@ -866,7 +911,7 @@ export const jobsService = {
                     scheduledStart: parsed.scheduledStart ? new Date(parsed.scheduledStart) : null,
                     scheduledEnd: parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null,
                 },
-                include: { customer: true, property: true, tech: true, van: true },
+                include: { customer: true, property: true, tech: { select: PUBLIC_USER_SELECT }, van: true },
             });
 
             if (template) {

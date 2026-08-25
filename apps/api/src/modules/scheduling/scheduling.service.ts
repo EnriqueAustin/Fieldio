@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { socketService } from '../../services/socket.service';
 import { notificationService } from '../../services/notifications/notification.service';
 import { config } from '../../config/env';
+import { PUBLIC_USER_SELECT } from '../../utils/publicSelects';
 
 const createJobSchema = z.object({
     customerId: z.string(),
@@ -104,7 +105,7 @@ export const schedulingService = {
                 ...input,
                 status: input.techId ? 'ASSIGNED' : 'REQUESTED'
             },
-            include: { customer: true, tech: true }
+            include: { customer: true, tech: { select: PUBLIC_USER_SELECT } }
         });
 
         socketService.emitToCompany(companyId, 'job:created', job);
@@ -187,7 +188,7 @@ export const schedulingService = {
                 ...input,
                 status: input.techId ? 'ASSIGNED' : (job.techId ? 'ASSIGNED' : 'REQUESTED')
             },
-            include: { tech: true, customer: true }
+            include: { tech: { select: PUBLIC_USER_SELECT }, customer: true }
         });
 
         socketService.emitToCompany(companyId, 'schedule:updated', updatedJob);
@@ -247,7 +248,7 @@ export const schedulingService = {
     onMyWay: async (jobId: string, companyId: string) => {
         const job = await prisma.job.findFirst({
             where: { id: jobId, companyId },
-            include: { tech: true, customer: true },
+            include: { tech: { select: PUBLIC_USER_SELECT }, customer: true },
         });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
         if (!job.tech) throw new AppError('Job has no tech assigned', StatusCodes.BAD_REQUEST);

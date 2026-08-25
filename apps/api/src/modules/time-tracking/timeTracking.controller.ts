@@ -43,16 +43,24 @@ export const timeTrackingController = {
     },
 
     getOne: async (req: Request, res: Response) => {
-        const entry = await timeTrackingService.getOne(req.params.id, req.user!.companyId);
+        const entry = await timeTrackingService.getOne(
+            req.params.id,
+            req.user!.companyId,
+            req.user!.role === 'TECHNICIAN' ? req.user!.userId : undefined
+        );
         res.status(StatusCodes.OK).json({ status: 'success', data: { entry } });
     },
 
     getAll: async (req: Request, res: Response) => {
         const page = Number(req.query.page) || 1;
         const limit = Number(req.query.limit) || 20;
-        const userId = req.query.userId as string;
         const jobId = req.query.jobId as string;
-        
+        // A technician's timesheet is their own. Anyone else may filter by user.
+        const userId =
+            req.user!.role === 'TECHNICIAN'
+                ? req.user!.userId
+                : (req.query.userId as string);
+
         const result = await timeTrackingService.getAll(req.user!.companyId, userId, jobId, page, limit);
         res.status(StatusCodes.OK).json({ status: 'success', data: result });
     },

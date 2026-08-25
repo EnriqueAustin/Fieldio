@@ -26,6 +26,7 @@ import {
     BarChart3,
 } from "lucide-react";
 import { cn } from "../../../lib/utils";
+import { useCan } from "../../../lib/permissions";
 
 interface Campaign {
     id: string;
@@ -56,6 +57,8 @@ const statusColors: Record<string, string> = {
 export default function CampaignsPage() {
     const qc = useQueryClient();
     const [dialogOpen, setDialogOpen] = useState(false);
+    // Sales can read campaigns but not create or edit them (they carry spend).
+    const canManage = useCan("manageCampaigns");
 
     const { data: campaigns, isLoading } = useQuery({
         queryKey: ["campaigns"],
@@ -104,6 +107,7 @@ export default function CampaignsPage() {
                     <h1 className="page-title">Campaigns</h1>
                     <p className="page-subtitle">Automated follow-ups and marketing campaigns.</p>
                 </div>
+                {canManage && (
                 <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                     <DialogTrigger asChild>
                         <Button className="gap-2 bg-slate-900 hover:bg-slate-800"><Plus className="h-4 w-4" /> New Campaign</Button>
@@ -157,6 +161,7 @@ export default function CampaignsPage() {
                         <DialogFooter><Button onClick={createCampaign}>Create Campaign</Button></DialogFooter>
                     </DialogContent>
                 </Dialog>
+                )}
             </div>
 
             {/* Stats */}
@@ -230,12 +235,16 @@ export default function CampaignsPage() {
                                     </td>
                                     <td className="px-6 py-3.5 text-sm font-medium">{c._count.sends}</td>
                                     <td className="px-6 py-3.5">
-                                        <div className="flex gap-2">
-                                            <button onClick={() => toggleStatus(c.id, c.status)} className="text-xs text-blue-600 hover:underline">
-                                                {c.status === "ACTIVE" ? "Pause" : "Activate"}
-                                            </button>
-                                            <button onClick={() => deleteCampaign(c.id)} className="text-xs text-rose-600 hover:underline">Delete</button>
-                                        </div>
+                                        {canManage ? (
+                                            <div className="flex gap-2">
+                                                <button onClick={() => toggleStatus(c.id, c.status)} className="text-xs text-blue-600 hover:underline">
+                                                    {c.status === "ACTIVE" ? "Pause" : "Activate"}
+                                                </button>
+                                                <button onClick={() => deleteCampaign(c.id)} className="text-xs text-rose-600 hover:underline">Delete</button>
+                                            </div>
+                                        ) : (
+                                            <span className="text-xs text-muted-foreground">—</span>
+                                        )}
                                     </td>
                                 </tr>
                             ))
