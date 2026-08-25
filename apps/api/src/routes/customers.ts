@@ -7,6 +7,9 @@ import { catchAsync } from '../utils/catchAsync';
 export const customerRouter = Router();
 
 customerRouter.use(requireUser);
+// The CRM carries job invoice totals and lifetime value. Technicians get the
+// customer details they need embedded in their own assigned jobs instead.
+customerRouter.use(restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES', 'ACCOUNTANT'));
 
 customerRouter.get('/', catchAsync(customerController.getAll));
 customerRouter.post('/', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(customerController.create));

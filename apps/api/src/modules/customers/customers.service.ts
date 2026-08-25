@@ -84,17 +84,53 @@ export const customerService = {
                 jobs: {
                     where: { deletedAt: null },
                     orderBy: { createdAt: 'desc' },
-                    take: 10,
+                    take: 25,
                     include: {
                         tech: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        invoice: { select: { id: true, status: true, total: true } },
+                        invoice: { select: { id: true, status: true, total: true, balance: true } },
                     },
                 },
+                _count: { select: { jobs: true, properties: true } },
             },
         });
 
         if (!customer) throw new AppError('Customer not found', StatusCodes.NOT_FOUND);
-        return customer;
+
+        // Lifetime value and what they owe must cover every invoice this customer
+        // ever had, not just the page of recent jobs loaded above — otherwise the
+        // headline numbers silently under-report as soon as they have history.
+        const invoices = await prisma.invoice.findMany({
+            where: { companyId, deletedAt: null, job: { customerId: id } },
+            select: { status: true, total: true, balance: true },
+        });
+
+        const lifetimeValue = invoices
+            .filter((i) => i.status !== 'VOID')
+            .reduce((sum, i) => sum + (Number(i.total) - Number(i.balance)), 0);
+        const outstanding = invoices
+            .filter((i) => i.status !== 'VOID' && i.status !== 'PAID')
+            .reduce((sum, i) => sum + Number(i.balance), 0);
+
+        const openJobs = await prisma.job.count({
+            where: {
+                companyId,
+                customerId: id,
+                deletedAt: null,
+                status: { notIn: ['COMPLETED', 'CANCELED'] },
+            },
+        });
+
+        return {
+            ...customer,
+            summary: {
+                lifetimeValue,
+                outstanding,
+                invoiceCount: invoices.length,
+                jobCount: customer._count.jobs,
+                openJobs,
+                propertyCount: customer._count.properties,
+            },
+        };
     },
 
     create: async (companyId: string, input: z.infer<typeof createCustomerSchema>) => {
