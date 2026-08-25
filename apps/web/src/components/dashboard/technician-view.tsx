@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2 } from "lucide-react";
 import api from "../../lib/api";
+import { displayName, firstNameOf } from "../../lib/utils";
 import { Card, CardContent } from "../ui/card";
 import {
     getAddress,
@@ -148,7 +149,7 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                         <div>
                             <h3 className="font-semibold">You&apos;re clear for now</h3>
                             <p className="text-sm text-muted-foreground">
-                                Dispatch hasn&apos;t assigned any open jobs to {user.email.split("@")[0]} yet.
+                                Dispatch hasn&apos;t assigned any open jobs to {firstNameOf(user)} yet.
                             </p>
                         </div>
                     </CardContent>
@@ -161,7 +162,7 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         return null;
     }
 
-    const techName = user.email.split("@")[0];
+    const techName = firstNameOf(user);
 
     // Detail-view props shared by mobile full-screen and desktop pane.
     const detailFor = (job: TechnicianJob) => {
@@ -219,7 +220,7 @@ export function TechnicianView({ user }: TechnicianViewProps) {
             <div className="hidden space-y-6 pb-20 md:block">
                 <div className="flex items-baseline justify-between gap-3">
                     <h2 className="text-2xl font-bold tracking-tight">Field console</h2>
-                    <span className="text-sm text-muted-foreground">{techName}</span>
+                    <span className="text-sm text-muted-foreground">{displayName(user, user.email)}</span>
                 </div>
 
                 <OverviewCards

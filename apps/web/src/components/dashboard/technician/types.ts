@@ -1,4 +1,4 @@
-import { format, formatDistanceToNowStrict } from "date-fns";
+import { format, formatDistanceToNowStrict, isToday, isTomorrow } from "date-fns";
 
 export interface TechnicianViewProps {
     user: {
@@ -34,6 +34,11 @@ export interface JobNote {
     author?: {
         id: string;
         email: string;
+        // The API already composes this from first + last name; the UI used to
+        // ignore it and show the email prefix instead.
+        name?: string | null;
+        firstName?: string | null;
+        lastName?: string | null;
         avatarUrl?: string | null;
     } | null;
 }
@@ -140,15 +145,26 @@ export function getAddress(job: TechnicianJob) {
         .join(", ");
 }
 
+/** Day prefix for a job that is not today — "" for today, "Tomorrow", "Thu 28 Aug".
+ *  Without this every upcoming job read as a bare clock time, so a job next week
+ *  was indistinguishable from one this afternoon. */
+function dayPrefix(date: Date) {
+    if (isToday(date)) return "";
+    if (isTomorrow(date)) return "Tomorrow ";
+    return `${format(date, "EEE d MMM")} `;
+}
+
 export function getJobTiming(job: TechnicianJob) {
     if (job.status === "ON_SITE" && job.actualStart) {
         return `On site for ${formatDistanceToNowStrict(new Date(job.actualStart))}`;
     }
-    if (job.scheduledStart && job.scheduledEnd) {
-        return `${format(new Date(job.scheduledStart), "p")} - ${format(new Date(job.scheduledEnd), "p")}`;
-    }
     if (job.scheduledStart) {
-        return format(new Date(job.scheduledStart), "p");
+        const start = new Date(job.scheduledStart);
+        const day = dayPrefix(start);
+        if (job.scheduledEnd) {
+            return `${day}${format(start, "p")} - ${format(new Date(job.scheduledEnd), "p")}`;
+        }
+        return `${day}${format(start, "p")}`;
     }
     return "Schedule pending";
 }

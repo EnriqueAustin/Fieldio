@@ -174,7 +174,7 @@ export function JobDetail({
 
             {/* Sticky primary status action — always thumb-reachable above the bottom nav. */}
             {mobile && (
-                <div className="fixed inset-x-0 bottom-[76px] z-40 border-t border-border bg-background/95 px-4 py-3 backdrop-blur md:hidden">
+                <div className="fixed inset-x-0 bottom-[var(--mobile-nav-h)] z-40 border-t border-border bg-background/95 px-4 py-3 backdrop-blur md:hidden">
                     {primary ? (
                         <button
                             type="button"

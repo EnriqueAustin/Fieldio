@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { cn } from "../../lib/utils";
-import { LogOut, Search, ChevronsUpDown, Zap, Briefcase, FileText, User as UserIcon, Loader2 } from "lucide-react";
+import { cn, displayName } from "../../lib/utils";
+import { LogOut, Search, ChevronsUpDown, Zap, Briefcase, FileText, User as UserIcon, Loader2, Menu } from "lucide-react";
 import { useAuthStore } from "../../store/auth";
 import api from "../../lib/api";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { MobileNav } from "./mobile-nav";
+import { AccountSheet } from "./account-sheet";
 import { NotificationBell } from "../notifications/notification-bell";
 import { CallerIdPopup } from "../notifications/caller-id-popup";
 import { getNavGroupsForRole } from "../../lib/nav-config";
@@ -141,6 +142,7 @@ function GlobalSearch({ isTechnician = false }: { isTechnician?: boolean }) {
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
     const { user, logout } = useAuthStore();
+    const [accountOpen, setAccountOpen] = useState(false);
 
     const handleLogout = async () => {
         try {
@@ -160,7 +162,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return (
         <div className="min-h-screen bg-[hsl(var(--background))]">
             {/* Sidebar */}
-            <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col bg-[hsl(var(--sidebar))] sm:flex">
+            <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col bg-[hsl(var(--sidebar))] md:flex">
                 {/* Brand */}
                 <div className="flex h-16 shrink-0 items-center gap-2 px-5 border-b border-white/5">
                     <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 shadow-lg shadow-blue-500/30">
@@ -236,23 +238,41 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </aside>
 
             {/* Main */}
-            <div className="sm:pl-64 pb-16 sm:pb-0">
+            <div className="md:pl-64 pb-[var(--mobile-nav-h)] md:pb-0">
                 {/* Topbar */}
                 <header className="sticky top-0 z-20 border-b border-border/60 bg-white/80 backdrop-blur-md">
-                    <div className="flex h-16 items-center gap-4 px-6 lg:px-8">
-                        <div className="flex flex-1 items-center gap-3 max-w-md">
+                    <div className="flex h-14 items-center gap-2 px-4 md:h-16 md:gap-4 md:px-6 lg:px-8">
+                        {/* Phone: a brand mark, since the sidebar that carries it is hidden. */}
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 md:hidden">
+                            <Zap className="h-4 w-4 text-white" strokeWidth={2.5} />
+                        </div>
+
+                        <div className="flex flex-1 items-center gap-3 md:max-w-md">
                             <GlobalSearch isTechnician={user?.role === "TECHNICIAN"} />
                         </div>
-                        <div className="flex items-center gap-2">
+
+                        <div className="flex items-center gap-1 md:gap-2">
                             <NotificationBell />
+
+                            {/* Phone: the only route to account settings and sign-out —
+                                the sidebar holding them is hidden below md. */}
+                            <button
+                                type="button"
+                                onClick={() => setAccountOpen(true)}
+                                aria-label="Account menu"
+                                className="flex h-11 w-11 items-center justify-center rounded-xl text-slate-600 active:scale-95 md:hidden"
+                            >
+                                <Menu className="h-5 w-5" />
+                            </button>
+
                             <div className="hidden md:flex items-center gap-2 pl-3 ml-1 border-l border-border">
                                 <Avatar className="h-8 w-8">
                                     <AvatarFallback className="bg-slate-100 text-slate-700 text-xs font-medium">
-                                        {user?.email?.[0]?.toUpperCase() ?? "U"}
+                                        {displayName(user, user?.email ?? "U")[0]?.toUpperCase() ?? "U"}
                                     </AvatarFallback>
                                 </Avatar>
                                 <div className="flex flex-col leading-tight">
-                                    <span className="text-xs font-medium">{user?.name || user?.email?.split("@")[0]}</span>
+                                    <span className="text-xs font-medium">{displayName(user, user?.email ?? "")}</span>
                                     <span className="text-[10px] text-muted-foreground capitalize">
                                         {user?.role?.toLowerCase()}
                                     </span>
@@ -268,6 +288,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </div>
 
             <MobileNav />
+            <AccountSheet open={accountOpen} onClose={() => setAccountOpen(false)} onLogout={handleLogout} />
             <CallerIdPopup />
             <InstallPrompt />
         </div>

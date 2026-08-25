@@ -15,8 +15,8 @@ export function MobileNav() {
         href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
 
     return (
-        <div className="fixed bottom-0 left-0 z-50 w-full border-t bg-background p-2 md:hidden">
-            <nav className="flex justify-around items-center">
+        <div className="mobile-nav-bar">
+            <nav className="flex h-full items-stretch justify-around">
                 {navItems.map((item) => {
                     const active = isActive(item.href);
                     return (
@@ -24,7 +24,7 @@ export function MobileNav() {
                             key={item.href}
                             href={item.href}
                             className={cn(
-                                "flex flex-col items-center gap-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors",
+                                "flex flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 text-[11px] font-medium transition-colors",
                                 active ? "text-primary" : "text-muted-foreground hover:text-primary"
                             )}
                         >

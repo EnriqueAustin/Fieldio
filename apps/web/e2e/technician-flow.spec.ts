@@ -88,3 +88,72 @@ test.describe('Technician field console', () => {
         await expect(page.locator('.fc-timeGridWeek-view')).toBeHidden();
     });
 });
+
+test.describe('Technician app shell on a phone', () => {
+    test('the account sheet is the way out: identity, settings, and sign out', async ({ page }) => {
+        await loginAsTech(page);
+
+        // The sidebar that carries "Log out" is hidden below md — before the
+        // account sheet existed there was no way to sign out on a phone at all.
+        await expect(page.locator('aside')).toBeHidden();
+
+        await page.getByRole('button', { name: 'Account menu' }).click();
+
+        const sheet = page.getByRole('dialog', { name: 'Account' });
+        await expect(sheet).toBeVisible();
+        // Named, not an email prefix.
+        await expect(sheet.getByText('Sipho Ndaba')).toBeVisible();
+        // Nav items that don't fit the bottom bar are reachable here.
+        await expect(sheet.getByRole('link', { name: 'My Account' })).toBeVisible();
+
+        await sheet.getByRole('button', { name: 'Log out' }).click();
+        await expect(page).toHaveURL(/\/login/);
+    });
+
+    test('bottom bar exposes the clock and reserves exactly its own height', async ({ page }) => {
+        await loginAsTech(page);
+
+        const bar = page.locator('.mobile-nav-bar');
+        await expect(bar).toBeVisible();
+        await expect(bar.getByRole('link', { name: 'Time' })).toBeVisible();
+
+        // Content must reserve the bar's height, or the last row of every page
+        // sits underneath it.
+        const barHeight = await bar.evaluate((el) => el.getBoundingClientRect().height);
+        const reserved = await page.evaluate(() =>
+            parseFloat(
+                getComputedStyle(document.querySelector('main')!.parentElement!).paddingBottom
+            )
+        );
+        expect(reserved).toBeCloseTo(barHeight, 0);
+    });
+});
+
+test.describe('Technician time tracking', () => {
+    test('a work timer runs, attributes to a job, and stops onto the timesheet', async ({ page }) => {
+        await loginAsTech(page);
+        await page.goto('/time-tracking');
+
+        // Travel and wrench time is what job costing needs, so the picker defaults
+        // to the job the technician is actually on.
+        const picker = page.locator('#time-job');
+        await expect(picker).toBeVisible();
+        const jobTitle = await picker.locator('option:checked').textContent();
+        expect(jobTitle?.trim().length).toBeGreaterThan(0);
+
+        await page.locator('#start-wrench-btn').click();
+
+        await expect(page.getByText('Work in progress')).toBeVisible();
+        // The running clock names the job it is billing to.
+        await expect(page.getByText(/^Started .+ · /)).toBeVisible();
+
+        await page.locator('#stop-timer-btn').click();
+
+        // Back to the idle state, with the entry on the timesheet.
+        await expect(page.locator('#start-wrench-btn')).toBeVisible();
+        await expect(page.getByText('My timesheet')).toBeVisible();
+
+        // Leave the demo timesheet as we found it so repeat runs don't pile up.
+        await page.getByRole('button', { name: 'Delete entry' }).first().click();
+    });
+});

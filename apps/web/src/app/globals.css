@@ -4,6 +4,11 @@
 
 @layer base {
   :root {
+    /* Height the bottom tab bar actually occupies, so page content can reserve
+       exactly that much and nothing hides behind it. Kept in one place because
+       the tech job screen pins a sticky action bar directly above it. */
+    --mobile-nav-h: calc(60px + env(safe-area-inset-bottom));
+
     --background: 210 20% 98.5%;
     --foreground: 222 47% 11%;
 
@@ -113,7 +118,18 @@
   }
 
   .page-shell {
-    @apply mx-auto w-full max-w-[1400px] px-6 lg:px-8 py-8;
+    /* Phone gutters stay tight — 24px a side on a 375px screen wastes an eighth
+       of the width a technician reads addresses and part numbers in. */
+    @apply mx-auto w-full max-w-[1400px] px-4 py-5 md:px-6 md:py-8 lg:px-8;
+  }
+
+  /* Bottom tab bar. Height must match --mobile-nav-h above. */
+  .mobile-nav-bar {
+    @apply fixed bottom-0 left-0 z-50 w-full border-t border-border bg-background md:hidden;
+    /* Driven by the same variable pages reserve space with, so the bar and the
+       gap under the content can never drift apart. */
+    height: var(--mobile-nav-h);
+    padding-bottom: env(safe-area-inset-bottom);
   }
 
   .page-title {

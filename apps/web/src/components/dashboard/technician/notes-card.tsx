@@ -9,6 +9,7 @@ import { Textarea } from "../../ui/textarea";
 import { Avatar, AvatarFallback } from "../../ui/avatar";
 import type { TechnicianJob } from "./types";
 import { useDictation } from "./use-dictation";
+import { displayName } from "../../../lib/utils";
 
 interface NotesCardProps {
     job: TechnicianJob;
@@ -64,13 +65,13 @@ export function NotesCard({ job, noteDraft, setNoteDraft, onSaveNote }: NotesCar
                                 <div className="flex items-start gap-3">
                                     <Avatar className="h-9 w-9">
                                         <AvatarFallback>
-                                            {note.author?.email?.[0]?.toUpperCase() ?? "?"}
+                                            {displayName(note.author, "?")[0]?.toUpperCase() ?? "?"}
                                         </AvatarFallback>
                                     </Avatar>
                                     <div className="min-w-0 flex-1">
                                         <div className="flex flex-wrap items-center gap-2">
                                             <span className="font-medium">
-                                                {note.author?.email?.split("@")[0] ?? "Team"}
+                                                {displayName(note.author, "Team")}
                                             </span>
                                             <span className="text-xs text-muted-foreground">
                                                 {format(new Date(note.createdAt), "MMM d, p")}
