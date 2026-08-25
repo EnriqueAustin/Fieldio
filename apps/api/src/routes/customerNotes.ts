@@ -6,6 +6,8 @@ import { catchAsync } from '../utils/catchAsync';
 export const customerNoteRouter = Router();
 
 customerNoteRouter.use(requireUser);
+// The timeline stitches in estimate, invoice and payment amounts.
+customerNoteRouter.use(restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES', 'ACCOUNTANT'));
 
 customerNoteRouter.get('/customer/:customerId', catchAsync(customerNoteController.getByCustomer));
 customerNoteRouter.get('/customer/:customerId/timeline', catchAsync(customerNoteController.getTimeline));

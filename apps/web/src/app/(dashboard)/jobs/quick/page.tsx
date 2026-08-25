@@ -30,6 +30,15 @@ interface ExistingCustomer {
     email?: string;
 }
 
+interface CustomerProperty {
+    id: string;
+    addressLine1: string;
+    addressLine2?: string | null;
+    city: string;
+    state?: string | null;
+    zip?: string | null;
+}
+
 interface JobTemplate {
     id: string;
     name: string;
@@ -50,11 +59,16 @@ export default function QuickJobPage() {
     const [existingCustomers, setExistingCustomers] = useState<ExistingCustomer[]>([]);
     const [customerSearch, setCustomerSearch] = useState("");
     const [useExisting, setUseExisting] = useState(false);
+    // Sites already on file for the selected customer. Booking against one of
+    // these keeps their service history and equipment on a single record
+    // instead of duplicating the address on every visit.
+    const [customerProperties, setCustomerProperties] = useState<CustomerProperty[]>([]);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     const [form, setForm] = useState({
         existingCustomerId: "",
+        existingPropertyId: "",
         customerName: "",
         customerPhone: "",
         customerEmail: "",
@@ -122,16 +136,54 @@ export default function QuickJobPage() {
         setForm({
             ...form,
             existingCustomerId: c.id,
+            existingPropertyId: "",
             customerName: c.name,
             customerPhone: c.phone || "",
             customerEmail: c.email || "",
         });
         setUseExisting(true);
         setCustomerSearch("");
+
+        api.get(`/customers/${c.id}`)
+            .then((res) => {
+                const props: CustomerProperty[] = res.data?.data?.customer?.properties ?? [];
+                setCustomerProperties(props);
+                // One site on file is the overwhelmingly common case — pick it
+                // so the booker never retypes an address they already have.
+                const preselect = searchParams.get("propertyId") ?? (props.length === 1 ? props[0].id : "");
+                if (preselect && props.some((p) => p.id === preselect)) {
+                    selectExistingProperty(preselect, props);
+                }
+            })
+            .catch(() => setCustomerProperties([]));
+    };
+
+    const selectExistingProperty = (propertyId: string, props = customerProperties) => {
+        const prop = props.find((p) => p.id === propertyId);
+        setForm((f) => ({
+            ...f,
+            existingPropertyId: propertyId,
+            addressLine1: prop?.addressLine1 ?? "",
+            city: prop?.city ?? "",
+            state: prop?.state ?? "",
+            zip: prop?.zip ?? "",
+        }));
     };
 
     const clearExistingCustomer = () => {
-        setForm({ ...form, existingCustomerId: "", customerName: "", customerPhone: "", customerEmail: "" });
+        setForm({
+            ...form,
+            existingCustomerId: "",
+            existingPropertyId: "",
+            customerName: "",
+            customerPhone: "",
+            customerEmail: "",
+            addressLine1: "",
+            city: "",
+            state: "",
+            zip: "",
+        });
+        setCustomerProperties([]);
         setUseExisting(false);
     };
 
@@ -156,6 +208,9 @@ export default function QuickJobPage() {
             };
             if (form.existingCustomerId) {
                 payload.existingCustomerId = form.existingCustomerId;
+            }
+            if (form.existingPropertyId) {
+                payload.existingPropertyId = form.existingPropertyId;
             }
             if (selectedTemplateId) {
                 payload.templateId = selectedTemplateId;
@@ -274,6 +329,42 @@ export default function QuickJobPage() {
             {/* Property Section */}
             <div className="surface-card p-6 space-y-4">
                 <h2 className="font-semibold">Property Address</h2>
+
+                {customerProperties.length > 0 && (
+                    <div className="space-y-2">
+                        <Label>Site on file</Label>
+                        <select
+                            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                            value={form.existingPropertyId}
+                            onChange={(e) => {
+                                if (e.target.value) selectExistingProperty(e.target.value);
+                                else
+                                    setForm((f) => ({
+                                        ...f,
+                                        existingPropertyId: "",
+                                        addressLine1: "",
+                                        city: "",
+                                        state: "",
+                                        zip: "",
+                                    }));
+                            }}
+                        >
+                            <option value="">— New address —</option>
+                            {customerProperties.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                    {[p.addressLine1, p.city].filter(Boolean).join(", ")}
+                                </option>
+                            ))}
+                        </select>
+                        {form.existingPropertyId && (
+                            <p className="text-xs text-muted-foreground">
+                                Booking at an existing site keeps this customer&apos;s history and
+                                equipment on one record.
+                            </p>
+                        )}
+                    </div>
+                )}
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="col-span-full space-y-2">
                         <Label>Street Address *</Label>
@@ -281,6 +372,7 @@ export default function QuickJobPage() {
                             placeholder="14 Main Rd"
                             value={form.addressLine1}
                             onChange={(e) => setForm({ ...form, addressLine1: e.target.value })}
+                            disabled={!!form.existingPropertyId}
                         />
                     </div>
                     <div className="space-y-2">
@@ -289,6 +381,7 @@ export default function QuickJobPage() {
                             placeholder="Centurion"
                             value={form.city}
                             onChange={(e) => setForm({ ...form, city: e.target.value })}
+                            disabled={!!form.existingPropertyId}
                         />
                     </div>
                     <div className="space-y-2">
@@ -297,6 +390,7 @@ export default function QuickJobPage() {
                             placeholder="Gauteng"
                             value={form.state}
                             onChange={(e) => setForm({ ...form, state: e.target.value })}
+                            disabled={!!form.existingPropertyId}
                         />
                     </div>
                     <div className="space-y-2">
@@ -305,6 +399,7 @@ export default function QuickJobPage() {
                             placeholder="0157"
                             value={form.zip}
                             onChange={(e) => setForm({ ...form, zip: e.target.value })}
+                            disabled={!!form.existingPropertyId}
                         />
                     </div>
                 </div>

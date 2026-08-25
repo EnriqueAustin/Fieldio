@@ -17,23 +17,44 @@ interface Customer {
     _count: { properties: number; jobs: number };
 }
 
+const PAGE_SIZE = 24;
+
 export default function CustomersPage() {
     const [search, setSearch] = useState("");
     const [submittedSearch, setSubmittedSearch] = useState("");
+    const [page, setPage] = useState(1);
 
+    // The API pages at a fixed size; without paging the UI silently showed only
+    // the first slice, so a company past that count could not reach the rest.
     const { data, isLoading: loading } = useQuery({
-        queryKey: ["customers", submittedSearch],
+        queryKey: ["customers", submittedSearch, page],
         queryFn: () =>
-            api.get(`/customers?search=${encodeURIComponent(submittedSearch)}`).then((res) => res.data.data.items ?? []),
+            api
+                .get(
+                    `/customers?search=${encodeURIComponent(submittedSearch)}&page=${page}&limit=${PAGE_SIZE}`
+                )
+                .then((res) => res.data.data),
+        placeholderData: (prev) => prev,
     });
-    const customers: Customer[] = data ?? [];
+    const customers: Customer[] = data?.items ?? [];
+    const total: number = data?.total ?? 0;
+    const totalPages: number = data?.totalPages ?? 1;
+
+    const runSearch = (term: string) => {
+        setSubmittedSearch(term);
+        setPage(1);
+    };
 
     return (
         <div className="space-y-6">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                 <div>
                     <h1 className="page-title">Customers</h1>
-                    <p className="page-subtitle">View and manage your client base.</p>
+                    <p className="page-subtitle">
+                        {total > 0
+                            ? `${total} ${total === 1 ? "customer" : "customers"}${submittedSearch ? ` matching “${submittedSearch}”` : ""}`
+                            : "View and manage your client base."}
+                    </p>
                 </div>
                 <div className="flex items-center gap-2">
                     <Link
@@ -57,7 +78,7 @@ export default function CustomersPage() {
                 <form
                     onSubmit={(e) => {
                         e.preventDefault();
-                        setSubmittedSearch(search);
+                        runSearch(search);
                     }}
                     className="relative"
                 >
@@ -132,7 +153,7 @@ export default function CustomersPage() {
                             <div className="mt-4 pt-3 border-t border-border/60 flex items-center gap-4 text-xs">
                                 <span className="inline-flex items-center gap-1.5 text-muted-foreground">
                                     <Building className="h-3 w-3" />
-                                    {c._count.properties} properties
+                                    {c._count.properties} {c._count.properties === 1 ? "site" : "sites"}
                                 </span>
                                 <span
                                     className={cn(
@@ -142,11 +163,35 @@ export default function CustomersPage() {
                                             : "bg-slate-100 text-slate-600"
                                     )}
                                 >
-                                    {c._count.jobs} jobs
+                                    {c._count.jobs} {c._count.jobs === 1 ? "job" : "jobs"}
                                 </span>
                             </div>
                         </Link>
                     ))}
+                </div>
+            )}
+
+            {totalPages > 1 && (
+                <div className="flex items-center justify-between gap-4">
+                    <p className="text-xs text-muted-foreground">
+                        Page {page} of {totalPages}
+                    </p>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={() => setPage((p) => Math.max(1, p - 1))}
+                            disabled={page === 1}
+                            className="rounded-lg border border-border bg-white px-3 py-1.5 text-sm font-medium transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                            Previous
+                        </button>
+                        <button
+                            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                            disabled={page >= totalPages}
+                            className="rounded-lg border border-border bg-white px-3 py-1.5 text-sm font-medium transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                            Next
+                        </button>
+                    </div>
                 </div>
             )}
         </div>

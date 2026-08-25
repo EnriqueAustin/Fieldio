@@ -70,9 +70,10 @@ const quickCreateSchema = z.object({
     customerName: z.string().min(1),
     customerPhone: z.string().optional(),
     customerEmail: z.string().email().optional().or(z.literal('')),
-    addressLine1: z.string().min(1),
+    // Optional here, then required below only when no existing site was picked.
+    addressLine1: z.string().optional(),
     addressLine2: z.string().optional(),
-    city: z.string().min(1),
+    city: z.string().optional(),
     state: z.string().optional().default(''),
     zip: z.string().optional().default(''),
     title: z.string().min(1),
@@ -83,7 +84,16 @@ const quickCreateSchema = z.object({
     scheduledStart: z.string().datetime().optional(),
     scheduledEnd: z.string().datetime().optional(),
     existingCustomerId: z.string().uuid().optional(),
+    existingPropertyId: z.string().uuid().optional(),
     templateId: z.string().uuid().optional(),
+}).superRefine((val, ctx) => {
+    if (val.existingPropertyId) return;
+    if (!val.addressLine1?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['addressLine1'], message: 'Required' });
+    }
+    if (!val.city?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['city'], message: 'Required' });
+    }
 });
 
 const JOB_NOTE_ACTION = 'JOB_NOTE_ADDED';
@@ -878,17 +888,33 @@ export const jobsService = {
                 customerId = customer.id;
             }
 
-            const property = await tx.property.create({
-                data: {
-                    companyId,
-                    customerId,
-                    addressLine1: parsed.addressLine1,
-                    addressLine2: parsed.addressLine2,
-                    city: parsed.city,
-                    state: parsed.state || '',
-                    zip: parsed.zip || '',
-                },
-            });
+            // Repeat customers are booked at a site they already have. Without
+            // this the same address is duplicated on every visit, which splits
+            // their service history and equipment records across copies.
+            let property = parsed.existingPropertyId
+                ? await tx.property.findFirst({
+                      where: { id: parsed.existingPropertyId, companyId, customerId },
+                  })
+                : null;
+
+            if (parsed.existingPropertyId && !property) {
+                throw new AppError('Service address not found for this customer', StatusCodes.NOT_FOUND);
+            }
+
+            if (!property) {
+                property = await tx.property.create({
+                    data: {
+                        companyId,
+                        customerId,
+                        // superRefine above guarantees both are present here.
+                        addressLine1: parsed.addressLine1!,
+                        addressLine2: parsed.addressLine2,
+                        city: parsed.city!,
+                        state: parsed.state || '',
+                        zip: parsed.zip || '',
+                    },
+                });
+            }
 
             const template = parsed.templateId
                 ? await tx.jobTemplate.findFirst({ where: { id: parsed.templateId, companyId } })
