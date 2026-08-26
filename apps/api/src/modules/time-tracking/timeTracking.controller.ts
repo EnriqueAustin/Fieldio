@@ -22,7 +22,20 @@ const stopTimeEntrySchema = z.object({
     endTime: z.string().datetime().optional(),
 });
 
+/**
+ * Which timesheet the caller may touch. A technician is limited to their own
+ * rows; office roles correct anyone's, which is the whole point of the
+ * adjustment endpoints now that the field no longer logs its own hours.
+ */
+const scopeFor = (req: Request) =>
+    req.user!.role === 'TECHNICIAN' ? req.user!.userId : undefined;
+
 export const timeTrackingController = {
+    mySummary: async (req: Request, res: Response) => {
+        const summary = await timeTrackingService.getMySummary(req.user!.companyId, req.user!.userId);
+        res.status(StatusCodes.OK).json({ status: 'success', data: summary });
+    },
+
     start: async (req: Request, res: Response) => {
         const data = startTimeEntrySchema.parse(req.body);
         const entry = await timeTrackingService.startEntry(req.user!.companyId, req.user!.userId, data);
@@ -32,13 +45,13 @@ export const timeTrackingController = {
     stop: async (req: Request, res: Response) => {
         const data = stopTimeEntrySchema.parse(req.body);
         const endTime = data.endTime ? new Date(data.endTime) : undefined;
-        const entry = await timeTrackingService.stopEntry(req.params.id, req.user!.companyId, req.user!.userId, endTime);
+        const entry = await timeTrackingService.stopEntry(req.params.id, req.user!.companyId, scopeFor(req), endTime);
         res.status(StatusCodes.OK).json({ status: 'success', data: { entry } });
     },
 
     update: async (req: Request, res: Response) => {
         const data = updateTimeEntrySchema.parse(req.body);
-        const entry = await timeTrackingService.updateEntry(req.params.id, req.user!.companyId, req.user!.userId, data);
+        const entry = await timeTrackingService.updateEntry(req.params.id, req.user!.companyId, scopeFor(req), data);
         res.status(StatusCodes.OK).json({ status: 'success', data: { entry } });
     },
 
@@ -66,7 +79,7 @@ export const timeTrackingController = {
     },
 
     delete: async (req: Request, res: Response) => {
-        await timeTrackingService.deleteEntry(req.params.id, req.user!.companyId, req.user!.userId);
+        await timeTrackingService.deleteEntry(req.params.id, req.user!.companyId, scopeFor(req));
         res.status(StatusCodes.OK).json({ status: 'success' });
     }
 };

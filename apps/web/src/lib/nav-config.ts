@@ -67,7 +67,7 @@ const adminGroups: NavGroup[] = [
         label: "Operations",
         items: [
             { label: "Vans / Teams", href: "/vans", icon: Truck },
-            { label: "Time Tracking", href: "/time-tracking", icon: Clock },
+            { label: "Labour Hours", href: "/time-tracking", icon: Clock },
             { label: "Inventory", href: "/inventory", icon: Package },
             { label: "Suppliers", href: "/suppliers", icon: Truck },
             { label: "Subcontractors", href: "/subcontractors", icon: HardHat },
@@ -227,7 +227,7 @@ const accountantGroups: NavGroup[] = [
             { label: "KPI Dashboard", href: "/kpi", icon: TrendingUp },
             { label: "Tech Scoreboard", href: "/scoreboard", icon: Award },
             { label: "Reports", href: "/reports", icon: BarChart3 },
-            { label: "Time Tracking", href: "/time-tracking", icon: Clock },
+            { label: "Labour Hours", href: "/time-tracking", icon: Clock },
         ],
     },
     {
@@ -251,7 +251,7 @@ const technicianGroups: NavGroup[] = [
         label: "My Van",
         items: [
             { label: "Van Stock", href: "/my-van/stock", icon: Package },
-            { label: "Time Tracking", href: "/time-tracking", icon: Clock },
+            { label: "My Hours", href: "/time-tracking", icon: Clock },
         ],
     },
     {
@@ -291,7 +291,7 @@ export type MobileNavItem = { label: string; href: string; icon: LucideIcon };
 const technicianMobile: MobileNavItem[] = [
     { label: "Jobs", href: "/", icon: Briefcase },
     { label: "Schedule", href: "/my-schedule", icon: Calendar },
-    { label: "Time", href: "/time-tracking", icon: Clock },
+    { label: "Hours", href: "/time-tracking", icon: Clock },
     { label: "Van", href: "/my-van/stock", icon: Package },
     { label: "Inbox", href: "/inbox", icon: MessageSquare },
 ];
