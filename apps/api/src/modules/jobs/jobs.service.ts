@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { socketService } from '../../services/socket.service';
 import { notificationService } from '../../services/notifications/notification.service';
 import { PUBLIC_USER_SELECT } from '../../utils/publicSelects';
+import { closeOpenEntries } from '../time-tracking/timeTracking.service';
 
 const createJobSchema = z.object({
     projectId: z.string().uuid().optional().nullable(),
@@ -683,40 +684,38 @@ export const jobsService = {
             },
         }).catch(() => undefined);
 
-        // Auto time-entries: TRAVEL during EN_ROUTE, WRENCH while ON_SITE.
+        // The technician's timesheet is derived entirely from these transitions —
+        // they never log hours by hand. TRAVEL runs while EN_ROUTE, WRENCH while
+        // ON_SITE, and the clock stops on completion.
         if (updatedJob.techId) {
-            // Stop any open time entry for this job + user when leaving an active state
-            if (status === 'ON_SITE' || status === 'COMPLETED' || status === 'PAUSED' || status === 'CANCELED') {
-                const openEntries = await prisma.timeEntry.findMany({
-                    where: { jobId: id, userId: updatedJob.techId, endTime: null },
-                });
-                for (const e of openEntries) {
-                    const end = new Date();
-                    await prisma.timeEntry.update({
-                        where: { id: e.id },
-                        data: {
-                            endTime: end,
-                            duration: Math.floor((end.getTime() - e.startTime.getTime()) / 1000),
-                        },
-                    });
-                }
-            }
-            // Start the appropriate entry on entering EN_ROUTE / ON_SITE
-            if (status === 'EN_ROUTE') {
+            // The clock simply mirrors the status: travelling while EN_ROUTE,
+            // on site while ON_SITE, off otherwise.
+            const clockType =
+                status === 'EN_ROUTE' ? 'TRAVEL' : status === 'ON_SITE' ? 'WRENCH' : null;
+
+            const openForTech = await prisma.timeEntry.findMany({
+                where: { companyId, userId: updatedJob.techId, endTime: null },
+            });
+
+            // Re-sending the status the job is already in (an office correction,
+            // a double tap, a retried offline mutation) must leave the running
+            // clock alone rather than splitting it into two entries.
+            const alreadyRunning = clockType
+                ? openForTech.find((e) => e.jobId === id && e.type === clockType)
+                : undefined;
+
+            // Everything else stops — including entries on *other* jobs. Scoping
+            // this to the current job used to leave two clocks going at once:
+            // arriving at job B while job A was still marked on site billed both,
+            // doubling the hours.
+            await closeOpenEntries(companyId, updatedJob.techId, new Date(), alreadyRunning?.id);
+
+            if (clockType && !alreadyRunning) {
                 await prisma.timeEntry.create({
                     data: {
                         companyId, jobId: id, userId: updatedJob.techId,
-                        type: 'TRAVEL', startTime: new Date(),
-                        description: 'Auto-clocked on EN_ROUTE',
-                    },
-                });
-            }
-            if (status === 'ON_SITE') {
-                await prisma.timeEntry.create({
-                    data: {
-                        companyId, jobId: id, userId: updatedJob.techId,
-                        type: 'WRENCH', startTime: new Date(),
-                        description: 'Auto-clocked on ON_SITE',
+                        type: clockType, startTime: new Date(),
+                        description: `Auto-clocked on ${status}`,
                     },
                 });
             }

@@ -21,8 +21,25 @@ const matchScalar = (rowVal: any, cond: any): boolean => {
     if (cond && typeof cond === 'object' && 'notIn' in cond) {
         return Array.isArray(cond.notIn) && !cond.notIn.includes(rowVal);
     }
-    if (cond && typeof cond === 'object' && 'gt' in cond && typeof cond.gt === 'number') {
-        return Number(rowVal) > cond.gt;
+    // Range comparisons over numbers and dates. These must be real: the
+    // catch-all below treats an unknown object condition as "matches", so a
+    // silently-ignored `lt` would quietly select every row — which is how a
+    // date-window query can look like it works while matching everything.
+    if (cond && typeof cond === 'object') {
+        const RANGE_OPS = ['gt', 'gte', 'lt', 'lte'] as const;
+        const ops = RANGE_OPS.filter((op) => op in cond);
+        if (ops.length > 0) {
+            const asNumber = (v: any) => (v instanceof Date ? v.getTime() : Number(v));
+            const left = asNumber(rowVal);
+            if (Number.isNaN(left)) return false;
+            return ops.every((op) => {
+                const right = asNumber(cond[op]);
+                if (op === 'gt') return left > right;
+                if (op === 'gte') return left >= right;
+                if (op === 'lt') return left < right;
+                return left <= right;
+            });
+        }
     }
     // Nested relation filters (e.g. `job: { customerId }`) are not modelled;
     // treat them as satisfied so they don't exclude seeded rows.
@@ -181,6 +198,7 @@ export function createFakePrisma() {
         digitalFormSubmission: table('digitalFormSubmission'),
         user: table('user'),
         timeEntry: table('timeEntry'),
+        jobTimelineEvent: table('jobTimelineEvent'),
         membership: table('membership'),
         kpiSnapshot: table('kpiSnapshot'),
         // Raw SQL is not modelled; analytics uses it only for a top-techs

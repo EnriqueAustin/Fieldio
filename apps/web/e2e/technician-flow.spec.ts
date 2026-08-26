@@ -115,7 +115,7 @@ test.describe('Technician app shell on a phone', () => {
 
         const bar = page.locator('.mobile-nav-bar');
         await expect(bar).toBeVisible();
-        await expect(bar.getByRole('link', { name: 'Time' })).toBeVisible();
+        await expect(bar.getByRole('link', { name: 'Hours' })).toBeVisible();
 
         // Content must reserve the bar's height, or the last row of every page
         // sits underneath it.
@@ -129,31 +129,42 @@ test.describe('Technician app shell on a phone', () => {
     });
 });
 
-test.describe('Technician time tracking', () => {
-    test('a work timer runs, attributes to a job, and stops onto the timesheet', async ({ page }) => {
+test.describe('Technician hours are derived, not entered', () => {
+    test('the hours screen reports; it does not ask the technician to log', async ({ page }) => {
         await loginAsTech(page);
         await page.goto('/time-tracking');
 
-        // Travel and wrench time is what job costing needs, so the picker defaults
-        // to the job the technician is actually on.
-        const picker = page.locator('#time-job');
-        await expect(picker).toBeVisible();
-        const jobTitle = await picker.locator('option:checked').textContent();
-        expect(jobTitle?.trim().length).toBeGreaterThan(0);
+        await expect(page.getByRole('heading', { name: 'My hours' })).toBeVisible();
+        await expect(page.getByText(/Counted automatically from your jobs/i)).toBeVisible();
 
-        await page.locator('#start-wrench-btn').click();
+        // The whole point of the change: nothing here to fill in or press.
+        await expect(page.locator('#start-wrench-btn')).toHaveCount(0);
+        await expect(page.locator('#start-travel-btn')).toHaveCount(0);
+        await expect(page.locator('#stop-timer-btn')).toHaveCount(0);
+        await expect(page.getByRole('button', { name: /^Start$/i })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: /Delete entry/i })).toHaveCount(0);
 
-        await expect(page.getByText('Work in progress')).toBeVisible();
-        // The running clock names the job it is billing to.
-        await expect(page.getByText(/^Started .+ · /)).toBeVisible();
+        // Totals the system worked out are shown instead.
+        await expect(page.getByText('Today', { exact: true })).toBeVisible();
+        await expect(page.getByText('This week', { exact: true })).toBeVisible();
+        await expect(page.getByText('Today by job')).toBeVisible();
+    });
 
-        await page.locator('#stop-timer-btn').click();
+    test('starting a route puts the technician on the clock without them logging it', async ({ page }) => {
+        await loginAsTech(page);
 
-        // Back to the idle state, with the entry on the timesheet.
-        await expect(page.locator('#start-wrench-btn')).toBeVisible();
-        await expect(page.getByText('My timesheet')).toBeVisible();
+        // Pick a job that hasn't been started. An already-on-site job's only
+        // remaining action is "Complete job", which is gated on the checklist.
+        await page.getByTestId('job-card').filter({ hasText: 'Assigned' }).first().click();
+        await expect(page.getByRole('button', { name: /All jobs/i })).toBeVisible();
 
-        // Leave the demo timesheet as we found it so repeat runs don't pile up.
-        await page.getByRole('button', { name: 'Delete entry' }).first().click();
+        const action = page.getByRole('button', { name: /Start route|Arrive on site/ }).first();
+        const label = await action.textContent();
+        await action.click();
+
+        // The clock is now running, driven purely by that status change.
+        await page.goto('/time-tracking');
+        const expected = /Start route/i.test(label ?? '') ? /Driving to/i : /Working at/i;
+        await expect(page.getByText(expected)).toBeVisible({ timeout: 15000 });
     });
 });
