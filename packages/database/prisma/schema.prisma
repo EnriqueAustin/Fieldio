@@ -18,6 +18,8 @@ model Company {
   id        String   @id @default(uuid())
   name      String
   settings  Json? // Branding, Modules, Localization
+  // Last tax invoice number issued (SARS: sequential, never reused). Bumped atomically.
+  invoiceSequence Int @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -203,6 +205,9 @@ model Customer {
   name         String
   email        String?
   phone        String?
+  // Tax invoice fields: SARS needs the buyer VAT number + address on invoices over R5,000.
+  vatNumber      String?
+  billingAddress String?
   notes        String?
   status       CustomerStatus @default(ACTIVE)
   // CRM / lead pipeline fields
@@ -471,6 +476,11 @@ model Estimate {
   jobId              String?        @unique
   status             EstimateStatus @default(DRAFT)
   items              Json? // Snapshot of line items
+  // VAT breakdown (null on quotes created before VAT was tracked).
+  subtotal           Decimal?
+  tax                Decimal?
+  taxRate            Decimal?
+  taxLabel           String?
   total              Decimal
   // Deposit required to accept
   depositRequired    Boolean        @default(false)
@@ -534,6 +544,13 @@ model Invoice {
   supplierName                String?
   supplierCompanyRegistration String?
   paymentReference            String?
+  // Buyer snapshot for the tax invoice document.
+  customerName                String?
+  customerVatNumber           String?
+  customerAddress             String?
+  // Voided invoices keep their number (never reused) and stay on record.
+  voidedAt                    DateTime?
+  voidReason                  String?
   dueDate                     DateTime?
   // Dunning state
   dunningLevel                Int           @default(0)
@@ -2056,4 +2073,21 @@ model KpiSnapshot {
   company Company @relation(fields: [companyId], references: [id])
 
   @@index([companyId, capturedAt])
+}
+
+// Replay protection for offline field actions: the phone sends an Idempotency-Key
+// per action, and a retried request gets the stored response instead of a duplicate.
+model IdempotencyKey {
+  id         String   @id @default(uuid())
+  companyId  String
+  userId     String
+  key        String
+  method     String
+  path       String
+  statusCode Int
+  response   Json?
+  createdAt  DateTime @default(now())
+
+  @@unique([companyId, userId, key])
+  @@index([createdAt])
 }

@@ -28,13 +28,29 @@ export const notificationService = {
         const notification = await prisma.notification.create({
             data: { companyId, userId, type, title, message },
         });
-        socketService.emitToCompany(companyId, 'notification:received', notification);
+        // Personal feed: only this user's sockets, never the whole company.
+        socketService.emitToUser(userId, 'notification:received', notification);
         return notification;
     },
 
     // Fan a quote approve/decline back to the office so staff know it closed.
     // Best-effort: notifies every active back-office user (ADMIN/OFFICE/DISPATCHER/
     // CSR/SALES) via the in-app notification feed (which also pushes over socket).
+    /** In-app + socket alert to every active office-side user. */
+    notifyStaff: async (companyId: string, title: string, message: string) => {
+        const staff = await prisma.user.findMany({
+            where: {
+                companyId,
+                status: 'ACTIVE',
+                role: { in: ['ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES'] },
+            },
+            select: { id: true },
+        });
+        await Promise.all(
+            staff.map((s) => notificationService.notifyUser(s.id, companyId, 'ALERT', title, message))
+        );
+    },
+
     notifyStaffEstimateDecision: async (
         companyId: string,
         decision: 'APPROVED' | 'DECLINED',

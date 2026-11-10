@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { jobPhotosController } from '../modules/jobs/photos.controller';
 import { requireUser } from '../middleware/auth';
+import { idempotency } from '../middleware/idempotency';
 import { catchAsync } from '../utils/catchAsync';
 
 const upload = multer({
@@ -15,6 +16,9 @@ jobPhotosRouter.use(requireUser);
 jobPhotosRouter.get('/jobs/:jobId/photos', catchAsync(jobPhotosController.list));
 jobPhotosRouter.post(
     '/jobs/:jobId/photos',
+    // Field write — offline-queued, so it carries an Idempotency-Key. Checked
+    // before multer so a replay skips re-parsing the upload.
+    idempotency,
     upload.single('photo'),
     catchAsync(jobPhotosController.upload)
 );

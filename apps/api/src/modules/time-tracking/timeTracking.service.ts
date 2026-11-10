@@ -1,6 +1,7 @@
 import { prisma } from '@fieldio/database';
 import { AppError } from '../../middleware/error';
 import { StatusCodes } from 'http-status-codes';
+import { getCompanyTimezone, startOfDayInTimeZone, startOfWeekInTimeZone } from '../../utils/timezone';
 
 
 /**
@@ -186,10 +187,11 @@ export const timeTrackingService = {
         await truncateRunawayEntries(companyId, userId);
 
         const now = new Date();
-        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        // "Today" is the company's day, not the (often UTC) server's.
+        const tz = await getCompanyTimezone(companyId);
+        const startOfToday = startOfDayInTimeZone(now, tz);
         // Weeks run Monday-Sunday, matching how SA trades invoice labour.
-        const startOfWeek = new Date(startOfToday);
-        startOfWeek.setDate(startOfToday.getDate() - ((startOfToday.getDay() + 6) % 7));
+        const startOfWeek = startOfWeekInTimeZone(now, tz);
 
         const entries = await prisma.timeEntry.findMany({
             where: { companyId, userId, startTime: { gte: startOfWeek } },

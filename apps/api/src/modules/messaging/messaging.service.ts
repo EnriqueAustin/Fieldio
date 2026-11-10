@@ -72,10 +72,17 @@ export const messagingService = {
         let status: string = 'SENT';
         let errorReason: string | null = null;
         try {
-            if (channel === 'WHATSAPP') {
-                await whatsappService.sendText?.(phone, opts.body, companyId);
+            // Providers report failure in the result (they don't throw), including
+            // "not configured" in production — never record those as SENT.
+            const result: any =
+                channel === 'WHATSAPP'
+                    ? await whatsappService.sendText(phone, opts.body, companyId)
+                    : await smsService.sendText(phone, opts.body, companyId);
+            if (result?.ok === false) {
+                status = 'FAILED';
+                errorReason = result.error ?? 'send failed';
             } else {
-                await smsService.sendText?.(phone, opts.body, companyId);
+                providerId = result?.sid ?? result?.id ?? result?.providerId ?? undefined;
             }
         } catch (err: any) {
             status = 'FAILED';

@@ -10,6 +10,7 @@ export type CompanySettings = {
         taxRate: number;
         taxNumber?: string;
         invoiceHeading: string;
+        invoicePrefix: string;
         companyRegistrationNumber?: string;
         paymentTermsDays: number;
         paymentMethods: {
@@ -55,6 +56,68 @@ export type CompanySettings = {
     fieldQuoting: {
         enabled: boolean;
     };
+    financing: {
+        enabled: boolean;
+        showOnEstimates: boolean;
+    };
+    portal: {
+        selfReschedule: {
+            enabled: boolean;
+            minNoticeHours: number;
+        };
+    };
+    modules: CompanyModules;
+};
+
+// Optional modules. Each toggles only whether a feature shows in the navigation;
+// core tools are never listed here. Mirrors apps/api company-settings.ts exactly.
+export type ModuleKey =
+    | 'leads'
+    | 'campaigns'
+    | 'memberships'
+    | 'financing'
+    | 'projects'
+    | 'permits'
+    | 'subcontractors'
+    | 'certifications'
+    | 'warrantyClaims'
+    | 'flatRate'
+    | 'suppliers'
+    | 'inventory'
+    | 'calls'
+    | 'inbox'
+    | 'bookings'
+    | 'scoreboard'
+    | 'kpi'
+    | 'dunning'
+    | 'creditNotes'
+    | 'statements'
+    | 'reviews';
+
+export type CompanyModules = Record<ModuleKey, boolean>;
+
+export const defaultModules: CompanyModules = {
+    leads: false,
+    campaigns: false,
+    memberships: false,
+    financing: false,
+    projects: false,
+    permits: false,
+    subcontractors: false,
+    certifications: false,
+    warrantyClaims: false,
+    flatRate: false,
+    suppliers: true,
+    inventory: true,
+    calls: false,
+    inbox: true,
+    bookings: true,
+    scoreboard: false,
+    kpi: true,
+    dunning: false,
+    creditNotes: true,
+    statements: true,
+    reviews: false,
 };
 
 export const defaultCompanySettings: CompanySettings = {
@@ -69,6 +132,7 @@ export const defaultCompanySettings: CompanySettings = {
         taxRate: 15,
         taxNumber: '',
         invoiceHeading: 'Tax Invoice',
+        invoicePrefix: 'INV',
         companyRegistrationNumber: '',
         paymentTermsDays: 7,
         paymentMethods: {
@@ -114,6 +178,17 @@ export const defaultCompanySettings: CompanySettings = {
     fieldQuoting: {
         enabled: false,
     },
+    financing: {
+        enabled: false,
+        showOnEstimates: true,
+    },
+    portal: {
+        selfReschedule: {
+            enabled: false,
+            minNoticeHours: 24,
+        },
+    },
+    modules: defaultModules,
 };
 
 const isRecord = (value: unknown): value is Record<string, any> =>
@@ -144,6 +219,7 @@ export const normalizeCompanySettings = (input: unknown): CompanySettings => {
             ...merged.billing,
             taxNumber: merged.billing.taxNumber ?? '',
             invoiceHeading: merged.billing.invoiceHeading ?? defaultCompanySettings.billing.invoiceHeading,
+            invoicePrefix: merged.billing.invoicePrefix ?? defaultCompanySettings.billing.invoicePrefix,
             companyRegistrationNumber: merged.billing.companyRegistrationNumber ?? '',
             paymentMethods: {
                 ...defaultCompanySettings.billing.paymentMethods,
@@ -190,6 +266,20 @@ export const normalizeCompanySettings = (input: unknown): CompanySettings => {
         },
         fieldQuoting: {
             enabled: merged.fieldQuoting?.enabled ?? false,
+        },
+        financing: {
+            enabled: merged.financing?.enabled ?? false,
+            showOnEstimates: merged.financing?.showOnEstimates ?? true,
+        },
+        portal: {
+            selfReschedule: {
+                enabled: merged.portal?.selfReschedule?.enabled ?? false,
+                minNoticeHours: merged.portal?.selfReschedule?.minNoticeHours ?? 24,
+            },
+        },
+        modules: {
+            ...defaultModules,
+            ...merged.modules,
         },
     };
 };

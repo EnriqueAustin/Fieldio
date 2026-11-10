@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -8,12 +9,22 @@ import { useRouter } from "next/navigation";
 import { Button } from "../../../../components/ui/button";
 import { Input } from "../../../../components/ui/input";
 import { Label } from "../../../../components/ui/label";
+import { Textarea } from "../../../../components/ui/textarea";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../../components/ui/card";
 
 const customerSchema = z.object({
     name: z.string().min(2, "Name is required"),
     email: z.string().email().optional().or(z.literal('')),
     phone: z.string().optional(),
+    // SARS needs these on tax invoices over R5,000. Both optional; a VAT number,
+    // if given, is 10 digits starting with 4.
+    vatNumber: z
+        .string()
+        .trim()
+        .regex(/^4\d{9}$/, "VAT number must be 10 digits starting with 4")
+        .optional()
+        .or(z.literal('')),
+    billingAddress: z.string().optional(),
     property: z.object({
         addressLine1: z.string().min(3, "Address is required"),
         city: z.string().min(2),
@@ -26,16 +37,18 @@ type CustomerForm = z.infer<typeof customerSchema>;
 
 export default function NewCustomerPage() {
     const router = useRouter();
+    const [submitError, setSubmitError] = useState<string | null>(null);
     const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<CustomerForm>({
         resolver: zodResolver(customerSchema),
     });
 
     const onSubmit = async (data: CustomerForm) => {
+        setSubmitError(null);
         try {
             const res = await api.post("/customers", data);
             router.push(`/customers/${res.data.data.customer.id}`);
-        } catch (e) {
-            console.error(e);
+        } catch (e: any) {
+            setSubmitError(e?.response?.data?.message ?? "Could not create the customer. Please try again.");
         }
     };
 
@@ -66,8 +79,33 @@ export default function NewCustomerPage() {
                             </div>
                             <div className="space-y-2">
                                 <Label htmlFor="phone">Phone</Label>
-                                <Input id="phone" placeholder="(555) 123-4567" {...register("phone")} />
+                                <Input id="phone" placeholder="082 123 4567" {...register("phone")} />
                             </div>
+                        </div>
+                    </CardContent>
+                </Card>
+
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Billing</CardTitle>
+                        <CardDescription>
+                            For SARS-compliant tax invoices over R5,000. Both optional.
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent className="grid gap-4">
+                        <div className="space-y-2">
+                            <Label htmlFor="vatNumber">VAT number</Label>
+                            <Input id="vatNumber" placeholder="4123456789" {...register("vatNumber")} />
+                            {errors.vatNumber && <p className="text-sm text-destructive">{errors.vatNumber.message}</p>}
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="billingAddress">Billing address</Label>
+                            <Textarea
+                                id="billingAddress"
+                                rows={3}
+                                placeholder="Postal / billing address for invoices"
+                                {...register("billingAddress")}
+                            />
                         </div>
                     </CardContent>
                 </Card>
@@ -99,6 +137,10 @@ export default function NewCustomerPage() {
                         </div>
                     </CardContent>
                 </Card>
+
+                {submitError && (
+                    <p className="text-sm text-destructive text-right" role="alert">{submitError}</p>
+                )}
 
                 <div className="flex justify-end gap-3">
                     <Button type="button" variant="outline" onClick={() => router.back()}>Cancel</Button>

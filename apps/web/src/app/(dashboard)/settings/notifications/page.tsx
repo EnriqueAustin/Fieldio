@@ -17,6 +17,10 @@ export default function NotificationSettingsPage() {
                 </p>
             </div>
 
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                Coming soon — these settings are not active yet. The templates below are a preview and do not save.
+            </div>
+
             <div className="space-y-4">
                 <Card>
                     <CardHeader>
@@ -57,7 +61,7 @@ export default function NotificationSettingsPage() {
                 </Card>
 
                 <div className="flex justify-end">
-                    <Button>Save Changes</Button>
+                    <Button disabled>Save Changes</Button>
                 </div>
             </div>
         </div>

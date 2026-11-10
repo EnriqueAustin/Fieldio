@@ -21,6 +21,10 @@ export default function BusinessHoursPage() {
                 </p>
             </div>
 
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                Coming soon — these settings are not active yet. The hours below are a preview and do not save.
+            </div>
+
             <Card>
                 <CardContent className="p-6 space-y-4">
                     {DAYS.map((day) => (
@@ -40,7 +44,7 @@ export default function BusinessHoursPage() {
             </Card>
 
             <div className="flex justify-end">
-                <Button>Save Hours</Button>
+                <Button disabled>Save Hours</Button>
             </div>
         </div>
     );

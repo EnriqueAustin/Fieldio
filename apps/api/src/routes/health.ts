@@ -14,12 +14,9 @@ healthRouter.get('/', (req, res) => {
 
 healthRouter.get('/db', async (req, res, next) => {
     try {
-        const userCount = await prisma.user.count();
-        res.status(StatusCodes.OK).json({
-            status: 'ok',
-            db: 'connected',
-            userCount
-        });
+        // Public endpoint: prove the DB answers without leaking any (cross-tenant) data.
+        await prisma.$queryRaw`SELECT 1`;
+        res.status(StatusCodes.OK).json({ status: 'ok', db: 'ok' });
     } catch (err) {
         next(err);
     }

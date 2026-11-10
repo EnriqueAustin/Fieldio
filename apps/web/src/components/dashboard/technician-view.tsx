@@ -1,17 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { onlineManager, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2 } from "lucide-react";
 import api from "../../lib/api";
+import { googleMapsLink } from "../../lib/maps-link";
 import { displayName, firstNameOf } from "../../lib/utils";
 import { Card, CardContent } from "../ui/card";
 import {
     getAddress,
+    getJobTimeGroup,
     JOB_STATUS_FLOW,
     type TechnicianJob,
     type TechnicianViewProps,
 } from "./technician/types";
+import { prefetchFormsForJobs } from "./technician/use-forms";
 import { usePriceBook } from "./technician/use-price-book";
 import { useFieldQuote } from "./technician/use-field-quote";
 import { useFieldInvoice } from "./technician/use-field-invoice";
@@ -36,6 +39,7 @@ function jobCanComplete(job: TechnicianJob) {
 }
 
 export function TechnicianView({ user }: TechnicianViewProps) {
+    const queryClient = useQueryClient();
     // Desktop two-pane selection AND the job opened on mobile share this id.
     const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
     // null = mobile home list; an id = focused mobile job screen.
@@ -59,10 +63,32 @@ export function TechnicianView({ user }: TechnicianViewProps) {
             const response = await api.get("/jobs/assigned/me");
             return (response.data?.data?.jobs ?? []) as TechnicianJob[];
         },
-        refetchInterval: 30_000,
+        // Poll every 30s, but only while the tab is visible and the device is
+        // online — background polling burns the tech's data, and polling offline
+        // just throws and would hide the cached list.
+        refetchInterval: () => (onlineManager.isOnline() ? 30_000 : false),
+        refetchIntervalInBackground: false,
     });
 
     const assignedJobs = useMemo(() => assignedJobsQuery.data ?? [], [assignedJobsQuery.data]);
+
+    // Prefetch today's + overdue jobs' forms so the CoC/forms card works offline.
+    // Once per session per job set (prefetchFormsForJobs is a no-op for cached ids).
+    const prefetchedFormsKey = useRef<string | null>(null);
+    useEffect(() => {
+        if (!assignedJobs.length) return;
+        const ids = assignedJobs
+            .filter((job) => {
+                const group = getJobTimeGroup(job);
+                return group === "today" || group === "overdue";
+            })
+            .map((job) => job.id);
+        if (ids.length === 0) return;
+        const key = [...ids].sort().join("|");
+        if (prefetchedFormsKey.current === key) return;
+        prefetchedFormsKey.current = key;
+        void prefetchFormsForJobs(queryClient, ids);
+    }, [assignedJobs, queryClient]);
 
     useEffect(() => {
         if (!selectedJobId && assignedJobs.length > 0) {
@@ -112,6 +138,8 @@ export function TechnicianView({ user }: TechnicianViewProps) {
             assignedJobs.find((job) => job.status === "ON_SITE") ??
             assignedJobs.find((job) => job.status === "EN_ROUTE") ??
             assignedJobs.find((job) => job.status === "ASSIGNED") ??
+            // Prefer any still-open job over a completed one for the "Up next" hero.
+            assignedJobs.find((job) => job.status !== "COMPLETED" && job.status !== "CANCELED") ??
             assignedJobs[0] ??
             null
         );
@@ -126,7 +154,10 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         return <div className="rounded-2xl border border-border bg-card p-6">Loading field workflow...</div>;
     }
 
-    if (assignedJobsQuery.isError) {
+    // Only hard-fail when there's nothing cached to show. A failed background poll
+    // with jobs already in the cache must not blank the screen — we keep the saved
+    // list and surface a quiet "couldn't refresh" line instead (see below).
+    if (assignedJobsQuery.isError && assignedJobs.length === 0) {
         return (
             <div className="rounded-2xl border border-rose-200 bg-rose-50 p-6 text-rose-700">
                 We couldn&apos;t load the assigned jobs for this technician.
@@ -170,13 +201,25 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         const checklistRequired = job.checklist.length;
         const canComplete = jobCanComplete(job);
         const nextStatus = JOB_STATUS_FLOW[job.status] ?? null;
-        const mapsHref = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(getAddress(job))}`;
+        // Directions (not a search) to the property's coordinates when geocoded —
+        // rural plots/farms don't resolve from the address text alone.
+        const mapsHref = googleMapsLink({
+            lat: job.property.geoLat,
+            lng: job.property.geoLng,
+            address: getAddress(job),
+        });
         return { checklistCompleted, checklistRequired, canComplete, nextStatus, mapsHref };
     };
 
     const activeDetail = detailFor(activeJob);
     const activeMapsHref = activeDetail.mapsHref;
     const activePhoneHref = activeJob.customer.phone ? `tel:${activeJob.customer.phone}` : null;
+
+    // A poll failed but we still have cached jobs — show them, with a quiet note.
+    const staleRefresh = assignedJobsQuery.isError && assignedJobs.length > 0;
+    const staleBanner = staleRefresh ? (
+        <p className="px-1 text-xs text-muted-foreground">Couldn&apos;t refresh — showing saved jobs</p>
+    ) : null;
 
     return (
         <>
@@ -204,6 +247,7 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                     />
                 ) : (
                     <PullToRefresh onRefresh={() => assignedJobsQuery.refetch()}>
+                        {staleBanner}
                         <TechnicianHome
                             name={techName}
                             jobs={assignedJobs}
@@ -222,6 +266,8 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                     <h2 className="text-2xl font-bold tracking-tight">Field console</h2>
                     <span className="text-sm text-muted-foreground">{displayName(user, user.email)}</span>
                 </div>
+
+                {staleBanner}
 
                 <OverviewCards
                     nextJob={nextJob}

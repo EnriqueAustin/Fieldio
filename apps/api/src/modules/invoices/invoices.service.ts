@@ -4,24 +4,72 @@ import { StatusCodes } from 'http-status-codes';
 import { notificationService } from '../../services/notifications/notification.service';
 import { normalizeCompanySettings } from '../company/company-settings';
 
+/** Round a money amount to whole cents (no 30-decimal Decimal drift). */
+export const round2 = (n: number) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+/** True when the supplier has a VAT number (and therefore charges VAT). */
+export const supplierChargesVat = (taxNumber: string | null | undefined) =>
+    !!(taxNumber && String(taxNumber).trim());
+
+/**
+ * Document heading rule: a supplier with no VAT number may not issue a "Tax
+ * Invoice" — the document is a plain "Invoice" and shows no VAT number. When a
+ * VAT number is present we use the company's configured heading (default
+ * "Tax Invoice"). Shared by the detail endpoint and the PDF.
+ */
+export const resolveInvoiceHeading = (
+    taxNumber: string | null | undefined,
+    configuredHeading?: string | null
+) => (supplierChargesVat(taxNumber) ? configuredHeading || 'Tax Invoice' : 'Invoice');
+
+/** Joins a property's address parts into a single line for the buyer snapshot. */
+const propertyAddressLine = (property: any): string | null => {
+    if (!property) return null;
+    const line = [
+        property.addressLine1,
+        property.addressLine2,
+        property.city,
+        property.state,
+        property.zip,
+    ]
+        .filter((p) => p && String(p).trim())
+        .join(', ');
+    return line || null;
+};
+
 export const invoiceService = {
     createFromJob: async (jobId: string, companyId: string) => {
         return prisma.$transaction(async (tx) => {
             const job = await tx.job.findFirst({
                 where: { id: jobId, companyId, deletedAt: null },
-                include: { lineItems: true, invoice: true, customer: true, company: true },
+                include: { lineItems: true, invoice: true, customer: true, company: true, property: true },
             });
 
             if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
             if (job.invoice) throw new AppError('Job already invoiced', StatusCodes.BAD_REQUEST);
 
-            const subtotal = job.lineItems.reduce((acc, item) => acc + Number(item.total), 0);
             const settings = normalizeCompanySettings(job.company.settings);
-            const taxRate = settings.billing.taxRate / 100;
-            const tax = subtotal * taxRate;
-            const total = subtotal + tax;
-            const invoiceCount = await tx.invoice.count({ where: { companyId } });
-            const invoiceNumber = `${settings.billing.eftDetails.referencePrefix || 'INV'}-${String(invoiceCount + 1).padStart(5, '0')}`;
+            // A supplier with no VAT number charges no VAT at all (rate 0, tax 0).
+            const chargesVat = supplierChargesVat(settings.billing.taxNumber);
+            const rate = chargesVat ? settings.billing.taxRate : 0;
+
+            const subtotal = round2(job.lineItems.reduce((acc, item) => acc + Number(item.total), 0));
+            const tax = round2((subtotal * rate) / 100);
+            const total = round2(subtotal + tax);
+
+            // Atomic, gap-free sequential numbering: bump the company counter inside
+            // the same transaction so concurrent invoices never collide or reuse a number.
+            const counter = await tx.company.update({
+                where: { id: companyId },
+                data: { invoiceSequence: { increment: 1 } },
+                select: { invoiceSequence: true },
+            });
+            const prefix = (settings.billing as any).invoicePrefix || 'INV';
+            const invoiceNumber = `${prefix}-${String(counter.invoiceSequence).padStart(5, '0')}`;
+
+            // Buyer snapshot frozen at issue time (customer may later change details).
+            const customerAddress =
+                job.customer?.billingAddress || propertyAddressLine(job.property) || null;
 
             const invoice = await tx.invoice.create({
                 data: {
@@ -35,10 +83,13 @@ export const invoiceService = {
                     total,
                     balance: total,
                     taxLabel: settings.billing.taxLabel,
-                    taxRate: settings.billing.taxRate,
+                    taxRate: rate,
                     taxNumber: settings.billing.taxNumber || null,
                     supplierName: job.company.name,
                     supplierCompanyRegistration: settings.billing.companyRegistrationNumber || null,
+                    customerName: job.customer?.name || null,
+                    customerVatNumber: job.customer?.vatNumber || null,
+                    customerAddress,
                     paymentReference: invoiceNumber,
                     status: 'DRAFT',
                     dueDate: new Date(Date.now() + settings.billing.paymentTermsDays * 24 * 60 * 60 * 1000),
@@ -171,6 +222,7 @@ export const invoiceService = {
         const invoice = await prisma.invoice.findFirst({
             where: { id, companyId, deletedAt: null },
             include: {
+                company: { select: { settings: true } },
                 job: {
                     include: {
                         customer: true,
@@ -182,7 +234,101 @@ export const invoiceService = {
             },
         });
         if (!invoice) throw new AppError('Invoice not found', StatusCodes.NOT_FOUND);
-        return invoice;
+
+        const settings = normalizeCompanySettings((invoice as any).company?.settings);
+        const heading = resolveInvoiceHeading(invoice.taxNumber, settings.billing.invoiceHeading);
+        const items = Array.isArray(invoice.items) ? (invoice.items as any[]) : [];
+        const payments = (((invoice as any).payments ?? []) as any[]).map((p) => ({
+            id: p.id,
+            amount: Number(p.amount ?? 0),
+            method: p.method as string,
+            status: p.status as string,
+            createdAt: p.createdAt ?? null,
+            reference: (p.metadata as any)?.reference ?? null,
+            note: (p.metadata as any)?.note ?? null,
+            overpayment: Number((p.metadata as any)?.overpayment ?? 0),
+        }));
+
+        // Office-only detail payload: everything a detail page needs, incl. the
+        // buyer snapshot, heading and whether a public pay link exists.
+        return {
+            id: invoice.id,
+            invoiceNumber: invoice.invoiceNumber,
+            status: invoice.status,
+            heading,
+            jobId: invoice.jobId,
+            projectId: invoice.projectId,
+            items: items.map((line) => ({
+                name: String(line?.name ?? ''),
+                description: line?.description ?? null,
+                quantity: Number(line?.quantity ?? 0),
+                unitPrice: Number(line?.unitPrice ?? 0),
+                total: Number(line?.total ?? 0),
+            })),
+            subtotal: Number(invoice.subtotal ?? 0),
+            tax: Number(invoice.tax ?? 0),
+            total: Number(invoice.total ?? 0),
+            balance: Number(invoice.balance ?? 0),
+            taxLabel: invoice.taxLabel,
+            taxRate: Number(invoice.taxRate ?? 0),
+            // Supplier snapshot.
+            supplierName: invoice.supplierName ?? null,
+            supplierCompanyRegistration: invoice.supplierCompanyRegistration ?? null,
+            taxNumber: invoice.taxNumber ?? null,
+            // Buyer snapshot.
+            customerName: invoice.customerName ?? null,
+            customerVatNumber: invoice.customerVatNumber ?? null,
+            customerAddress: invoice.customerAddress ?? null,
+            paymentReference: invoice.paymentReference ?? null,
+            dueDate: invoice.dueDate ?? null,
+            paidAt: invoice.paidAt ?? null,
+            voidedAt: invoice.voidedAt ?? null,
+            voidReason: invoice.voidReason ?? null,
+            createdAt: invoice.createdAt ?? null,
+            payments,
+            job: { id: (invoice as any).job?.id ?? invoice.jobId, title: (invoice as any).job?.title ?? null },
+            customer: {
+                id: (invoice as any).job?.customer?.id ?? null,
+                name: (invoice as any).job?.customer?.name ?? invoice.customerName ?? null,
+            },
+            payLink: { hasToken: !!(invoice as any).publicToken },
+        };
+    },
+
+    /**
+     * Void an invoice. The number is kept (never reused) and the record stays on
+     * file. Refused when a SUCCEEDED payment exists (refund or credit first) or
+     * the invoice is already void. Clears the public token so the pay link dies.
+     */
+    void: async (id: string, companyId: string, reason: string) => {
+        return prisma.$transaction(async (tx) => {
+            const invoice = await tx.invoice.findFirst({ where: { id, companyId, deletedAt: null } });
+            if (!invoice) throw new AppError('Invoice not found', StatusCodes.NOT_FOUND);
+            if (invoice.status === 'VOID') {
+                throw new AppError('Invoice is already void', StatusCodes.BAD_REQUEST);
+            }
+            const settled = await tx.payment.findFirst({
+                where: { invoiceId: invoice.id, companyId, status: 'SUCCEEDED' },
+            });
+            if (settled) {
+                throw new AppError(
+                    'This invoice has a recorded payment — refund or credit it first',
+                    StatusCodes.BAD_REQUEST
+                );
+            }
+
+            return tx.invoice.update({
+                where: { id: invoice.id },
+                data: {
+                    status: 'VOID',
+                    voidedAt: new Date(),
+                    voidReason: reason,
+                    balance: 0,
+                    // Kill the pay link: a voided invoice must not be payable.
+                    publicToken: null,
+                },
+            });
+        });
     },
 
     getAll: async (companyId: string, page = 1, limit = 20, status?: string) => {

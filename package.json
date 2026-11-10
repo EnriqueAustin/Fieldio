@@ -17,6 +17,7 @@
     "db:generate": "turbo run db:generate",
     "db:push": "turbo run db:push",
     "db:migrate": "npm run db:migrate --workspace=@fieldio/database",
+    "db:deploy": "npm run db:deploy --workspace=@fieldio/database",
     "db:seed": "npm run db:seed --workspace=@fieldio/database",
     "setup": "npm install && npm run db:migrate && npm run db:seed",
     "test": "turbo run test"

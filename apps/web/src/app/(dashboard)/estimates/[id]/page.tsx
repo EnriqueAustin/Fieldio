@@ -39,6 +39,10 @@ interface LineItem {
 interface Estimate {
     id: string;
     status: string;
+    subtotal: string | null;
+    tax: string | null;
+    taxRate: string | null;
+    taxLabel: string | null;
     total: string;
     items: LineItem[] | null;
     validUntil: string | null;
@@ -140,6 +144,15 @@ export default function EstimateDetailPage() {
     const items = Array.isArray(data.items) ? data.items : [];
     const isTerminal = data.status === "APPROVED" || data.status === "DECLINED";
 
+    // Legacy quotes (created before VAT was tracked) have no subtotal — show the
+    // stored total as-is. Otherwise show the Subtotal / VAT / Total breakdown.
+    const isLegacy = data.subtotal == null;
+    const subtotal = Number(data.subtotal ?? data.total);
+    const tax = Number(data.tax ?? 0);
+    const taxRate = Number(data.taxRate ?? 0);
+    const taxLabel = data.taxLabel ?? "VAT";
+    const vatRegistered = !isLegacy && taxRate > 0;
+
     return (
         <div className="space-y-6">
             <Link
@@ -204,8 +217,11 @@ export default function EstimateDetailPage() {
 
             <div className="grid gap-4 md:grid-cols-3">
                 <div className="surface-card p-4">
-                    <div className="text-xs text-muted-foreground">Total</div>
+                    <div className="text-xs text-muted-foreground">Total{vatRegistered ? " (incl. VAT)" : ""}</div>
                     <div className="text-2xl font-bold mt-0.5">{formatCurrency(Number(data.total))}</div>
+                    {isLegacy && (
+                        <div className="text-[11px] text-muted-foreground mt-0.5">VAT not itemised</div>
+                    )}
                 </div>
                 <div className="surface-card p-4">
                     <div className="text-xs text-muted-foreground">Created</div>
@@ -233,16 +249,41 @@ export default function EstimateDetailPage() {
                 {items.length === 0 ? (
                     <div className="px-5 py-6 text-sm text-muted-foreground">No line items.</div>
                 ) : (
-                    <div className="divide-y divide-border/60">
-                        {items.map((item, i) => (
-                            <div key={i} className="flex items-center justify-between px-5 py-3 text-sm">
-                                <span className="truncate">
-                                    {item.name} <span className="text-muted-foreground">× {item.quantity}</span>
-                                </span>
-                                <span className="font-medium">{formatCurrency(Number(item.total))}</span>
+                    <>
+                        <div className="divide-y divide-border/60">
+                            {items.map((item, i) => (
+                                <div key={i} className="flex items-center justify-between px-5 py-3 text-sm">
+                                    <span className="truncate">
+                                        {item.name} <span className="text-muted-foreground">× {item.quantity}</span>
+                                    </span>
+                                    <span className="font-medium">{formatCurrency(Number(item.total))}</span>
+                                </div>
+                            ))}
+                        </div>
+                        {isLegacy ? (
+                            <div className="px-5 py-3 border-t border-border/60 bg-slate-50/70 flex items-center justify-between text-sm">
+                                <span className="text-muted-foreground">Total</span>
+                                <span className="font-semibold">{formatCurrency(Number(data.total))}</span>
                             </div>
-                        ))}
-                    </div>
+                        ) : (
+                            <div className="px-5 py-3 border-t border-border/60 bg-slate-50/70 space-y-1 text-sm">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-muted-foreground">Subtotal (excl. VAT)</span>
+                                    <span className="font-medium tabular-nums">{formatCurrency(subtotal)}</span>
+                                </div>
+                                {vatRegistered && (
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-muted-foreground">{taxLabel} @ {taxRate}%</span>
+                                        <span className="font-medium tabular-nums">{formatCurrency(tax)}</span>
+                                    </div>
+                                )}
+                                <div className="flex items-center justify-between border-t border-border/60 pt-1">
+                                    <span className="font-medium">Total{vatRegistered ? " (incl. VAT)" : ""}</span>
+                                    <span className="font-bold tabular-nums">{formatCurrency(Number(data.total))}</span>
+                                </div>
+                            </div>
+                        )}
+                    </>
                 )}
             </div>
 

@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { messagingService } from './messaging.service';
+import { resolveCompanyForInboundNumber } from './twilio-webhook';
+import { logger } from '../../utils/logger';
 
 export const messagingController = {
     listThreads: async (req: Request, res: Response) => {
@@ -21,10 +23,12 @@ export const messagingController = {
         await messagingService.setStatus(req.params.id, req.user!.companyId, req.body.status);
         res.status(StatusCodes.OK).json({ status: 'success' });
     },
-    // Public Twilio inbound webhook. companyId resolved via the To: number setting.
+    // Public Twilio inbound webhook (signature checked by verifyTwilioSignature).
+    // The company comes from who owns the To: number — never from the request.
     twilioInbound: async (req: Request, res: Response) => {
-        const companyId = (req.query.companyId as string) || req.body.companyId;
+        const companyId = await resolveCompanyForInboundNumber(req.body?.To);
         if (!companyId) {
+            logger.warn('Inbound message dropped: no company owns the To number');
             res.status(StatusCodes.OK).type('text/xml').send('<Response/>');
             return;
         }

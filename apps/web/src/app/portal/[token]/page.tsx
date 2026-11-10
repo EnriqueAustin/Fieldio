@@ -3,9 +3,11 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { FileText, Briefcase, Clock, CheckCircle2, XCircle, AlertCircle, CreditCard } from "lucide-react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+import { FileText, Briefcase, Clock, CheckCircle2, XCircle, AlertCircle, CreditCard, CalendarClock, Wallet } from "lucide-react";
+import { API_BASE, rand, telHref } from "./portal-shared";
+import { FinancingSheet, FinancingStatusNote, lowestMonthly } from "./financing-sheet";
+import type { FinancingApplicationSummary, FinancingOffer } from "./financing-sheet";
+import { RescheduleSheet, formatWindow } from "./reschedule-sheet";
 
 /** Lightweight finger/mouse signature pad for the public portal (no app deps). */
 function PortalSignaturePad({ onChange }: { onChange: (value: string | null) => void }) {
@@ -88,14 +90,21 @@ function PortalSignaturePad({ onChange }: { onChange: (value: string | null) => 
 }
 
 interface PortalData {
+    company?: { name: string | null; phone: string | null };
     customer: { id: string; name: string; email: string | null; phone: string | null };
     jobs: Array<{
         id: string; title: string; status: string; priority: string;
-        scheduledStart: string | null; actualEnd: string | null; createdAt: string;
+        scheduledStart: string | null; scheduledEnd?: string | null; canReschedule?: boolean; actualEnd: string | null; createdAt: string;
         property: { addressLine1: string; city: string };
         tech: { firstName: string | null; lastName: string | null } | null;
     }>;
-    estimates: Array<{ id: string; status: string; total: string; validUntil: string | null; createdAt: string }>;
+    estimates: Array<{
+        id: string; status: string;
+        subtotal: string | null; tax: string | null; taxRate: string | null; taxLabel: string | null;
+        total: string; validUntil: string | null; createdAt: string;
+        financingOffers?: FinancingOffer[];
+        financingApplication?: FinancingApplicationSummary | null;
+    }>;
     invoices: Array<{
         id: string; invoiceNumber: string | null; status: string;
         total: string; balance: string; dueDate: string | null; paidAt: string | null; publicToken: string | null;
@@ -137,6 +146,10 @@ export default function CustomerPortalPage() {
     const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null);
     const [submitting, setSubmitting] = useState(false);
     const [actionError, setActionError] = useState<string | null>(null);
+
+    // Self-service sheets
+    const [financingId, setFinancingId] = useState<string | null>(null);
+    const [rescheduleId, setRescheduleId] = useState<string | null>(null);
 
     const load = useCallback(() => {
         fetch(`${API_BASE}/public/portal/${token}`)
@@ -200,11 +213,21 @@ export default function CustomerPortalPage() {
         </div>
     );
 
+    const companyName = data.company?.name ?? null;
+    const companyPhone = data.company?.phone ?? null;
+    const financingEstimate = financingId ? data.estimates.find(e => e.id === financingId) : undefined;
+    const rescheduleJob = rescheduleId ? data.jobs.find(j => j.id === rescheduleId) : undefined;
+
     return (
         <div className="min-h-screen bg-slate-50">
             <header className="bg-white border-b border-border">
                 <div className="max-w-4xl mx-auto px-4 py-6">
-                    <p className="text-xs text-muted-foreground uppercase tracking-wider">Customer Portal</p>
+                    <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs text-muted-foreground uppercase tracking-wider">{companyName ? `${companyName} · Customer Portal` : "Customer Portal"}</p>
+                        {companyPhone && (
+                            <a href={telHref(companyPhone)} className="text-xs font-medium text-emerald-700 hover:underline">{companyPhone}</a>
+                        )}
+                    </div>
                     <h1 className="text-2xl font-semibold mt-1">Welcome, {data.customer.name}</h1>
                 </div>
             </header>
@@ -256,7 +279,20 @@ export default function CustomerPortalPage() {
                                         {statusIcon[j.status]}{j.status.replace("_", " ")}
                                     </span>
                                 </div>
-                                {j.scheduledStart && <p className="text-xs text-muted-foreground mt-2">Scheduled: {new Date(j.scheduledStart).toLocaleDateString()}</p>}
+                                {j.scheduledStart && (
+                                    <p className="text-sm text-slate-700 mt-3 flex items-center gap-1.5">
+                                        <CalendarClock className="h-4 w-4 text-slate-400" />
+                                        {formatWindow(j.scheduledStart, j.scheduledEnd ?? null)}
+                                    </p>
+                                )}
+                                {j.canReschedule && (
+                                    <button
+                                        onClick={() => setRescheduleId(j.id)}
+                                        className="mt-3 w-full sm:w-auto inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition"
+                                    >
+                                        <CalendarClock className="h-4 w-4" /> Reschedule
+                                    </button>
+                                )}
                             </div>
                         ))}
                         {data.jobs.length === 0 && <p className="text-center py-12 text-sm text-muted-foreground">No jobs found</p>}
@@ -291,7 +327,32 @@ export default function CustomerPortalPage() {
                                 <div className="flex justify-between items-start gap-3">
                                     <div>
                                         <p className="font-medium">Estimate #{est.id.slice(0, 8)}</p>
-                                        <p className="text-sm text-muted-foreground">Total: R {Number(est.total).toFixed(2)}</p>
+                                        {est.subtotal == null ? (
+                                            <>
+                                                <p className="text-sm text-muted-foreground">Total: R {Number(est.total).toFixed(2)}</p>
+                                                <p className="text-[11px] text-muted-foreground">VAT not itemised</p>
+                                            </>
+                                        ) : (
+                                            <div className="mt-1 space-y-0.5 text-sm">
+                                                <div className="flex items-center gap-4 text-muted-foreground">
+                                                    <span>Subtotal (excl. VAT)</span>
+                                                    <span className="tabular-nums">R {Number(est.subtotal).toFixed(2)}</span>
+                                                </div>
+                                                {Number(est.taxRate ?? 0) > 0 && (
+                                                    <div className="flex items-center gap-4 text-muted-foreground">
+                                                        <span>{est.taxLabel ?? "VAT"} @ {Number(est.taxRate)}%</span>
+                                                        <span className="tabular-nums">R {Number(est.tax ?? 0).toFixed(2)}</span>
+                                                    </div>
+                                                )}
+                                                <div className="flex items-center gap-4 font-medium text-slate-900">
+                                                    <span>Total{Number(est.taxRate ?? 0) > 0 ? " (incl. VAT)" : ""}</span>
+                                                    <span className="tabular-nums">R {Number(est.total).toFixed(2)}</span>
+                                                </div>
+                                            </div>
+                                        )}
+                                        {est.status === "SENT" && !!est.financingOffers?.length && (
+                                            <p className="text-sm font-medium text-emerald-700">or from {rand(lowestMonthly(est.financingOffers))}/month</p>
+                                        )}
                                         {est.validUntil && <p className="text-xs text-muted-foreground">Valid until: {new Date(est.validUntil).toLocaleDateString()}</p>}
                                     </div>
                                     <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium ${statusColors[est.status] || ""}`}>{est.status}</span>
@@ -312,6 +373,16 @@ export default function CustomerPortalPage() {
                                         </button>
                                     </div>
                                 )}
+                                {est.financingApplication ? (
+                                    <div className="mt-3"><FinancingStatusNote application={est.financingApplication} companyName={companyName} /></div>
+                                ) : est.status === "SENT" && !!est.financingOffers?.length && (
+                                    <button
+                                        onClick={() => setFinancingId(est.id)}
+                                        className="mt-2 w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-800 hover:bg-emerald-100 transition"
+                                    >
+                                        <Wallet className="h-4 w-4" /> Pay monthly
+                                    </button>
+                                )}
                                 {est.status === "APPROVED" && (
                                     <p className="mt-3 text-xs text-emerald-700 flex items-center gap-1.5">
                                         <CheckCircle2 className="h-3.5 w-3.5" /> You approved this quote. The team will be in touch.
@@ -323,6 +394,28 @@ export default function CustomerPortalPage() {
                     </div>
                 )}
             </div>
+
+            {financingEstimate && (
+                <FinancingSheet
+                    token={token}
+                    estimateId={financingEstimate.id}
+                    total={Number(financingEstimate.total)}
+                    offers={financingEstimate.financingOffers ?? []}
+                    companyPhone={companyPhone}
+                    onClose={() => setFinancingId(null)}
+                    onDone={() => { setFinancingId(null); load(); }}
+                />
+            )}
+
+            {rescheduleJob && (
+                <RescheduleSheet
+                    token={token}
+                    job={{ id: rescheduleJob.id, title: rescheduleJob.title, scheduledStart: rescheduleJob.scheduledStart, scheduledEnd: rescheduleJob.scheduledEnd ?? null }}
+                    companyPhone={companyPhone}
+                    onClose={() => setRescheduleId(null)}
+                    onDone={load}
+                />
+            )}
 
             {approvingId && (
                 <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-4" onClick={closeApproval}>

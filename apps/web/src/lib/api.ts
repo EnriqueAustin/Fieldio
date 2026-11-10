@@ -4,6 +4,11 @@ import { useAuthStore } from '../store/auth';
 const api = axios.create({
     baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001',
     withCredentials: true, // Important for HttpOnly cookies
+    // Fail fast on patchy signal instead of hanging a request forever (which
+    // would leave the tech staring at a spinner). Long uploads (photos,
+    // receipts) can opt out per-request with e.g. `api.post(url, body,
+    // { timeout: 0 })` or a larger value.
+    timeout: 20000,
 });
 
 // One refresh in flight at a time. Every 401'd request and the app bootstrap
@@ -32,8 +37,23 @@ export function ensureFreshSession(staleToken?: string | null): Promise<string |
                 useAuthStore.getState().hydrateSession(user, accessToken);
                 return accessToken as string;
             })
-            .catch(() => {
-                useAuthStore.getState().logout();
+            .catch((error) => {
+                const status = error?.response?.status;
+                // Only a definitive rejection from the auth server ends the
+                // session. A tech opening the app with no signal must NOT be
+                // logged out — that would wipe the cached jobs and the offline
+                // mutation queue before they ever load.
+                if (status === 401 || status === 403) {
+                    useAuthStore.getState().logout();
+                    return null;
+                }
+                // Network error / timeout / 5xx: we never learned the session is
+                // invalid. Keep the persisted user and fall back to the on-device
+                // cache; we retry refresh on the next 'online' event (wired in
+                // providers) or the next request that 401s.
+                if (useAuthStore.getState().user) {
+                    useAuthStore.getState().markSessionUnverified();
+                }
                 return null;
             })
             .finally(() => {
@@ -61,6 +81,7 @@ api.interceptors.response.use(
 
         if (
             error.response?.status === 401 &&
+            originalRequest &&
             !originalRequest._retry &&
             !String(originalRequest?.url || '').includes('/auth/refresh')
         ) {
@@ -68,23 +89,23 @@ api.interceptors.response.use(
 
             const usedToken = String(originalRequest?.headers?.Authorization || '').replace('Bearer ', '') || null;
 
-            try {
-                const nextToken = await ensureFreshSession(usedToken);
-                if (!nextToken) {
-                    if (typeof window !== 'undefined') {
-                        window.location.href = '/login';
-                    }
-                    return Promise.reject(error);
-                }
-                originalRequest.headers.Authorization = `Bearer ${nextToken}`;
-                return api(originalRequest);
-            } catch (refreshError) {
-                if (typeof window !== 'undefined') {
-                    useAuthStore.getState().logout();
+            // ensureFreshSession never throws — it resolves to a token, or null.
+            // On null it has already decided whether this was a real logout
+            // (401/403 → user cleared) or a transient failure (user kept).
+            const nextToken = await ensureFreshSession(usedToken);
+            if (!nextToken) {
+                // Only bounce to /login when the session was actually revoked.
+                // If the refresh failed for a network reason the user is still
+                // present (session 'unverified'); leave them on their cached view
+                // and let react-query surface the error — do NOT redirect (that
+                // would throw away the offline session) and do NOT loop.
+                if (typeof window !== 'undefined' && !useAuthStore.getState().user) {
                     window.location.href = '/login';
                 }
-                return Promise.reject(refreshError);
+                return Promise.reject(error);
             }
+            originalRequest.headers.Authorization = `Bearer ${nextToken}`;
+            return api(originalRequest);
         }
 
         if (error.response?.status === 403) {

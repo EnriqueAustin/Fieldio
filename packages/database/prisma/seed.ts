@@ -2,6 +2,10 @@
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
+import { assertSafeToSeed } from './seed-guard';
+
+// Wipes every table — never against production or a remote DB by accident.
+assertSafeToSeed('prisma/seed.ts');
 
 const prisma = new PrismaClient();
 

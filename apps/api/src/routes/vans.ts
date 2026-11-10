@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { vansController } from '../modules/vans/vans.controller';
 import { vanServiceService } from '../modules/vans/van-service.service';
 import { requireUser, restrictTo } from '../middleware/auth';
+import { idempotency } from '../middleware/idempotency';
 import { catchAsync } from '../utils/catchAsync';
 import { StatusCodes } from 'http-status-codes';
 
@@ -18,7 +19,8 @@ vanRouter.post('/:id/members', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catc
 vanRouter.delete('/:id/members/:userId', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(vansController.removeMember));
 vanRouter.get('/:id/inventory', catchAsync(vansController.getVanInventory));
 vanRouter.post('/:id/inventory/:itemId/request-restock', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'TECHNICIAN'), catchAsync(vansController.requestRestock));
-vanRouter.post('/:id/inventory/:itemId/use', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'TECHNICIAN'), catchAsync(vansController.useStock));
+// Van stock usage is a field write — offline-queued, so it carries an Idempotency-Key.
+vanRouter.post('/:id/inventory/:itemId/use', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'TECHNICIAN'), idempotency, catchAsync(vansController.useStock));
 vanRouter.get('/:id/stock-usage', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(vansController.getStockUsage));
 
 vanRouter.get('/:id/service-logs', catchAsync(async (req: Request, res: Response) => {

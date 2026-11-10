@@ -1,11 +1,8 @@
 import { prisma } from '@fieldio/database';
+import { getCompanyTimezone, startOfDayInTimeZone } from '../../utils/timezone';
 
-const startOf = (offsetDays = 0) => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() - offsetDays);
-    return d;
-};
+// Midnight `offsetDays` ago in the company's zone (not the server's).
+const startOf = (tz: string, offsetDays = 0) => startOfDayInTimeZone(new Date(), tz, -offsetDays);
 
 export const kpiService = {
     /** Owner-view KPI snapshot. Accepts either a `days` preset or an explicit from/to range. */
@@ -16,7 +13,7 @@ export const kpiService = {
         const cfg = typeof opts === 'number' ? { days: opts } : opts;
         const days = cfg.days ?? 30;
         const to = cfg.to ?? new Date();
-        const since = cfg.from ?? startOf(days);
+        const since = cfg.from ?? startOf(await getCompanyTimezone(companyId), days);
         // Equal-length immediately-preceding window for vs-previous comparisons.
         const spanMs = Math.max(to.getTime() - since.getTime(), 86_400_000);
         const prevSince = new Date(since.getTime() - spanMs);

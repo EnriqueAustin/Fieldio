@@ -1,6 +1,7 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import { paymentsController } from '../modules/payments/payments.controller';
 import { paymentsService } from '../modules/payments/payments.service';
+import { invoiceController } from '../modules/invoices/invoices.controller';
 import { requireUser, restrictTo } from '../middleware/auth';
 import { catchAsync } from '../utils/catchAsync';
 import { logger } from '../utils/logger';
@@ -10,6 +11,8 @@ import { logger } from '../utils/logger';
  */
 export const publicPaymentsRouter = Router();
 publicPaymentsRouter.get('/invoices/:token', catchAsync(paymentsController.getPublicInvoice));
+// Public tax invoice PDF for the customer pay page (404 for unknown/soft-deleted).
+publicPaymentsRouter.get('/invoices/:token/pdf', catchAsync(invoiceController.publicPdf));
 publicPaymentsRouter.post(
     '/invoices/:token/checkout',
     catchAsync(paymentsController.createCheckoutSession)
@@ -18,8 +21,10 @@ publicPaymentsRouter.post(
     '/invoices/:token/payfast',
     catchAsync(paymentsController.createPayFastCheckout)
 );
+// PayFast posts form-urlencoded; parse here so the route doesn't depend on app-level parsers.
 publicPaymentsRouter.post(
     '/payfast/notify',
+    express.urlencoded({ extended: false, limit: '32kb' }),
     catchAsync(paymentsController.handlePayFastITN)
 );
 

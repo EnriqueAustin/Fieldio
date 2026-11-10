@@ -1,13 +1,16 @@
 import { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { companyService } from './company.service';
+import { companyService, companyViewForRole } from './company.service';
 import { storageService, isStorageConfigured } from '../../services/storage.service';
 import { AppError } from '../../middleware/error';
 
 export const companyController = {
     getMe: async (req: Request, res: Response) => {
         const company = await companyService.getOne(req.user!.companyId);
-        res.status(StatusCodes.OK).json({ status: 'success', data: { company } });
+        res.status(StatusCodes.OK).json({
+            status: 'success',
+            data: { company: company ? companyViewForRole(company, req.user!.role) : null },
+        });
     },
 
     updateMe: async (req: Request, res: Response) => {

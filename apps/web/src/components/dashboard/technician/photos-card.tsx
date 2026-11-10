@@ -2,7 +2,7 @@
 
 import { useRef } from "react";
 import { format } from "date-fns";
-import { Camera, ImagePlus } from "lucide-react";
+import { Camera, ImagePlus, UploadCloud } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../../ui/card";
 import { Input } from "../../ui/input";
 import type { useJobPhotos } from "./use-photos";
@@ -19,7 +19,13 @@ interface PhotosCardProps {
 export function PhotosCard({ job, photos }: PhotosCardProps) {
     const cameraRef = useRef<HTMLInputElement | null>(null);
     const galleryRef = useRef<HTMLInputElement | null>(null);
-    const { photoCaption, setPhotoCaption, queuePhotoUpload } = photos;
+    const { photoCaption, setPhotoCaption, queuePhotoUpload, queuedUploads } = photos;
+
+    // Photos captured but not yet uploaded (newest first) — shown in the grid
+    // with a badge so the tech can see the shot took even with no signal.
+    const queuedForJob = queuedUploads
+        .filter((upload) => upload.jobId === job.id)
+        .sort((a, b) => b.createdAt - a.createdAt);
 
     const queueFiles = (fileList: FileList | null) => {
         if (!fileList || fileList.length === 0) return;
@@ -91,12 +97,34 @@ export function PhotosCard({ job, photos }: PhotosCardProps) {
                     />
                 </div>
 
-                {job.photos.length === 0 ? (
+                {job.photos.length === 0 && queuedForJob.length === 0 ? (
                     <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
                         No photos yet. Tap “Take photo” to capture the job.
                     </div>
                 ) : (
                     <div className="grid grid-cols-3 gap-2">
+                        {queuedForJob.map((upload) => (
+                            <div
+                                key={upload.id}
+                                className="relative aspect-square overflow-hidden rounded-lg border bg-slate-100"
+                                title={upload.caption || "Waiting to upload"}
+                            >
+                                <img
+                                    src={upload.objectUrl}
+                                    alt={upload.caption || "Photo waiting to upload"}
+                                    className="h-full w-full object-cover opacity-80"
+                                />
+                                <span className="absolute left-1 top-1 inline-flex items-center gap-1 rounded-full bg-black/60 px-1.5 py-0.5 text-[9px] font-medium text-white">
+                                    <UploadCloud className="h-3 w-3" />
+                                    Waiting
+                                </span>
+                                {upload.caption && (
+                                    <span className="absolute inset-x-0 bottom-0 truncate bg-black/55 px-1.5 py-0.5 text-[10px] text-white">
+                                        {upload.caption}
+                                    </span>
+                                )}
+                            </div>
+                        ))}
                         {job.photos.map((photo) => (
                             <a
                                 key={photo.id}

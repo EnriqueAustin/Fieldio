@@ -7,7 +7,8 @@ import { catchAsync } from '../utils/catchAsync';
 export const statementsRouter = Router();
 statementsRouter.use(requireUser);
 
-statementsRouter.get('/', catchAsync(async (req: Request, res: Response) => {
+// Statements carry balances: never readable by technicians.
+statementsRouter.get('/', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES', 'ACCOUNTANT'), catchAsync(async (req: Request, res: Response) => {
     const statements = await statementsService.list(req.user!.companyId, req.query.customerId as string | undefined);
     res.status(StatusCodes.OK).json({ status: 'success', data: { statements } });
 }));

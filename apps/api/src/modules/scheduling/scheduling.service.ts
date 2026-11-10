@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { prisma } from '@fieldio/database';
+import { buildGoogleMapsRouteUrl, estimateLiveEta, planRoute, ROUTE_ESTIMATE } from './route-planner';
 import { AppError } from '../../middleware/error';
 import { StatusCodes } from 'http-status-codes';
 import { z } from 'zod';
@@ -292,12 +293,19 @@ export const schedulingService = {
         let lastPing: { lat: number; lng: number; createdAt: Date } | null = null;
         if (job.techId) {
             const p = await prisma.userLocationPing.findFirst({
-                where: { userId: job.techId },
+                where: { userId: job.techId, companyId: job.companyId },
                 orderBy: { createdAt: 'desc' },
                 select: { lat: true, lng: true, createdAt: true },
             });
             lastPing = p;
         }
+        // Straight-line estimate only while the tech is actually driving here and
+        // the ping is fresh; otherwise `basis: 'none'` and the page shows no ETA.
+        const eta = estimateLiveEta({
+            status: job.status,
+            ping: lastPing,
+            site: job.property ? { lat: job.property.geoLat, lng: job.property.geoLng } : null,
+        });
         return {
             job: {
                 id: job.id,
@@ -310,7 +318,118 @@ export const schedulingService = {
             customer: job.customer,
             property: job.property,
             company: job.company,
-            techLocation: lastPing,
+            // The tracker link outlives the visit; only reveal where the tech is
+            // while they are driving to this customer.
+            techLocation: job.status === 'EN_ROUTE' ? lastPing : null,
+            eta,
+        };
+    },
+
+    /**
+     * A technician's open jobs for one day in a suggested visiting order, with
+     * approximate per-leg distance/drive time and a Google Maps route link.
+     * Covers jobs assigned to the tech directly and to their active van crew.
+     * Never selects pricing.
+     */
+    /** Company-scoped user lookup so office roles can't read another company's tech. */
+    findCompanyUser: (companyId: string, userId: string) =>
+        prisma.user.findFirst({ where: { id: userId, companyId }, select: { id: true } }),
+
+    getDayRoute: async (companyId: string, techId: string, date: string, tzOffsetMin: number) => {
+        const [y, m, d] = date.split('-').map(Number);
+        const dayStart = new Date(Date.UTC(y, m - 1, d) - tzOffsetMin * 60_000);
+        const dayEnd = new Date(dayStart.getTime() + 24 * 3_600_000);
+
+        const vanMembership = await prisma.vanMember.findFirst({
+            where: { userId: techId, van: { companyId, active: true } },
+            select: { vanId: true },
+        });
+
+        const jobSelect = {
+            id: true,
+            title: true,
+            status: true,
+            priority: true,
+            scheduledStart: true,
+            scheduledEnd: true,
+            techId: true,
+            vanId: true,
+            customer: { select: { name: true } },
+            property: { select: { addressLine1: true, city: true, geoLat: true, geoLng: true } },
+        } as const;
+        const baseWhere = {
+            companyId,
+            deletedAt: null,
+            status: { notIn: ['COMPLETED', 'CANCELED'] as ('COMPLETED' | 'CANCELED')[] },
+            scheduledStart: { gte: dayStart, lt: dayEnd },
+        };
+        // Two plain queries rather than an OR so each assignment path is explicit.
+        const [own, crew] = await Promise.all([
+            prisma.job.findMany({ where: { ...baseWhere, techId }, select: jobSelect }),
+            vanMembership
+                ? prisma.job.findMany({ where: { ...baseWhere, vanId: vanMembership.vanId }, select: jobSelect })
+                : Promise.resolve([]),
+        ]);
+        const jobs = [...new Map([...own, ...crew].map((j) => [j.id, j])).values()];
+
+        const ping = await prisma.userLocationPing.findFirst({
+            where: { userId: techId, companyId, createdAt: { gte: dayStart, lt: dayEnd } },
+            orderBy: { createdAt: 'desc' },
+            select: { lat: true, lng: true, createdAt: true },
+        });
+        const origin = ping ? { lat: ping.lat, lng: ping.lng } : null;
+
+        const plan = planRoute(
+            jobs.map((j) => ({
+                id: j.id,
+                lat: j.property?.geoLat ?? null,
+                lng: j.property?.geoLng ?? null,
+                scheduledStart: j.scheduledStart,
+                scheduledEnd: j.scheduledEnd,
+                inProgress: j.status === 'EN_ROUTE' || j.status === 'ON_SITE',
+                job: j,
+            })),
+            origin,
+        );
+
+        const maps = buildGoogleMapsRouteUrl(
+            origin,
+            plan.stops.filter((s) => !s.noLocation).map((s) => ({ lat: s.stop.lat!, lng: s.stop.lng! })),
+        );
+
+        return {
+            date,
+            techId,
+            origin: ping ? { lat: ping.lat, lng: ping.lng, source: 'lastPing' as const, at: ping.createdAt } : null,
+            stops: plan.stops.map(({ stop, order, kind, noLocation, leg }) => ({
+                order,
+                jobId: stop.job.id,
+                title: stop.job.title,
+                status: stop.job.status,
+                priority: stop.job.priority,
+                customerName: stop.job.customer?.name ?? null,
+                address: [stop.job.property?.addressLine1, stop.job.property?.city].filter(Boolean).join(', '),
+                scheduledStart: stop.job.scheduledStart,
+                scheduledEnd: stop.job.scheduledEnd,
+                kind,
+                noLocation,
+                lat: stop.lat,
+                lng: stop.lng,
+                leg,
+            })),
+            totals: {
+                stops: plan.stops.length,
+                located: plan.stops.filter((s) => !s.noLocation).length,
+                distanceKm: plan.totalDistanceKm,
+                driveMinutes: plan.totalDriveMinutes,
+            },
+            mapsUrl: maps?.url ?? null,
+            mapsTruncated: maps?.truncated ?? false,
+            estimate: {
+                approximate: true,
+                avgSpeedKmh: ROUTE_ESTIMATE.AVG_SPEED_KMH,
+                legBufferMin: ROUTE_ESTIMATE.LEG_BUFFER_MIN,
+            },
         };
     },
 };

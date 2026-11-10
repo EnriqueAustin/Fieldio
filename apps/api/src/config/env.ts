@@ -3,10 +3,50 @@ import dotenv from 'dotenv';
 
 dotenv.config({ path: '../../.env' }); // Load from root
 
+export type TrustProxySetting = boolean | number | string;
+
+/**
+ * Parses TRUST_PROXY for `app.set('trust proxy', …)`.
+ * unset/""/"false"/"0" → false; "true" → 1 (one hop — never trust-all, which
+ * would let any client spoof X-Forwarded-For); "<n>" → n hops; anything else
+ * (e.g. "loopback", "10.0.0.0/8") is passed through to Express as-is.
+ * (z.coerce.boolean() used to turn the string "false" into true.)
+ */
+export const parseTrustProxy = (raw: unknown): TrustProxySetting => {
+    if (raw === undefined || raw === null) return false;
+    if (typeof raw === 'boolean') return raw ? 1 : false;
+    if (typeof raw === 'number') return raw > 0 ? raw : false;
+    const value = String(raw).trim();
+    const lower = value.toLowerCase();
+    if (lower === '' || lower === 'false' || lower === '0') return false;
+    if (lower === 'true') return 1;
+    if (/^\d+$/.test(value)) return Number(value);
+    return value;
+};
+
+const PLACEHOLDER_SECRET = /change|secret|example/i;
+
+/** Returns a startup error when production JWT secrets are placeholders, else null. */
+export const checkProductionSecrets = (env: { NODE_ENV?: string; JWT_SECRET?: string; JWT_REFRESH_SECRET?: string }): string | null => {
+    if (env.NODE_ENV !== 'production') return null;
+    const problems: string[] = [];
+    for (const key of ['JWT_SECRET', 'JWT_REFRESH_SECRET'] as const) {
+        if (PLACEHOLDER_SECRET.test(env[key] ?? '')) {
+            problems.push(`${key} looks like a placeholder (contains "change"/"secret"/"example")`);
+        }
+    }
+    if (env.JWT_SECRET && env.JWT_SECRET === env.JWT_REFRESH_SECRET) {
+        problems.push('JWT_SECRET and JWT_REFRESH_SECRET must be different');
+    }
+    return problems.length
+        ? `Refusing to start in production: ${problems.join('; ')}. Generate real values with \`openssl rand -hex 32\`.`
+        : null;
+};
+
 export const envSchema = z.object({
     PORT: z.string().default('3001'),
     NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-    TRUST_PROXY: z.coerce.boolean().default(false),
+    TRUST_PROXY: z.any().transform(parseTrustProxy),
     API_BODY_LIMIT: z.string().default('2mb'),
     DATABASE_URL: z.string().min(1),
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
@@ -55,6 +95,9 @@ export const parseEnv = (env: NodeJS.ProcessEnv): EnvConfig => {
     if (!parsed.success) {
         throw new Error(`Invalid environment variables: ${JSON.stringify(parsed.error.format())}`);
     }
+
+    const secretsError = checkProductionSecrets(parsed.data);
+    if (secretsError) throw new Error(secretsError);
 
     return parsed.data;
 };

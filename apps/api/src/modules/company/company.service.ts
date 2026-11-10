@@ -7,6 +7,40 @@ const updateCompanySchema = z.object({
     settings: companySettingsSchema.partial().optional(),
 });
 
+type CompanyView = NonNullable<Awaited<ReturnType<typeof companyService.getOne>>>;
+
+/**
+ * Shapes GET /company/me per role. Technicians get identity, contact, regional
+ * and the field-console flags only: no billing, payment keys, bank details or
+ * commission. Non-admin office roles get everything except the PayFast secrets,
+ * which only an ADMIN (the one role that can PATCH settings) needs.
+ */
+export function companyViewForRole(company: CompanyView, role?: string) {
+    const { settings } = company;
+    if (role === 'TECHNICIAN') {
+        return {
+            id: company.id,
+            name: company.name,
+            settings: {
+                regional: settings.regional,
+                contact: settings.contact,
+                fieldQuoting: settings.fieldQuoting,
+            },
+        };
+    }
+    if (role === 'ADMIN') return company;
+    return {
+        ...company,
+        settings: {
+            ...settings,
+            billing: {
+                ...settings.billing,
+                payFast: { ...settings.billing.payFast, merchantKey: null, passphrase: null },
+            },
+        },
+    };
+}
+
 export const companyService = {
     getOne: async (companyId: string) => {
         const company = await prisma.company.findUnique({

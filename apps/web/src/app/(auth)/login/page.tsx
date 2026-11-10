@@ -37,7 +37,17 @@ export default function LoginPage() {
             const response = await api.post("/auth/login", data);
             const { user, accessToken } = response.data.data;
             login(user, accessToken);
-            router.push("/");
+            // Technicians depend on the on-device offline cache + mutation queue,
+            // which the root Providers wire up at mount from the user's role. A
+            // soft router.push keeps the already-mounted (role-less/office-mode)
+            // query client, so the persister never switches on for this session.
+            // Hard-navigate so the app remounts and the technician persister wires
+            // up cleanly. Office users keep fast SPA navigation.
+            if (user?.role === "TECHNICIAN") {
+                window.location.assign("/");
+            } else {
+                router.push("/");
+            }
         } catch (err: any) {
             setError(err.response?.data?.message || "Login failed");
         }

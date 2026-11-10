@@ -32,6 +32,15 @@ const updateApplicationSchema = z.object({
     notes: z.string().optional(),
 });
 
+/** Standard amortised instalment, rounded to cents. 0% plans split evenly. */
+export function computeMonthlyPayment(amount: number, annualRatePct: number, termMonths: number): number {
+    const r = annualRatePct / 100 / 12;
+    const raw = r > 0
+        ? (amount * r * Math.pow(1 + r, termMonths)) / (Math.pow(1 + r, termMonths) - 1)
+        : amount / termMonths;
+    return Math.round(raw * 100) / 100;
+}
+
 export const financingService = {
     // --- Options ---
     getOptions: async (companyId: string, includeInactive = false) => {
@@ -94,16 +103,11 @@ export const financingService = {
             throw new AppError(`Maximum financing amount is ${option.maxAmount}`, StatusCodes.BAD_REQUEST);
         }
 
-        const monthlyPayment = option.interestRate > 0
-            ? (parsed.amount * (option.interestRate / 100 / 12) * Math.pow(1 + option.interestRate / 100 / 12, option.termMonths))
-              / (Math.pow(1 + option.interestRate / 100 / 12, option.termMonths) - 1)
-            : parsed.amount / option.termMonths;
-
         return prisma.financingApplication.create({
             data: {
                 companyId,
                 ...parsed,
-                monthlyPayment: Math.round(monthlyPayment * 100) / 100,
+                monthlyPayment: computeMonthlyPayment(parsed.amount, option.interestRate, option.termMonths),
             },
             include: { customer: true, financingOption: true },
         });

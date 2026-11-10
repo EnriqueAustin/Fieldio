@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, type QueryClient } from "@tanstack/react-query";
 import api from "../../../lib/api";
 import { OFFLINE_KEYS } from "../../../lib/offline-mutations";
 import { toast } from "../../ui/use-toast";
@@ -60,6 +60,37 @@ interface JobFormsResponse {
     canIssueCoC: boolean;
 }
 
+/** Query key + fetcher shared by the hook and the prefetcher so both land in the
+ *  same cache entry. */
+const formsQueryKey = (jobId: string | null | undefined) => ["job-forms", jobId] as const;
+const fetchJobForms = (jobId: string) =>
+    api.get(`/digital-forms/jobs/${jobId}/forms`).then((r) => r.data.data as JobFormsResponse);
+
+// Keep forms cached long enough to open a job offline; don't refetch on every
+// mount while on patchy signal.
+const FORMS_STALE_TIME = 5 * 60 * 1000;
+const FORMS_GC_TIME = 24 * 60 * 60 * 1000;
+
+/**
+ * Warm the forms cache for a set of jobs (e.g. today's route) so a tech can open
+ * any of them and fill/submit CoC forms with no signal. Called by the route owner
+ * for today's jobIds. gcTime matches the on-device persisted cache (24h) so the
+ * entries survive an app reload while offline.
+ */
+export function prefetchFormsForJobs(queryClient: QueryClient, jobIds: string[]) {
+    const unique = Array.from(new Set(jobIds.filter(Boolean)));
+    return Promise.all(
+        unique.map((jobId) =>
+            queryClient.prefetchQuery({
+                queryKey: formsQueryKey(jobId),
+                queryFn: () => fetchJobForms(jobId),
+                staleTime: FORMS_STALE_TIME,
+                gcTime: FORMS_GC_TIME,
+            })
+        )
+    );
+}
+
 export function fieldId(field: FormField): string {
     return field.key ?? field.name ?? "";
 }
@@ -88,9 +119,11 @@ function templateRank(template: FormTemplate): number {
  */
 export function useJobForms(jobId: string | null | undefined) {
     const query = useQuery({
-        queryKey: ["job-forms", jobId],
-        queryFn: () => api.get(`/digital-forms/jobs/${jobId}/forms`).then((r) => r.data.data as JobFormsResponse),
+        queryKey: formsQueryKey(jobId),
+        queryFn: () => fetchJobForms(jobId as string),
         enabled: !!jobId,
+        staleTime: FORMS_STALE_TIME,
+        gcTime: FORMS_GC_TIME,
     });
 
     const submitMutation = useMutation<unknown, any, { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string }>({

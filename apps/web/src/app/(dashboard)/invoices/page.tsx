@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import api from "../../../lib/api";
-import { Receipt, Search, AlertCircle, Plus, Loader2, Check, Banknote, FilePlus2 } from "lucide-react";
+import { Receipt, Search, AlertCircle, Plus, Loader2, Check, Banknote, FilePlus2, Briefcase } from "lucide-react";
 import { StatusPill } from "../../../components/ui/status-pill";
 import { Button } from "../../../components/ui/button";
 import { EftBatchDialog } from "../../../components/finance/eft-batch-dialog";
@@ -172,35 +172,49 @@ export default function InvoicesPage() {
                     </div>
                     <div className="divide-y divide-border/60">
                         {filtered.map((inv) => (
-                            <Link
+                            <div
                                 key={inv.id}
-                                href={inv.job ? `/jobs/${inv.job.id}` : "#"}
                                 className="flex items-center gap-4 px-5 py-4 hover:bg-slate-50/70 transition"
                             >
-                                <div className="h-9 w-9 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 shrink-0">
-                                    <Receipt className="h-4 w-4" />
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                    <div className="flex items-center gap-2">
-                                        <span className="text-sm font-medium truncate">
-                                            {inv.invoiceNumber || inv.id.slice(0, 8)}
-                                        </span>
-                                        <StatusPill status={inv.status} />
+                                <Link
+                                    href={`/invoices/${inv.id}`}
+                                    className="flex items-center gap-4 min-w-0 flex-1"
+                                >
+                                    <div className="h-9 w-9 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 shrink-0">
+                                        <Receipt className="h-4 w-4" />
                                     </div>
-                                    <div className="text-xs text-muted-foreground truncate">
-                                        {inv.job?.customer?.name ?? "Unknown"}
-                                        {inv.job?.title ? ` · ${inv.job.title}` : ""} · due {formatDate(inv.dueDate)}
-                                    </div>
-                                </div>
-                                <div className="text-right shrink-0">
-                                    <div className="font-semibold text-sm">{formatCurrency(Number(inv.total))}</div>
-                                    {Number(inv.balance) > 0 && (
-                                        <div className="text-[10px] text-rose-600">
-                                            {formatCurrency(Number(inv.balance))} due
+                                    <div className="min-w-0 flex-1">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-sm font-medium truncate">
+                                                {inv.invoiceNumber || inv.id.slice(0, 8)}
+                                            </span>
+                                            <StatusPill status={inv.status} />
                                         </div>
-                                    )}
-                                </div>
-                            </Link>
+                                        <div className="text-xs text-muted-foreground truncate">
+                                            {inv.job?.customer?.name ?? "Unknown"}
+                                            {inv.job?.title ? ` · ${inv.job.title}` : ""} · due {formatDate(inv.dueDate)}
+                                        </div>
+                                    </div>
+                                    <div className="text-right shrink-0">
+                                        <div className="font-semibold text-sm">{formatCurrency(Number(inv.total))}</div>
+                                        {Number(inv.balance) > 0 && (
+                                            <div className="text-[10px] text-rose-600">
+                                                {formatCurrency(Number(inv.balance))} due
+                                            </div>
+                                        )}
+                                    </div>
+                                </Link>
+                                {inv.job && (
+                                    <Link
+                                        href={`/jobs/${inv.job.id}`}
+                                        title="View job"
+                                        className="shrink-0 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-slate-100 transition"
+                                    >
+                                        <Briefcase className="h-3.5 w-3.5" />
+                                        Job
+                                    </Link>
+                                )}
+                            </div>
                         ))}
                     </div>
                 </div>

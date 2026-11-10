@@ -49,7 +49,7 @@ const setStatus = (jobId: string, status: string) =>
 beforeEach(() => {
     fakePrisma.$reset();
     fakePrisma.job.seed([
-        { id: JOB_A, companyId: COMPANY, techId: TECH, status: 'ASSIGNED', title: 'Job A', checklist: [], customerId: 'cust_1' },
+        { id: JOB_A, companyId: COMPANY, techId: TECH, status: 'ASSIGNED', title: 'Job A', checklist: [], customerId: 'cust_1', signatures: [{ id: 'sig_a', signerName: 'Customer', signedAt: new Date() }] },
         { id: JOB_B, companyId: COMPANY, techId: TECH, status: 'ASSIGNED', title: 'Job B', checklist: [], customerId: 'cust_1' },
     ]);
 });

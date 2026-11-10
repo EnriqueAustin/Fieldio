@@ -6,13 +6,14 @@ import { whatsappService } from '../../services/notifications/whatsapp.service';
 import { logger } from '../../utils/logger';
 import { normalizeCompanySettings } from '../company/company-settings';
 import { PUBLIC_USER_SELECT } from '../../utils/publicSelects';
+import { formatDateTimeInTimeZone, resolveTimeZone } from '../../utils/timezone';
 
 const fmtCurrency = (n: number, currency: string) =>
     new Intl.NumberFormat(undefined, { style: 'currency', currency, currencyDisplay: 'narrowSymbol' })
         .format(Number(n));
 
-const fmtDate = (d: Date | null | undefined) =>
-    d ? new Date(d).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+const fmtDate = (d: Date | null | undefined, tz: string) =>
+    d ? formatDateTimeInTimeZone(d, tz) : '—';
 
 const generateBuffer = async (job: any, company: any, settings: any): Promise<Buffer> => {
     return new Promise((resolve, reject) => {
@@ -23,6 +24,8 @@ const generateBuffer = async (job: any, company: any, settings: any): Promise<Bu
         doc.on('error', reject);
 
         const currency = settings.regional?.currency ?? 'USD';
+        // Customer document: render times in the company's zone, not the server's.
+        const tz = resolveTimeZone(settings.regional?.timezone);
 
         // Header
         doc.fontSize(20).fillColor('#0f172a').text(company.name, { align: 'left' });
@@ -43,8 +46,8 @@ const generateBuffer = async (job: any, company: any, settings: any): Promise<Bu
 
         // Service window
         doc.fontSize(10).fillColor('#0f172a')
-            .text(`Arrived: ${fmtDate(job.actualStart)}`)
-            .text(`Completed: ${fmtDate(job.actualEnd)}`);
+            .text(`Arrived: ${fmtDate(job.actualStart, tz)}`)
+            .text(`Completed: ${fmtDate(job.actualEnd, tz)}`);
         if (job.tech) {
             const techName = [job.tech.firstName, job.tech.lastName].filter(Boolean).join(' ') || job.tech.email;
             doc.text(`Technician: ${techName}`);
@@ -118,12 +121,12 @@ const generateBuffer = async (job: any, company: any, settings: any): Promise<Bu
             doc.moveDown(0.2);
             const sig = job.signatures[0];
             doc.fontSize(10).fillColor('#334155').text(`Signed by: ${sig.signerName}`);
-            doc.text(`At: ${fmtDate(sig.signedAt)}`);
+            doc.text(`At: ${fmtDate(sig.signedAt, tz)}`);
         }
 
         doc.moveDown(2);
         doc.fontSize(8).fillColor('#94a3b8')
-            .text(`Generated ${new Date().toLocaleString()} · ${company.name}`, 50, 770, { align: 'center', width: 495 });
+            .text(`Generated ${formatDateTimeInTimeZone(new Date(), tz)} · ${company.name}`, 50, 770, { align: 'center', width: 495 });
 
         doc.end();
     });

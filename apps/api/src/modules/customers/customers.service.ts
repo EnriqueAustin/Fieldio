@@ -4,11 +4,27 @@ import { StatusCodes } from 'http-status-codes';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
 
+// SARS requires the buyer's VAT number and billing address on a tax invoice
+// over R5,000, so the office must be able to capture (and later clear) them.
+// A SA VAT number is exactly 10 digits and starts with 4. Empty string / null
+// are allowed so a value can be cleared; a non-empty value must match the format.
+const vatNumberSchema = z
+    .string()
+    .trim()
+    .regex(/^4\d{9}$/, 'VAT number must be 10 digits starting with 4')
+    .optional()
+    .or(z.literal(''))
+    .nullable();
+
+const billingAddressSchema = z.string().trim().optional().or(z.literal('')).nullable();
+
 const createCustomerSchema = z.object({
     name: z.string().min(2),
     email: z.string().email().optional().or(z.literal('')),
     phone: z.string().optional(),
     notes: z.string().optional(),
+    vatNumber: vatNumberSchema,
+    billingAddress: billingAddressSchema,
     property: z.object({
         addressLine1: z.string(),
         addressLine2: z.string().optional(),
@@ -20,9 +36,12 @@ const createCustomerSchema = z.object({
 
 const updateCustomerSchema = z.object({
     name: z.string().min(2).optional(),
-    email: z.string().email().optional().or(z.literal('')),
-    phone: z.string().optional(),
-    notes: z.string().optional(),
+    // email / phone accept null so the office can clear them from the edit form.
+    email: z.string().email().optional().or(z.literal('')).nullable(),
+    phone: z.string().optional().nullable(),
+    notes: z.string().optional().nullable(),
+    vatNumber: vatNumberSchema,
+    billingAddress: billingAddressSchema,
     status: z.enum(['ACTIVE', 'LEAD', 'ARCHIVED']).optional(),
 });
 
@@ -38,6 +57,10 @@ const importRowSchema = z.object({
     city: z.string().trim().optional().or(z.literal('')),
     state: z.string().trim().optional().or(z.literal('')),
     zip: z.string().trim().optional().or(z.literal('')),
+    // A row may also carry the buyer's tax details for SARS-compliant invoices.
+    // An invalid VAT number fails just that row (reported), not the whole import.
+    vatNumber: z.string().trim().regex(/^4\d{9}$/, 'VAT number must be 10 digits starting with 4').optional().or(z.literal('')),
+    billingAddress: z.string().trim().optional().or(z.literal('')),
 });
 
 const bulkImportSchema = z.object({
@@ -133,21 +156,24 @@ export const customerService = {
         };
     },
 
-    create: async (companyId: string, input: z.infer<typeof createCustomerSchema>) => {
+    create: async (companyId: string, input: unknown) => {
+        const data = createCustomerSchema.parse(input);
         return prisma.$transaction(async (tx) => {
             const customer = await tx.customer.create({
                 data: {
                     companyId,
-                    name: input.name,
-                    email: input.email || null,
-                    phone: input.phone,
-                    notes: input.notes,
+                    name: data.name,
+                    email: data.email || null,
+                    phone: data.phone,
+                    notes: data.notes,
+                    vatNumber: data.vatNumber || null,
+                    billingAddress: data.billingAddress || null,
                 },
             });
 
-            if (input.property) {
+            if (data.property) {
                 await tx.property.create({
-                    data: { companyId, customerId: customer.id, ...input.property },
+                    data: { companyId, customerId: customer.id, ...data.property },
                 });
             }
 
@@ -155,10 +181,18 @@ export const customerService = {
         });
     },
 
-    update: async (id: string, companyId: string, input: z.infer<typeof updateCustomerSchema>) => {
+    update: async (id: string, companyId: string, input: unknown) => {
+        const data = updateCustomerSchema.parse(input);
         const customer = await prisma.customer.findFirst({ where: { id, companyId, deletedAt: null } });
         if (!customer) throw new AppError('Customer not found', StatusCodes.NOT_FOUND);
-        return prisma.customer.update({ where: { id }, data: input });
+
+        // Normalize the optional tax fields so an empty value clears them to null
+        // rather than storing an empty string.
+        const updateData: Record<string, unknown> = { ...data };
+        if ('vatNumber' in data) updateData.vatNumber = data.vatNumber || null;
+        if ('billingAddress' in data) updateData.billingAddress = data.billingAddress || null;
+
+        return prisma.customer.update({ where: { id }, data: updateData });
     },
 
     softDelete: async (id: string, companyId: string) => {
@@ -189,7 +223,7 @@ export const customerService = {
         const seenNamePhone = new Set<string>();
         const errors: { row: number; message: string }[] = [];
 
-        const customerData: { id: string; companyId: string; name: string; email: string | null; phone: string | null; notes: string | null }[] = [];
+        const customerData: { id: string; companyId: string; name: string; email: string | null; phone: string | null; notes: string | null; vatNumber: string | null; billingAddress: string | null }[] = [];
         const propertyData: { companyId: string; customerId: string; addressLine1: string; addressLine2: string | null; city: string; state: string; zip: string }[] = [];
         let skipped = 0;
 
@@ -221,6 +255,8 @@ export const customerService = {
                 email: d.email ? d.email.trim() : null,
                 phone: d.phone ? d.phone.trim() : null,
                 notes: d.notes ? d.notes.trim() : null,
+                vatNumber: d.vatNumber ? d.vatNumber.trim() : null,
+                billingAddress: d.billingAddress ? d.billingAddress.trim() : null,
             });
 
             // Only attach a property when we have at least a street address.

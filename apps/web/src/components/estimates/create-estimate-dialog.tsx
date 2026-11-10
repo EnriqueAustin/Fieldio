@@ -14,6 +14,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import api from "../../lib/api";
+import { computeVat } from "../../lib/vat";
 
 interface Props {
     open: boolean;
@@ -64,6 +65,16 @@ export function CreateEstimateDialog({ open, onOpenChange, onCreated }: Props) {
         enabled: open,
     });
 
+    // Company VAT settings drive the live quote breakdown. The server is still
+    // authoritative; this just previews Subtotal / VAT / Total before saving.
+    const { data: billing } = useQuery({
+        queryKey: ["company-billing", "estimate-dialog"],
+        queryFn: () =>
+            api.get("/company/me").then((r) => r.data?.data?.company?.settings?.billing ?? null),
+        enabled: open,
+        staleTime: 5 * 60_000,
+    });
+
     const pbItems: PriceBookItem[] = priceBook ?? [];
     const filteredPb = useMemo(() => {
         const q = pbSearch.trim().toLowerCase();
@@ -72,6 +83,12 @@ export function CreateEstimateDialog({ open, onOpenChange, onCreated }: Props) {
     }, [pbItems, pbSearch]);
 
     const subtotal = lines.reduce((sum, l) => sum + l.quantity * l.unitPrice, 0);
+    const vat = computeVat(
+        subtotal,
+        billing
+            ? { taxRate: Number(billing.taxRate ?? 0), taxLabel: billing.taxLabel ?? "VAT", taxNumber: billing.taxNumber }
+            : null
+    );
 
     const reset = () => {
         setCustomerId("");
@@ -308,10 +325,27 @@ export function CreateEstimateDialog({ open, onOpenChange, onCreated }: Props) {
                                 value={validUntil}
                                 onChange={(e) => setValidUntil(e.target.value)}
                             />
+                            <p className="text-[11px] text-muted-foreground pt-0.5">
+                                Price-book prices are excl. VAT.
+                            </p>
                         </div>
-                        <div className="text-right">
-                            <div className="text-xs text-muted-foreground">Total</div>
-                            <div className="text-xl font-bold">{formatCurrency(subtotal)}</div>
+                        <div className="space-y-1 text-right text-sm">
+                            <div className="flex items-center justify-between gap-6">
+                                <span className="text-muted-foreground">Subtotal (excl. VAT)</span>
+                                <span className="font-medium tabular-nums">{formatCurrency(vat.subtotal)}</span>
+                            </div>
+                            {vat.vatRegistered && (
+                                <div className="flex items-center justify-between gap-6">
+                                    <span className="text-muted-foreground">
+                                        {vat.taxLabel ?? "VAT"} @ {vat.taxRate}%
+                                    </span>
+                                    <span className="font-medium tabular-nums">{formatCurrency(vat.tax)}</span>
+                                </div>
+                            )}
+                            <div className="flex items-center justify-between gap-6 border-t border-border pt-1 mt-1">
+                                <span className="text-xs text-muted-foreground">Total{vat.vatRegistered ? " (incl. VAT)" : ""}</span>
+                                <span className="text-xl font-bold tabular-nums">{formatCurrency(vat.total)}</span>
+                            </div>
                         </div>
                     </div>
 

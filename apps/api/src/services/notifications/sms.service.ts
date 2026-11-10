@@ -2,6 +2,7 @@ import twilio from 'twilio';
 import { prisma } from '@fieldio/database';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
+import { handleUnconfiguredProvider } from './provider-stub';
 
 let twilioClient: ReturnType<typeof twilio> | null = null;
 
@@ -35,14 +36,12 @@ const send = async (params: {
 
     const client = getTwilio();
     if (!client) {
-        logger.info(`[SMS:DEV] To: ${params.to} | ${params.body}`);
-        if (log) {
-            await prisma.notificationLog.update({
-                where: { id: log.id },
-                data: { status: 'SENT', providerId: 'dev-stub' },
-            }).catch(() => undefined);
-        }
-        return { ok: true, dev: true };
+        return handleUnconfiguredProvider({
+            logId: log?.id,
+            channel: 'SMS',
+            missing: 'TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_FROM_NUMBER',
+            devLog: () => logger.info(`[SMS:DEV] To: ${params.to} | ${params.body}`),
+        });
     }
 
     try {

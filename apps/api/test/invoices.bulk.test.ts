@@ -18,6 +18,8 @@ const COMPANY = 'company_1';
 // Completed jobs with embedded relations (the fake returns rows as-is, so
 // createFromJob reads lineItems/company/invoice from the embedded shape).
 function seedJobs() {
+    // VAT-registered supplier so 15% VAT applies to the totals asserted below.
+    const company = { id: COMPANY, name: 'Acme Co', settings: { billing: { taxNumber: '4123456789' } } };
     fakePrisma.job.seed([
         {
             id: 'job_a',
@@ -26,7 +28,7 @@ function seedJobs() {
             projectId: null,
             status: 'COMPLETED',
             lineItems: [{ id: 'li_1', name: 'Labor', quantity: 2, unitPrice: 100, total: 200, type: 'LABOR' }],
-            company: { id: COMPANY, name: 'Acme Co', settings: {} },
+            company,
             customer: { id: 'cust_1', name: 'Acme' },
             invoice: null,
         },
@@ -37,7 +39,7 @@ function seedJobs() {
             projectId: null,
             status: 'COMPLETED',
             lineItems: [{ id: 'li_2', name: 'Geyser', quantity: 1, unitPrice: 4000, total: 4000, type: 'MATERIAL' }],
-            company: { id: COMPANY, name: 'Acme Co', settings: {} },
+            company,
             customer: { id: 'cust_2', name: 'Beta' },
             invoice: null,
         },
@@ -49,11 +51,13 @@ function seedJobs() {
             projectId: null,
             status: 'COMPLETED',
             lineItems: [{ id: 'li_3', name: 'Callout', quantity: 1, unitPrice: 350, total: 350, type: 'SERVICE' }],
-            company: { id: COMPANY, name: 'Acme Co', settings: {} },
+            company,
             customer: { id: 'cust_3', name: 'Gamma' },
             invoice: { id: 'inv_existing' },
         },
     ]);
+    // The atomic invoice-number counter lives on the company row.
+    fakePrisma.company.seed([{ id: COMPANY, name: 'Acme Co', invoiceSequence: 0, settings: { billing: { taxNumber: '4123456789' } } }]);
 }
 
 beforeEach(() => {

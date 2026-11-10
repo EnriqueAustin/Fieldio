@@ -9,7 +9,33 @@ import { Button } from "../../../../components/ui/button";
 import { Input } from "../../../../components/ui/input";
 import { Label } from "../../../../components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../../components/ui/card";
-import { defaultCompanySettings, normalizeCompanySettings } from "../../../../lib/company-settings";
+import { defaultCompanySettings, normalizeCompanySettings, type ModuleKey } from "../../../../lib/company-settings";
+
+// Optional modules shown in the "Modules" card. Each toggles whether the feature
+// appears in the navigation. Core tools are never listed here.
+const MODULE_FIELDS: { key: ModuleKey; label: string; description: string }[] = [
+    { key: "leads", label: "Leads & pipeline", description: "Track prospects before they become customers." },
+    { key: "bookings", label: "Online bookings", description: "Let customers request appointments online." },
+    { key: "inbox", label: "Inbox", description: "Unified customer messaging in one place." },
+    { key: "calls", label: "Calls", description: "Log inbound and outbound phone calls." },
+    { key: "inventory", label: "Inventory", description: "Track stock on hand and in each van." },
+    { key: "suppliers", label: "Suppliers & purchase orders", description: "Manage suppliers and raise purchase orders." },
+    { key: "subcontractors", label: "Subcontractors", description: "Assign and manage outside contractors." },
+    { key: "permits", label: "Permits", description: "Track permits required before certain jobs." },
+    { key: "certifications", label: "Certifications", description: "Track technician licences and expiry dates." },
+    { key: "warrantyClaims", label: "Warranty claims", description: "Log and track warranty work." },
+    { key: "projects", label: "Projects", description: "Group multi-visit work into one project." },
+    { key: "flatRate", label: "Flat-rate pricing", description: "Price common jobs from a flat-rate book." },
+    { key: "memberships", label: "Memberships / service plans", description: "Recurring service plans customers subscribe to." },
+    { key: "financing", label: "Financing", description: "Offer monthly payment plans on quotes." },
+    { key: "campaigns", label: "Campaigns", description: "Automated follow-ups for unsold quotes and anniversaries." },
+    { key: "statements", label: "Statements", description: "Send customers account statements." },
+    { key: "creditNotes", label: "Credit notes", description: "Issue credit notes against invoices." },
+    { key: "dunning", label: "Dunning", description: "Automated reminders for overdue invoices." },
+    { key: "reviews", label: "Reviews", description: "Request and collect customer reviews." },
+    { key: "kpi", label: "KPI dashboard", description: "Company performance metrics at a glance." },
+    { key: "scoreboard", label: "Technician scoreboard", description: "Rank technicians by performance." },
+];
 
 const companySchema = z.object({
     name: z.string().min(2),
@@ -25,6 +51,7 @@ const companySchema = z.object({
             taxRate: z.coerce.number().min(0).max(100),
             taxNumber: z.string().optional(),
             invoiceHeading: z.string().min(1),
+            invoicePrefix: z.string().regex(/^[A-Z0-9]{1,10}$/, "Use 1–10 upper-case letters or digits (e.g. INV)"),
             companyRegistrationNumber: z.string().optional(),
             paymentTermsDays: z.coerce.number().int().min(0).max(365),
             paymentMethods: z.object({
@@ -69,6 +96,39 @@ const companySchema = z.object({
         }),
         fieldQuoting: z.object({
             enabled: z.boolean(),
+        }),
+        financing: z.object({
+            enabled: z.boolean(),
+            showOnEstimates: z.boolean(),
+        }),
+        portal: z.object({
+            selfReschedule: z.object({
+                enabled: z.boolean(),
+                minNoticeHours: z.coerce.number().int().min(0).max(168),
+            }),
+        }),
+        modules: z.object({
+            leads: z.boolean(),
+            campaigns: z.boolean(),
+            memberships: z.boolean(),
+            financing: z.boolean(),
+            projects: z.boolean(),
+            permits: z.boolean(),
+            subcontractors: z.boolean(),
+            certifications: z.boolean(),
+            warrantyClaims: z.boolean(),
+            flatRate: z.boolean(),
+            suppliers: z.boolean(),
+            inventory: z.boolean(),
+            calls: z.boolean(),
+            inbox: z.boolean(),
+            bookings: z.boolean(),
+            scoreboard: z.boolean(),
+            kpi: z.boolean(),
+            dunning: z.boolean(),
+            creditNotes: z.boolean(),
+            statements: z.boolean(),
+            reviews: z.boolean(),
         }),
     }),
 });
@@ -192,10 +252,15 @@ export default function CompanySettingsPage() {
                             </div>
                         </div>
 
-                        <div className="grid gap-4 md:grid-cols-2">
+                        <div className="grid gap-4 md:grid-cols-3">
                             <div className="space-y-2">
                                 <Label htmlFor="invoiceHeading">Invoice Heading</Label>
                                 <Input id="invoiceHeading" {...register("settings.billing.invoiceHeading")} />
+                            </div>
+                            <div className="space-y-2">
+                                <Label htmlFor="invoicePrefix">Invoice Number Prefix</Label>
+                                <Input id="invoicePrefix" {...register("settings.billing.invoicePrefix")} placeholder="INV" />
+                                <p className="text-xs text-muted-foreground">Used on generated invoice numbers, e.g. INV-0001. Letters and digits only.</p>
                             </div>
                             <div className="space-y-2">
                                 <Label htmlFor="companyRegistrationNumber">Company Registration Number</Label>
@@ -345,6 +410,55 @@ export default function CompanySettingsPage() {
                                     </span>
                                 </span>
                             </label>
+                        </div>
+
+                        <div className="space-y-4 rounded-2xl border border-border/80 bg-white p-5">
+                            <div>
+                                <h4 className="text-sm font-semibold">Customer portal</h4>
+                                <p className="text-xs text-muted-foreground">What customers can do themselves from their portal link.</p>
+                            </div>
+                            <label className="flex items-start gap-3 rounded-xl border border-border bg-background px-4 py-3">
+                                <input type="checkbox" className="mt-1" {...register("settings.financing.enabled")} />
+                                <span>
+                                    <span className="block font-medium">Offer monthly payment plans on quotes</span>
+                                    <span className="block text-xs text-muted-foreground">
+                                        Shows &quot;or from R X/month&quot; on quotes using your active plans on the Financing page. A customer&apos;s request lands there as an application for you to approve.
+                                    </span>
+                                </span>
+                            </label>
+                            <label className="flex items-start gap-3 rounded-xl border border-border bg-background px-4 py-3">
+                                <input type="checkbox" className="mt-1" {...register("settings.portal.selfReschedule.enabled")} />
+                                <span>
+                                    <span className="block font-medium">Let customers reschedule booked jobs</span>
+                                    <span className="block text-xs text-muted-foreground">
+                                        Customers pick a new time from open slots on the assigned technician&apos;s calendar (weekdays, 08:00–17:00). The job moves on the schedule and the office and technician are notified. Off by default.
+                                    </span>
+                                </span>
+                            </label>
+                            <div className="space-y-2 max-w-xs">
+                                <Label>Minimum notice to reschedule (hours)</Label>
+                                <Input type="number" min={0} max={168} {...register("settings.portal.selfReschedule.minNoticeHours")} />
+                            </div>
+                        </div>
+
+                        <div className="space-y-4 rounded-2xl border border-border/80 bg-white p-5">
+                            <div>
+                                <h4 className="text-sm font-semibold">Modules</h4>
+                                <p className="text-xs text-muted-foreground">
+                                    Switch features on or off to keep the navigation focused. Turning one off only hides it from the menu — it changes no data. Core tools (Schedule, Jobs, Customers, Quotes, Invoices, Vans, Reports and more) are always on.
+                                </p>
+                            </div>
+                            <div className="grid gap-3 md:grid-cols-2">
+                                {MODULE_FIELDS.map((m) => (
+                                    <label key={m.key} className="flex items-start gap-3 rounded-xl border border-border bg-background px-4 py-3">
+                                        <input type="checkbox" className="mt-1" {...register(`settings.modules.${m.key}` as const)} />
+                                        <span>
+                                            <span className="block font-medium">{m.label}</span>
+                                            <span className="block text-xs text-muted-foreground">{m.description}</span>
+                                        </span>
+                                    </label>
+                                ))}
+                            </div>
                         </div>
 
                         <div className="grid gap-4 md:grid-cols-3">

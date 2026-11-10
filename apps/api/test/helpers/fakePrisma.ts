@@ -88,7 +88,10 @@ const applySelectInclude = (row: Row, args: any = {}) => project(row, args);
 
 class Table {
     rows: Row[] = [];
-    constructor(private prefix: string) {}
+    // Compound unique keys to enforce on insert (e.g. idempotency's
+    // [companyId, userId, key]) so a duplicate create throws a P2002, matching
+    // real Prisma — this is what the concurrent-replay path relies on.
+    constructor(private prefix: string, private uniqueBy: string[][] = []) {}
 
     seed(rows: Row[]) {
         for (const r of rows) this.rows.push({ deletedAt: null, ...r });
@@ -116,6 +119,15 @@ class Table {
             deletedAt: null,
             ...args.data,
         };
+        // Enforce registered compound unique keys (no await before the push keeps
+        // this atomic for concurrent inserts) so a duplicate throws P2002.
+        for (const keys of this.uniqueBy) {
+            if (this.rows.some((r) => keys.every((k) => r[k] === row[k]))) {
+                const err: any = new Error(`Unique constraint failed on ${this.prefix}`);
+                err.code = 'P2002';
+                throw err;
+            }
+        }
         this.rows.push(row);
         return applySelectInclude(row, args);
     }
@@ -129,7 +141,34 @@ class Table {
     async update(args: any) {
         const row = this.rows.find((r) => matchWhere(r, args.where));
         if (!row) throw new Error(`Record to update not found in ${this.prefix}`);
-        Object.assign(row, args.data, { updatedAt: new Date('2026-07-14T00:00:00.000Z') });
+        // Atomic numeric mutations (`{ increment }` / `{ decrement }`) are applied
+        // numerically; every other field is assigned as-is (Prisma semantics).
+        for (const [k, v] of Object.entries<any>(args.data ?? {})) {
+            if (v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date) && 'increment' in v) {
+                row[k] = Number(row[k] ?? 0) + v.increment;
+            } else if (v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date) && 'decrement' in v) {
+                row[k] = Number(row[k] ?? 0) - v.decrement;
+            } else {
+                row[k] = v;
+            }
+        }
+        row.updatedAt = new Date('2026-07-14T00:00:00.000Z');
+        return applySelectInclude(row, args);
+    }
+
+    // Compound unique keys (`{ a_b: { a, b } }`) are flattened to scalar matches;
+    // `{ increment: n }` updates are applied numerically.
+    async upsert(args: any) {
+        const where: Row = {};
+        for (const [k, v] of Object.entries<any>(args.where ?? {})) {
+            if (v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date)) Object.assign(where, v);
+            else where[k] = v;
+        }
+        const row = this.rows.find((r) => matchWhere(r, where));
+        if (!row) return this.create({ ...args, data: { ...where, ...args.create } });
+        for (const [k, v] of Object.entries<any>(args.update ?? {})) {
+            row[k] = v && typeof v === 'object' && 'increment' in v ? Number(row[k] ?? 0) + v.increment : v;
+        }
         return applySelectInclude(row, args);
     }
 
@@ -137,6 +176,19 @@ class Table {
         const affected = this.rows.filter((r) => matchWhere(r, args.where));
         for (const row of affected) Object.assign(row, args.data);
         return { count: affected.length };
+    }
+
+    async delete(args: any) {
+        const idx = this.rows.findIndex((r) => matchWhere(r, args.where));
+        if (idx === -1) throw new Error(`Record to delete not found in ${this.prefix}`);
+        const [row] = this.rows.splice(idx, 1);
+        return applySelectInclude(row, args);
+    }
+
+    async deleteMany(args: any = {}) {
+        const before = this.rows.length;
+        this.rows = this.rows.filter((r) => !matchWhere(r, args.where));
+        return { count: before - this.rows.length };
     }
 
     async count(args: any = {}) {
@@ -171,7 +223,8 @@ export type FakePrisma = ReturnType<typeof createFakePrisma>;
 
 export function createFakePrisma() {
     const tables: Record<string, Table> = {};
-    const table = (name: string) => (tables[name] ??= new Table(name));
+    const table = (name: string, uniqueBy: string[][] = []) =>
+        (tables[name] ??= new Table(name, uniqueBy));
 
     const client: any = {
         estimate: table('estimate'),
@@ -196,11 +249,21 @@ export function createFakePrisma() {
         vanInventoryTarget: table('vanInventoryTarget'),
         digitalFormTemplate: table('digitalFormTemplate'),
         digitalFormSubmission: table('digitalFormSubmission'),
+        jobSignature: table('jobSignature'),
+        jobChecklist: table('jobChecklist'),
+        jobPhoto: table('jobPhoto'),
+        idempotencyKey: table('idempotencyKey', [['companyId', 'userId', 'key']]),
         user: table('user'),
         timeEntry: table('timeEntry'),
         jobTimelineEvent: table('jobTimelineEvent'),
         membership: table('membership'),
         kpiSnapshot: table('kpiSnapshot'),
+        financingOption: table('financingOption'),
+        financingApplication: table('financingApplication'),
+        userLocationPing: table('userLocationPing'),
+        smsThread: table('smsThread'),
+        smsMessage: table('smsMessage'),
+        notificationLog: table('notificationLog'),
         // Raw SQL is not modelled; analytics uses it only for a top-techs
         // leaderboard, so an empty result set is a safe stand-in.
         $queryRaw: async () => [],

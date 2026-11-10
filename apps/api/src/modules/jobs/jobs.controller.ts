@@ -5,6 +5,9 @@ import { z } from 'zod';
 
 const updateStatusSchema = z.object({
     status: z.enum(['REQUESTED', 'ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'COMPLETED', 'CANCELED']),
+    // Real tap time for offline-queued status changes; validated here and in the
+    // service against a [now-24h, now+2min] window before it's trusted.
+    clientAt: z.string().datetime().optional(),
 });
 
 const toggleChecklistSchema = z.object({
@@ -49,9 +52,9 @@ export const jobsController = {
     },
 
     updateStatus: async (req: Request, res: Response) => {
-        const { status } = updateStatusSchema.parse(req.body);
+        const { status, clientAt } = updateStatusSchema.parse(req.body);
         const job = await jobsService.updateStatus(
-            req.params.id, req.user!.companyId, status, req.user!.userId
+            req.params.id, req.user!.companyId, status, req.user!.userId, clientAt, req.user!.role
         );
         res.status(StatusCodes.OK).json({ status: 'success', data: { job } });
     },
@@ -85,6 +88,13 @@ export const jobsController = {
         const item = await jobsService.addLineItem(
             req.params.id, req.user!.companyId, req.body, req.user!.userId, req.user!.role
         );
+        // The service prices the line from the price book; a technician must not
+        // get that price back.
+        if (req.user!.role === 'TECHNICIAN') {
+            const { unitPrice: _unitPrice, total: _total, ...priceFree } = item as typeof item & Record<string, unknown>;
+            res.status(StatusCodes.CREATED).json({ status: 'success', data: { item: priceFree } });
+            return;
+        }
         res.status(StatusCodes.CREATED).json({ status: 'success', data: { item } });
     },
 

@@ -1,6 +1,7 @@
 import { prisma } from '@fieldio/database';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
+import { handleUnconfiguredProvider } from './provider-stub';
 
 const API_VERSION = 'v18.0';
 
@@ -26,14 +27,12 @@ const send = async (params: {
     }).catch(() => null);
 
     if (!isConfigured()) {
-        logger.info(`[WHATSAPP:DEV] To: ${params.to} | ${params.body}`);
-        if (log) {
-            await prisma.notificationLog.update({
-                where: { id: log.id },
-                data: { status: 'SENT', providerId: 'dev-stub' },
-            }).catch(() => undefined);
-        }
-        return { ok: true, dev: true };
+        return handleUnconfiguredProvider({
+            logId: log?.id,
+            channel: 'WHATSAPP',
+            missing: 'WHATSAPP_API_TOKEN/WHATSAPP_PHONE_NUMBER_ID',
+            devLog: () => logger.info(`[WHATSAPP:DEV] To: ${params.to} | ${params.body}`),
+        });
     }
 
     try {

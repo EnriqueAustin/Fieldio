@@ -6,6 +6,56 @@ import { portalService } from '../portal/portal.service';
 import { notificationService } from '../../services/notifications/notification.service';
 import { normalizeCompanySettings } from '../company/company-settings';
 
+type NormalizedSettings = ReturnType<typeof normalizeCompanySettings>;
+
+const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
+
+/**
+ * Sum of line totals, excl. VAT. Price-book unit prices (and therefore line
+ * totals) are stored exclusive of VAT, so this is the quote subtotal.
+ */
+const sumLineTotals = (items: unknown): number => {
+    if (!Array.isArray(items)) return 0;
+    const raw = items.reduce((acc: number, i: any) => {
+        const line =
+            i?.total != null
+                ? Number(i.total)
+                : Number(i?.quantity ?? 1) * Number(i?.unitPrice ?? 0);
+        return acc + (Number.isFinite(line) ? line : 0);
+    }, 0);
+    return round2(raw);
+};
+
+interface VatBreakdown {
+    subtotal: number;
+    tax: number;
+    taxRate: number;
+    taxLabel: string | null;
+    total: number;
+}
+
+/**
+ * Apply the company's VAT to a subtotal. A business that is not VAT-registered
+ * (no billing.taxNumber) must not charge VAT: rate/tax collapse to 0 and the
+ * total equals the subtotal. This mirrors the invoice VAT math so a quote total
+ * reconciles with the invoice it becomes.
+ */
+const computeVat = (subtotal: number, settings: NormalizedSettings): VatBreakdown => {
+    const sub = round2(subtotal);
+    const registered = !!settings.billing.taxNumber && settings.billing.taxNumber.trim().length > 0;
+    if (!registered) {
+        return { subtotal: sub, tax: 0, taxRate: 0, taxLabel: null, total: sub };
+    }
+    const taxRate = settings.billing.taxRate;
+    const tax = round2((sub * taxRate) / 100);
+    return { subtotal: sub, tax, taxRate, taxLabel: settings.billing.taxLabel, total: round2(sub + tax) };
+};
+
+const loadCompanySettings = async (companyId: string): Promise<NormalizedSettings> => {
+    const company = await prisma.company.findFirst({ where: { id: companyId } });
+    return normalizeCompanySettings(company?.settings);
+};
+
 const createEstimateSchema = z.object({
     projectId: z.string().uuid().optional().nullable(),
     customerId: z.string(),
@@ -42,13 +92,24 @@ const createEstimateOptionSchema = z.object({
 
 export const estimateService = {
     create: async (companyId: string, input: z.infer<typeof createEstimateSchema>) => {
+        const settings = await loadCompanySettings(companyId);
+        // Server owns the money math: subtotal is the sum of (VAT-exclusive) line
+        // totals, and VAT is applied from company settings. When no itemised lines
+        // are supplied we fall back to the caller's figure as the subtotal.
+        const lineSubtotal = sumLineTotals(input.items);
+        const vat = computeVat(lineSubtotal > 0 ? lineSubtotal : round2(input.total ?? 0), settings);
+
         return prisma.estimate.create({
             data: {
                 companyId,
                 projectId: input.projectId,
                 customerId: input.customerId,
                 items: input.items,
-                total: input.total,
+                subtotal: vat.subtotal,
+                tax: vat.tax,
+                taxRate: vat.taxRate,
+                taxLabel: vat.taxLabel,
+                total: vat.total,
                 validUntil: input.validUntil ? new Date(input.validUntil) : null,
                 status: 'DRAFT',
             },
@@ -70,11 +131,11 @@ export const estimateService = {
         });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
 
+        const settings = await loadCompanySettings(companyId);
+
         // Field quoting is a company opt-in. Technicians may only quote on site when
         // the company has enabled it; office/dispatch/admin are never gated here.
         if (role === 'TECHNICIAN') {
-            const company = await prisma.company.findFirst({ where: { id: companyId } });
-            const settings = normalizeCompanySettings(company?.settings);
             if (!settings.fieldQuoting.enabled) {
                 throw new AppError(
                     'Field quoting is turned off for your company. Ask the office to enable it in company settings.',
@@ -90,12 +151,12 @@ export const estimateService = {
             : [];
         const priceMap = new Map(pbItems.map((p) => [p.id, p]));
 
-        let total = 0;
+        let subtotal = 0;
         const items = parsed.items.map((i) => {
             const pb = i.priceBookItemId ? priceMap.get(i.priceBookItemId) : undefined;
             const unitPrice = pb ? Number(pb.unitPrice) : 0;
             const lineTotal = unitPrice * i.quantity;
-            total += lineTotal;
+            subtotal += lineTotal;
             return {
                 name: i.name,
                 quantity: i.quantity,
@@ -106,13 +167,21 @@ export const estimateService = {
             };
         });
 
+        // Prices resolved above are VAT-exclusive, so the running sum is the
+        // subtotal; VAT is applied from company settings.
+        const vat = computeVat(subtotal, settings);
+
         const estimate = await prisma.estimate.create({
             data: {
                 companyId,
                 customerId: job.customerId,
                 projectId: job.projectId,
                 items,
-                total,
+                subtotal: vat.subtotal,
+                tax: vat.tax,
+                taxRate: vat.taxRate,
+                taxLabel: vat.taxLabel,
+                total: vat.total,
                 status: 'SENT',
                 sentAt: new Date(),
                 validUntil: parsed.validUntil ? new Date(parsed.validUntil) : null,
@@ -124,7 +193,7 @@ export const estimateService = {
             const link = await portalService.generatePortalLink(job.customerId, companyId);
             await notificationService.notifyCustomer(job.customerId, companyId, 'ESTIMATE_SENT', {
                 estimateId: estimate.id,
-                total,
+                total: vat.total,
                 viewUrl: link.url,
             });
         } catch {
@@ -323,6 +392,8 @@ export const estimateService = {
         });
         if (!option) throw new AppError('Option not found', StatusCodes.NOT_FOUND);
 
+        const settings = await loadCompanySettings(companyId);
+
         return prisma.$transaction(async (tx) => {
             // Un-accept all other options
             await tx.estimateOption.updateMany({
@@ -336,12 +407,20 @@ export const estimateService = {
                 data: { accepted: true },
             });
 
-            // Update estimate items and total to match the accepted option
+            // Accepting an option re-prices the quote: the option's line totals are
+            // VAT-exclusive, so recompute the VAT breakdown from them.
+            const vat = computeVat(sumLineTotals(acceptedOption.items), settings);
+
+            // Update estimate items and totals to match the accepted option
             await tx.estimate.update({
                 where: { id: estimateId },
                 data: {
                     items: acceptedOption.items as any,
-                    total: acceptedOption.total,
+                    subtotal: vat.subtotal,
+                    tax: vat.tax,
+                    taxRate: vat.taxRate,
+                    taxLabel: vat.taxLabel,
+                    total: vat.total,
                 },
             });
 

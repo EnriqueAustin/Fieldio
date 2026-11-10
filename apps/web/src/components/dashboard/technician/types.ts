@@ -95,6 +95,10 @@ export interface TechnicianJob {
         city: string;
         state: string;
         zip: string;
+        // Present for located properties — rural plots/farms often aren't geocoded,
+        // so these can be null and navigation falls back to the address text.
+        geoLat?: number | null;
+        geoLng?: number | null;
     };
     checklist: JobChecklistItem[];
     lineItems: JobLineItem[];
@@ -214,17 +218,43 @@ export function getJobTimeGroup(job: TechnicianJob): JobTimeGroup {
     return "upcoming";
 }
 
-/** Group + time-sort assigned jobs for the mobile home list. */
+/** A job the tech finished today. The feed returns these so the closeout tools
+ *  (pay link / summary / after-photos) stay reachable; they live in their own
+ *  "Done today" section rather than polluting the active Overdue/Today buckets. */
+export function isDoneToday(job: TechnicianJob): boolean {
+    if (job.status !== "COMPLETED") return false;
+    // The server only returns jobs completed today, but guard on actualEnd when
+    // it's present so a stale cache can't park an old completion here.
+    if (!job.actualEnd) return true;
+    return isToday(new Date(job.actualEnd));
+}
+
+/** Group + time-sort the active assigned jobs for the list. Jobs finished today
+ *  are excluded here (see getDoneToday) so a completed job never shows as
+ *  "Overdue" or "Today" once it's closed out. */
 export function groupJobs(jobs: TechnicianJob[]): { group: JobTimeGroup; jobs: TechnicianJob[] }[] {
     const byTime = (a: TechnicianJob, b: TechnicianJob) => {
         const at = a.scheduledStart ? new Date(a.scheduledStart).getTime() : Number.POSITIVE_INFINITY;
         const bt = b.scheduledStart ? new Date(b.scheduledStart).getTime() : Number.POSITIVE_INFINITY;
         return at - bt;
     };
+    const active = jobs.filter((job) => !isDoneToday(job));
     return JOB_GROUP_ORDER.map((group) => ({
         group,
-        jobs: jobs.filter((job) => getJobTimeGroup(job) === group).sort(byTime),
+        jobs: active.filter((job) => getJobTimeGroup(job) === group).sort(byTime),
     })).filter((section) => section.jobs.length > 0);
+}
+
+/** Jobs completed today, most recently finished first — for the "Done today"
+ *  section where the tech can still send the pay link/summary or add photos. */
+export function getDoneToday(jobs: TechnicianJob[]): TechnicianJob[] {
+    return jobs
+        .filter(isDoneToday)
+        .sort((a, b) => {
+            const at = a.actualEnd ? new Date(a.actualEnd).getTime() : 0;
+            const bt = b.actualEnd ? new Date(b.actualEnd).getTime() : 0;
+            return bt - at;
+        });
 }
 
 /** The single primary status action for a job, or null once completed/canceled.
@@ -241,4 +271,39 @@ export function getPrimaryAction(
             ? "Arrive on site"
             : "Complete job";
     return { label, nextStatus: next };
+}
+
+// ---- Day route (GET /schedule/my-route) ----
+// Distances are straight-line and drive times approximate; never priced.
+export interface DayRouteLeg {
+    distanceKm: number;
+    driveMinutes: number;
+}
+
+export interface DayRouteStop {
+    order: number;
+    jobId: string;
+    title: string;
+    status: string;
+    priority: TechnicianJob["priority"];
+    customerName: string | null;
+    address: string;
+    scheduledStart: string | null;
+    scheduledEnd: string | null;
+    kind: "inProgress" | "fixed" | "flexible";
+    noLocation: boolean;
+    lat: number | null;
+    lng: number | null;
+    leg: DayRouteLeg | null;
+}
+
+export interface DayRoute {
+    date: string;
+    techId: string;
+    origin: { lat: number; lng: number; source: "lastPing"; at: string } | null;
+    stops: DayRouteStop[];
+    totals: { stops: number; located: number; distanceKm: number; driveMinutes: number };
+    mapsUrl: string | null;
+    mapsTruncated: boolean;
+    estimate: { approximate: true; avgSpeedKmh: number; legBufferMin: number };
 }

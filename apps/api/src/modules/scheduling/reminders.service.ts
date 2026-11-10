@@ -1,15 +1,18 @@
 import { prisma } from '@fieldio/database';
 import { logger } from '../../utils/logger';
 import { notificationService } from '../../services/notifications/notification.service';
+import { formatInTimeZone, getCompanyTimezone } from '../../utils/timezone';
 
-const formatWhen = (d: Date) => {
-    return d.toLocaleString(undefined, {
-        weekday: 'short',
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-    });
+// Customer-facing: always render in the company's zone, never the server's.
+const formatWhen = (d: Date, tz: string) => formatInTimeZone(d, tz);
+
+const companyTz = async (tzCache: Map<string, string>, companyId: string) => {
+    let tz = tzCache.get(companyId);
+    if (!tz) {
+        tz = await getCompanyTimezone(companyId);
+        tzCache.set(companyId, tz);
+    }
+    return tz;
 };
 
 export const remindersService = {
@@ -47,6 +50,8 @@ export const remindersService = {
         });
 
         let sent = 0;
+        // Per-sweep cache so a settings change is picked up next run.
+        const tzCache = new Map<string, string>();
 
         for (const job of due24h) {
             if (!job.customer || !job.scheduledStart) continue;
@@ -55,7 +60,7 @@ export const remindersService = {
                     job.customerId,
                     job.companyId,
                     'APPOINTMENT_REMINDER',
-                    { when: formatWhen(job.scheduledStart) },
+                    { when: formatWhen(job.scheduledStart, await companyTz(tzCache, job.companyId)) },
                 );
                 await prisma.job.update({
                     where: { id: job.id },
@@ -74,7 +79,7 @@ export const remindersService = {
                     job.customerId,
                     job.companyId,
                     'APPOINTMENT_REMINDER',
-                    { when: `in about 1 hour (${formatWhen(job.scheduledStart)})` },
+                    { when: `in about 1 hour (${formatWhen(job.scheduledStart, await companyTz(tzCache, job.companyId))})` },
                 );
                 await prisma.job.update({
                     where: { id: job.id },

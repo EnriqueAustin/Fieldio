@@ -7,12 +7,15 @@ import { catchAsync } from '../utils/catchAsync';
 export const creditNotesRouter = Router();
 creditNotesRouter.use(requireUser);
 
-creditNotesRouter.get('/', catchAsync(async (req: Request, res: Response) => {
+// Credit notes are money documents: never readable by technicians.
+const officeRead = restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES', 'ACCOUNTANT');
+
+creditNotesRouter.get('/', officeRead, catchAsync(async (req: Request, res: Response) => {
     const notes = await creditNotesService.list(req.user!.companyId);
     res.status(StatusCodes.OK).json({ status: 'success', data: { notes } });
 }));
 
-creditNotesRouter.get('/:id', catchAsync(async (req: Request, res: Response) => {
+creditNotesRouter.get('/:id', officeRead, catchAsync(async (req: Request, res: Response) => {
     const note = await creditNotesService.get(req.params.id, req.user!.companyId);
     res.status(StatusCodes.OK).json({ status: 'success', data: { note } });
 }));

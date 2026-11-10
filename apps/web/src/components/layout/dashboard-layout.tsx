@@ -12,7 +12,8 @@ import { MobileNav } from "./mobile-nav";
 import { AccountSheet } from "./account-sheet";
 import { NotificationBell } from "../notifications/notification-bell";
 import { CallerIdPopup } from "../notifications/caller-id-popup";
-import { getNavGroupsForRole } from "../../lib/nav-config";
+import { filterNavGroups, getNavGroupsForRole } from "../../lib/nav-config";
+import { useCompanySettings } from "../dashboard/technician/use-company-settings";
 import { OfflineBanner } from "../offline/offline-banner";
 import { InstallPrompt } from "../offline/install-prompt";
 
@@ -143,6 +144,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const pathname = usePathname();
     const { user, logout } = useAuthStore();
     const [accountOpen, setAccountOpen] = useState(false);
+    // Hide optional-module nav items the company hasn't switched on. While the
+    // settings load, `modules` is undefined and only core items render, so the
+    // extras never flash in and then vanish.
+    const { settings } = useCompanySettings();
+    const navGroups = filterNavGroups(getNavGroupsForRole(user?.role), settings?.modules);
 
     const handleLogout = async () => {
         try {
@@ -176,7 +182,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
                 {/* Nav */}
                 <div className="flex-1 overflow-y-auto scrollbar-thin px-3 py-4">
-                    {getNavGroupsForRole(user?.role).map((group, gi) => (
+                    {navGroups.map((group, gi) => (
                         <div key={gi} className={gi > 0 ? "mt-6" : ""}>
                             {group.label && (
                                 <div className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">

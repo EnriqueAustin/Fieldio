@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import api from "../../../lib/api";
@@ -28,8 +29,29 @@ function formatDate(d: string | null) {
     return new Date(d).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+type StatusTab = (typeof STATUS_TABS)[number];
+
+function parseTab(raw: string | null): StatusTab {
+    const v = (raw ?? "").toUpperCase();
+    return (STATUS_TABS as readonly string[]).includes(v) ? (v as StatusTab) : "ALL";
+}
+
 export default function EstimatesPage() {
-    const [tab, setTab] = useState<(typeof STATUS_TABS)[number]>("ALL");
+    return (
+        <Suspense fallback={<div className="surface-card h-96 animate-pulse" />}>
+            <EstimatesPageInner />
+        </Suspense>
+    );
+}
+
+function EstimatesPageInner() {
+    const router = useRouter();
+    const searchParams = useSearchParams();
+    // The tab lives in the URL so dashboard funnel links (?status=SENT) land filtered.
+    const tab = parseTab(searchParams.get("status"));
+    const setTab = (s: StatusTab) => {
+        router.replace(s === "ALL" ? "/estimates" : `/estimates?status=${s}`, { scroll: false });
+    };
     const [search, setSearch] = useState("");
     const [creating, setCreating] = useState(false);
     const qc = useQueryClient();
@@ -132,7 +154,7 @@ export default function EstimatesPage() {
                             {filtered.length} quote{filtered.length !== 1 ? "s" : ""}
                         </span>
                         <span>
-                            Pipeline value: <span className="font-semibold text-foreground">{formatCurrency(pipelineValue)}</span>
+                            Pipeline value (incl. VAT): <span className="font-semibold text-foreground">{formatCurrency(pipelineValue)}</span>
                         </span>
                     </div>
                     <div className="divide-y divide-border/60">
@@ -159,6 +181,7 @@ export default function EstimatesPage() {
                                 </div>
                                 <div className="text-right shrink-0">
                                     <div className="font-semibold text-sm">{formatCurrency(Number(e.total))}</div>
+                                    <div className="text-[11px] text-muted-foreground">incl. VAT</div>
                                 </div>
                                 <ArrowUpRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition shrink-0" />
                             </Link>

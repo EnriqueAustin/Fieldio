@@ -1,6 +1,6 @@
 "use client";
 
-import type { QueryClient } from "@tanstack/react-query";
+import type { Mutation, QueryClient } from "@tanstack/react-query";
 import api from "./api";
 import { getPhotoBlob, delPhotoBlob } from "./offline-db";
 
@@ -24,6 +24,74 @@ export const OFFLINE_KEYS = {
     fieldInvoice: ["job", "fieldInvoice"] as const,
     formSubmit: ["job", "formSubmit"] as const,
 };
+
+/** Hashed heads of every replayable key — used to tell a field mutation apart
+ *  from any other mutation in the cache (persistence filter, banner, outbox). */
+export const OFFLINE_KEY_HEADS = new Set(Object.values(OFFLINE_KEYS).map((k) => k.join("|")));
+
+/**
+ * Serialisation scopes. react-query runs mutations that share a `scope.id`
+ * strictly one-at-a-time in enqueue order (verified against query-core 5.101.0:
+ * MutationCache.canRun only lets the first *pending* scoped mutation run, and
+ * runNext() resumes the next *paused* one in array/insert order; a failed one is
+ * no longer "pending" so it never blocks the rest). Without a scope the offline
+ * queue replays in parallel and COMPLETED can land before ON_SITE.
+ *
+ * The core field-ops chain (status/checklist/line items/note/signature/quote/
+ * invoice/form) shares ONE scope so those replay in the order the tech tapped —
+ * this is what guarantees status ordering and that a line-item remove never
+ * overtakes its add. Blob uploads (photos, expense receipts) are slow on patchy
+ * signal, so they get their own scopes: a 30s photo upload must NOT sit in front
+ * of a COMPLETED, or that status would land late with a stale `clientAt` and the
+ * server would skip the customer SMS.
+ *
+ * NOTE on per-job scope: the contract asks for `scope: { id: job:<jobId> }` so
+ * different jobs replay in parallel. react-query resolves scope from the
+ * *observer's static options* at mutate() time (MutationObserver.build), not
+ * from the mutate() variables — and these hooks are instantiated once in
+ * technician-view.tsx (not in this worker's scope) with no jobId, so the shared
+ * observer can't know the job. A single stable scope is fully correct here (a
+ * tech is one person replaying one FIFO queue) and only trades cross-job
+ * parallelism. To get true per-job scope, pass `scope: jobScope(jobId)` into the
+ * useMutation() call once the technician-view owner threads the active jobId into
+ * the hooks; `jobScope` is exported for exactly that.
+ */
+export const FIELD_OPS_SCOPE = { id: "fieldio:field-ops" } as const;
+const PHOTO_SCOPE = { id: "fieldio:upload-photo" } as const;
+const EXPENSE_SCOPE = { id: "fieldio:upload-expense" } as const;
+
+/** Per-job scope helper (see note above) for when a hook knows its jobId. */
+export function jobScope(jobId: string) {
+    return { id: `job:${jobId}` };
+}
+
+/** A fresh idempotency key (uuid v4). Generated ONCE per action and stored in the
+ *  mutation variables so it survives persistence and is reused on every replay —
+ *  a repeat of the same key makes the server return the original 2xx instead of
+ *  creating a duplicate. Exported for the photo hook (owned by another worker). */
+export function newClientMutationId(): string {
+    const c = typeof globalThis !== "undefined" ? (globalThis.crypto as Crypto | undefined) : undefined;
+    if (c && typeof c.randomUUID === "function") return c.randomUUID();
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (ch) => {
+        const r = (Math.random() * 16) | 0;
+        const v = ch === "x" ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
+    });
+}
+
+/** Header object carrying an idempotency key (empty when absent so spreading it
+ *  into an axios config is always safe). Exported for the photo hook. */
+export function idempotencyHeaders(id: string | undefined): Record<string, string> {
+    return id ? { "Idempotency-Key": id } : {};
+}
+
+/** Stamp a stable idempotency key onto the variables object if it has none yet.
+ *  Runs in onMutate (once per action, never on a restored/replayed execute), so
+ *  the key is written into mutation.state.variables before the mutation is
+ *  persisted and is identical on every retry and across reloads. */
+function stampId(variables: { clientMutationId?: string }) {
+    if (variables && !variables.clientMutationId) variables.clientMutationId = newClientMutationId();
+}
 
 const ASSIGNED_JOBS_KEY = ["technician-assigned-jobs"];
 const MY_WEEK_KEY = ["my-week"];
@@ -61,21 +129,31 @@ const tempId = () => `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8
  * Register replayable defaults for every field action. Called once when the
  * QueryClient is created. Optimistic onMutate keeps the UI truthful offline;
  * onSettled reconciles against the server once the mutation actually lands.
+ *
+ * Every replayable mutation: (1) carries a scope so the offline queue replays in
+ * order, and (2) stamps an Idempotency-Key in onMutate and sends it as a header,
+ * so a replay/retry can never create a duplicate.
  */
 export function registerOfflineMutationDefaults(qc: QueryClient) {
     qc.setMutationDefaults(OFFLINE_KEYS.status, {
-        mutationFn: async ({ jobId, status }: { jobId: string; status: string }) => {
-            await api.patch(`/jobs/${jobId}/status`, { status });
+        scope: FIELD_OPS_SCOPE,
+        mutationFn: async ({ jobId, status, clientAt, clientMutationId }: { jobId: string; status: string; clientAt?: string; clientMutationId?: string }) => {
+            // clientAt = when the tech tapped (not when this replays): the server
+            // drives the clock from it and skips the customer SMS if it's stale.
+            await api.patch(`/jobs/${jobId}/status`, { status, clientAt }, { headers: idempotencyHeaders(clientMutationId) });
         },
-        onMutate: async ({ jobId, status }: { jobId: string; status: string }) => {
+        onMutate: async (variables: { jobId: string; status: string; clientAt?: string; clientMutationId?: string }) => {
+            stampId(variables);
+            if (!variables.clientAt) variables.clientAt = new Date().toISOString();
+            const { jobId, status } = variables;
             await qc.cancelQueries({ queryKey: ASSIGNED_JOBS_KEY });
             await qc.cancelQueries({ queryKey: MY_WEEK_KEY });
             patchJob(qc, jobId, (job) => {
                 job.status = status;
                 if ((status === "EN_ROUTE" || status === "ON_SITE") && !job.actualStart) {
-                    job.actualStart = new Date().toISOString();
+                    job.actualStart = variables.clientAt;
                 }
-                if (status === "COMPLETED") job.actualEnd = new Date().toISOString();
+                if (status === "COMPLETED") job.actualEnd = variables.clientAt;
                 return job;
             });
             patchWeekEventStatus(qc, jobId, status);
@@ -84,10 +162,13 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.checklist, {
-        mutationFn: async ({ jobId, checkId, isCompleted }: { jobId: string; checkId: string; isCompleted: boolean }) => {
-            await api.patch(`/jobs/${jobId}/checklist/${checkId}`, { isCompleted });
+        scope: FIELD_OPS_SCOPE,
+        mutationFn: async ({ jobId, checkId, isCompleted, clientMutationId }: { jobId: string; checkId: string; isCompleted: boolean; clientMutationId?: string }) => {
+            await api.patch(`/jobs/${jobId}/checklist/${checkId}`, { isCompleted }, { headers: idempotencyHeaders(clientMutationId) });
         },
-        onMutate: async ({ jobId, checkId, isCompleted }: { jobId: string; checkId: string; isCompleted: boolean }) => {
+        onMutate: async (variables: { jobId: string; checkId: string; isCompleted: boolean; clientMutationId?: string }) => {
+            stampId(variables);
+            const { jobId, checkId, isCompleted } = variables;
             await qc.cancelQueries({ queryKey: ASSIGNED_JOBS_KEY });
             patchJob(qc, jobId, (job) => {
                 job.checklist = (job.checklist ?? []).map((c: any) =>
@@ -102,10 +183,13 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.note, {
-        mutationFn: async ({ jobId, message }: { jobId: string; message: string }) => {
-            await api.post(`/jobs/${jobId}/notes`, { message });
+        scope: FIELD_OPS_SCOPE,
+        mutationFn: async ({ jobId, message, clientMutationId }: { jobId: string; message: string; clientMutationId?: string }) => {
+            await api.post(`/jobs/${jobId}/notes`, { message }, { headers: idempotencyHeaders(clientMutationId) });
         },
-        onMutate: async ({ jobId, message }: { jobId: string; message: string }) => {
+        onMutate: async (variables: { jobId: string; message: string; clientMutationId?: string }) => {
+            stampId(variables);
+            const { jobId, message } = variables;
             await qc.cancelQueries({ queryKey: ASSIGNED_JOBS_KEY });
             patchJob(qc, jobId, (job) => {
                 job.notes = [
@@ -119,16 +203,23 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.lineItemAdd, {
-        mutationFn: async ({ jobId, ...data }: { jobId: string; name: string; quantity: number; unitPrice: number; type: string; priceBookItemId?: string }) => {
-            await api.post(`/jobs/${jobId}/line-items`, data);
+        scope: FIELD_OPS_SCOPE,
+        mutationFn: async ({ jobId, name, quantity, unitPrice, type, priceBookItemId, clientMutationId }: { jobId: string; name: string; quantity: number; unitPrice: number; type: string; priceBookItemId?: string; tempId?: string; clientMutationId?: string }) => {
+            await api.post(`/jobs/${jobId}/line-items`, { name, quantity, unitPrice, type, priceBookItemId }, { headers: idempotencyHeaders(clientMutationId) });
         },
-        onMutate: async ({ jobId, name, quantity, unitPrice, type }: { jobId: string; name: string; quantity: number; unitPrice: number; type: string }) => {
+        onMutate: async (variables: { jobId: string; name: string; quantity: number; unitPrice: number; type: string; tempId?: string; clientMutationId?: string }) => {
+            stampId(variables);
+            // The optimistic row's id is stored on the variables so a still-queued
+            // add can be matched and cancelled if the tech removes the item before
+            // it syncs (see use-line-items: removeLineItem).
+            if (!variables.tempId) variables.tempId = tempId();
+            const { jobId, name, quantity, unitPrice, type, tempId: optimisticId } = variables;
             await qc.cancelQueries({ queryKey: ASSIGNED_JOBS_KEY });
             patchJob(qc, jobId, (job) => {
                 job.lineItems = [
                     ...(job.lineItems ?? []),
                     {
-                        id: tempId(),
+                        id: optimisticId,
                         name,
                         quantity,
                         unitPrice: String(unitPrice),
@@ -144,10 +235,13 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.lineItemRemove, {
-        mutationFn: async ({ jobId, itemId }: { jobId: string; itemId: string }) => {
-            await api.delete(`/jobs/${jobId}/line-items/${itemId}`);
+        scope: FIELD_OPS_SCOPE,
+        mutationFn: async ({ jobId, itemId, clientMutationId }: { jobId: string; itemId: string; clientMutationId?: string }) => {
+            await api.delete(`/jobs/${jobId}/line-items/${itemId}`, { headers: idempotencyHeaders(clientMutationId) });
         },
-        onMutate: async ({ jobId, itemId }: { jobId: string; itemId: string }) => {
+        onMutate: async (variables: { jobId: string; itemId: string; clientMutationId?: string }) => {
+            stampId(variables);
+            const { jobId, itemId } = variables;
             await qc.cancelQueries({ queryKey: ASSIGNED_JOBS_KEY });
             patchJob(qc, jobId, (job) => {
                 job.lineItems = (job.lineItems ?? []).filter((li: any) => li.id !== itemId);
@@ -158,10 +252,13 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.signature, {
-        mutationFn: async ({ jobId, signerName, signatureDataUrl }: { jobId: string; signerName: string; signatureDataUrl: string }) => {
-            await api.post(`/jobs/${jobId}/signatures`, { signerName, signatureDataUrl });
+        scope: FIELD_OPS_SCOPE,
+        mutationFn: async ({ jobId, signerName, signatureDataUrl, clientMutationId }: { jobId: string; signerName: string; signatureDataUrl: string; clientMutationId?: string }) => {
+            await api.post(`/jobs/${jobId}/signatures`, { signerName, signatureDataUrl }, { headers: idempotencyHeaders(clientMutationId) });
         },
-        onMutate: async ({ jobId, signerName, signatureDataUrl }: { jobId: string; signerName: string; signatureDataUrl: string }) => {
+        onMutate: async (variables: { jobId: string; signerName: string; signatureDataUrl: string; clientMutationId?: string }) => {
+            stampId(variables);
+            const { jobId, signerName, signatureDataUrl } = variables;
             await qc.cancelQueries({ queryKey: ASSIGNED_JOBS_KEY });
             patchJob(qc, jobId, (job) => {
                 job.signatures = [
@@ -175,7 +272,8 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.expense, {
-        mutationFn: async ({ jobId, description, amount, category, receiptBlobId }: { jobId: string; description: string; amount: number; category: string; receiptBlobId?: string }) => {
+        scope: EXPENSE_SCOPE,
+        mutationFn: async ({ jobId, description, amount, category, receiptBlobId, clientMutationId }: { jobId: string; description: string; amount: number; category: string; receiptBlobId?: string; clientMutationId?: string }) => {
             const formData = new FormData();
             formData.append("description", description);
             formData.append("amount", String(amount));
@@ -186,8 +284,11 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
                 const queued = await getPhotoBlob(receiptBlobId);
                 if (queued) formData.append("receipt", queued.blob, queued.fileName);
             }
-            await api.post(`/operations/jobs/${jobId}/expenses`, formData);
+            await api.post(`/operations/jobs/${jobId}/expenses`, formData, { headers: idempotencyHeaders(clientMutationId) });
             if (receiptBlobId) await delPhotoBlob(receiptBlobId);
+        },
+        onMutate: async (variables: { jobId: string; description: string; amount: number; category: string; receiptBlobId?: string; clientMutationId?: string }) => {
+            stampId(variables);
         },
         onSettled: () => invalidateFieldQueries(qc),
     });
@@ -197,8 +298,12 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     // variables carry no pricing — only item ids/quantities. No optimistic cache
     // patch: the estimate is a separate entity, not part of the assigned-jobs list.
     qc.setMutationDefaults(OFFLINE_KEYS.fieldQuote, {
-        mutationFn: async ({ jobId, items }: { jobId: string; items: Array<{ priceBookItemId?: string; name: string; quantity: number; type: string }> }) => {
-            await api.post(`/finance/estimates/field`, { jobId, items });
+        scope: FIELD_OPS_SCOPE,
+        mutationFn: async ({ jobId, items, clientMutationId }: { jobId: string; items: Array<{ priceBookItemId?: string; name: string; quantity: number; type: string }>; clientMutationId?: string }) => {
+            await api.post(`/finance/estimates/field`, { jobId, items }, { headers: idempotencyHeaders(clientMutationId) });
+        },
+        onMutate: async (variables: { jobId: string; items: Array<{ priceBookItemId?: string; name: string; quantity: number; type: string }>; clientMutationId?: string }) => {
+            stampId(variables);
         },
     });
 
@@ -209,8 +314,12 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     // "invoiced" state persists after reconnect. The returned data (masked sent-to)
     // is surfaced by the hook that fires this key.
     qc.setMutationDefaults(OFFLINE_KEYS.fieldInvoice, {
-        mutationFn: async ({ jobId }: { jobId: string }) => {
-            return (await api.post(`/finance/jobs/${jobId}/field-invoice`, {})).data;
+        scope: FIELD_OPS_SCOPE,
+        mutationFn: async ({ jobId, clientMutationId }: { jobId: string; clientMutationId?: string }) => {
+            return (await api.post(`/finance/jobs/${jobId}/field-invoice`, {}, { headers: idempotencyHeaders(clientMutationId) })).data;
+        },
+        onMutate: async (variables: { jobId: string; clientMutationId?: string }) => {
+            stampId(variables);
         },
         onSettled: () => invalidateFieldQueries(qc),
     });
@@ -219,10 +328,13 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     // of the assigned-jobs list), so we patch the per-job forms cache optimistically
     // and reconcile onSettled. Prices never appear on forms, so nothing to strip.
     qc.setMutationDefaults(OFFLINE_KEYS.formSubmit, {
-        mutationFn: async ({ jobId, templateId, data, signatureUrl }: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string }) => {
-            await api.post(`/digital-forms/submissions`, { jobId, templateId, data, signatureUrl });
+        scope: FIELD_OPS_SCOPE,
+        mutationFn: async ({ jobId, templateId, data, signatureUrl, clientMutationId }: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string; clientMutationId?: string }) => {
+            await api.post(`/digital-forms/submissions`, { jobId, templateId, data, signatureUrl }, { headers: idempotencyHeaders(clientMutationId) });
         },
-        onMutate: async ({ jobId, templateId }: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string }) => {
+        onMutate: async (variables: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string; clientMutationId?: string }) => {
+            stampId(variables);
+            const { jobId, templateId } = variables;
             await qc.cancelQueries({ queryKey: ["job-forms", jobId] });
             qc.setQueryData(["job-forms", jobId], (old: any) => {
                 if (!old) return old;
@@ -240,15 +352,77 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.photo, {
+        scope: PHOTO_SCOPE,
         mutationFn: async ({ jobId, blobId, caption }: { jobId: string; blobId: string; caption: string }) => {
             const queued = await getPhotoBlob(blobId);
             if (!queued) return; // already uploaded / cleaned up
             const formData = new FormData();
             formData.append("photo", queued.blob, queued.fileName);
             if (caption.trim()) formData.append("caption", caption.trim());
-            await api.post(`/media/jobs/${jobId}/photos`, formData);
+            // Idempotency key is the IndexedDB blobId: stable across replay and
+            // shared with the photo sweeper in use-photos.ts, so if both the
+            // paused mutation and the sweeper fire the same blob the server
+            // dedupes. Long timeout — photo uploads on patchy signal are slow.
+            await api.post(`/media/jobs/${jobId}/photos`, formData, {
+                headers: idempotencyHeaders(blobId),
+                timeout: 120000,
+            });
             await delPhotoBlob(blobId);
         },
         onSettled: () => invalidateFieldQueries(qc),
     });
+}
+
+/** True when this cache mutation is one of our replayable field actions. */
+export function isFieldMutation(mutation: Mutation<any, any, any, any>): boolean {
+    const key = mutation.options?.mutationKey;
+    return Array.isArray(key) && OFFLINE_KEY_HEADS.has(key.join("|"));
+}
+
+const STATUS_TEXT: Record<string, string> = {
+    REQUESTED: "Requested",
+    ASSIGNED: "Assigned",
+    EN_ROUTE: "En route",
+    ON_SITE: "On site",
+    COMPLETED: "Completed",
+    CANCELED: "Canceled",
+};
+
+/**
+ * Human label for a queued/failed field mutation, for the outbox. NEVER includes
+ * prices or amounts — techs don't see pricing. Returns the action text plus the
+ * jobId so the outbox can resolve a friendly job name from cache.
+ */
+export function mutationLabel(mutation: Mutation<any, any, any, any>): { action: string; jobId?: string } {
+    const key = Array.isArray(mutation.options?.mutationKey) ? mutation.options.mutationKey.join("|") : "";
+    const v: any = mutation.state.variables ?? {};
+    const k = OFFLINE_KEYS;
+    switch (key) {
+        case k.status.join("|"):
+            return { action: `Status → ${STATUS_TEXT[v.status] ?? v.status ?? "updated"}`, jobId: v.jobId };
+        case k.checklist.join("|"):
+            return { action: v.isCompleted ? "Checklist item ticked" : "Checklist item cleared", jobId: v.jobId };
+        case k.note.join("|"):
+            return { action: "Note added", jobId: v.jobId };
+        case k.lineItemAdd.join("|"):
+            return { action: `Line item: ${v.name ?? "item"}${v.quantity ? ` ×${v.quantity}` : ""}`, jobId: v.jobId };
+        case k.lineItemRemove.join("|"):
+            return { action: "Line item removed", jobId: v.jobId };
+        case k.signature.join("|"):
+            return { action: `Signature${v.signerName ? ` — ${v.signerName}` : ""}`, jobId: v.jobId };
+        case k.expense.join("|"):
+            return { action: `Expense: ${v.description ?? "receipt"}`, jobId: v.jobId };
+        case k.fieldQuote.join("|"): {
+            const n = Array.isArray(v.items) ? v.items.length : 0;
+            return { action: `Quote (${n} item${n !== 1 ? "s" : ""})`, jobId: v.jobId };
+        }
+        case k.fieldInvoice.join("|"):
+            return { action: "Invoice & pay link", jobId: v.jobId };
+        case k.formSubmit.join("|"):
+            return { action: "Form submission", jobId: v.jobId };
+        case k.photo.join("|"):
+            return { action: "Photo upload", jobId: v.jobId };
+        default:
+            return { action: "Change", jobId: v.jobId };
+    }
 }

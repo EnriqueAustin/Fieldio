@@ -2,6 +2,16 @@ import { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { z } from 'zod';
 import { schedulingService } from './scheduling.service';
+import { AppError } from '../../middleware/error';
+
+const OFFICE_ROUTE_ROLES = ['ADMIN', 'OFFICE', 'DISPATCHER'];
+
+const dayRouteQuerySchema = z.object({
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+    techId: z.string().min(1).optional(),
+    // Minutes east of UTC for the caller's day boundaries; defaults to SAST.
+    tzOffset: z.coerce.number().int().min(-720).max(840).default(120),
+});
 
 const eventsQuerySchema = z.object({
     start: z.string().datetime(),
@@ -33,6 +43,25 @@ export const schedulingController = {
             req.user!.companyId, req.user!.userId, start, end
         );
         res.status(StatusCodes.OK).json({ status: 'success', data: { events } });
+    },
+
+    /** Technicians get their own route; office roles may pass ?techId=. */
+    getDayRoute: async (req: Request, res: Response) => {
+        const { date, techId, tzOffset } = dayRouteQuerySchema.parse(req.query);
+        const { role, userId, companyId } = req.user!;
+        let targetTechId = userId;
+        if (techId && techId !== userId) {
+            if (!OFFICE_ROUTE_ROLES.includes(role)) {
+                throw new AppError('You can only view your own route', StatusCodes.FORBIDDEN);
+            }
+            targetTechId = techId;
+        }
+        if (targetTechId !== userId) {
+            const tech = await schedulingService.findCompanyUser(companyId, targetTechId);
+            if (!tech) throw new AppError('Technician not found', StatusCodes.NOT_FOUND);
+        }
+        const route = await schedulingService.getDayRoute(companyId, targetTechId, date, tzOffset);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { route } });
     },
 
     createJob: async (req: Request, res: Response) => {

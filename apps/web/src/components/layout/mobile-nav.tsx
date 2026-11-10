@@ -4,12 +4,14 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "../../lib/utils";
 import { useAuthStore } from "../../store/auth";
-import { getMobileNavForRole } from "../../lib/nav-config";
+import { filterMobileNav, getMobileNavForRole } from "../../lib/nav-config";
+import { useCompanySettings } from "../dashboard/technician/use-company-settings";
 
 export function MobileNav() {
     const pathname = usePathname();
     const { user } = useAuthStore();
-    const navItems = getMobileNavForRole(user?.role);
+    const { settings } = useCompanySettings();
+    const navItems = filterMobileNav(getMobileNavForRole(user?.role), settings?.modules);
 
     const isActive = (href: string) =>
         href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");

@@ -34,7 +34,8 @@ function seedJob(overrides: Record<string, any> = {}) {
                 { id: 'li_1', name: 'Labor', quantity: 2, unitPrice: 150, total: 300, type: 'LABOR' },
                 { id: 'li_2', name: 'Pipe', quantity: 1, unitPrice: 40, total: 40, type: 'MATERIAL' },
             ],
-            company: { id: COMPANY, name: 'Acme Co', settings: {} },
+            // VAT-registered supplier so 15% VAT applies to the totals below.
+            company: { id: COMPANY, name: 'Acme Co', settings: { billing: { taxNumber: '4123456789' } } },
             customer: { id: 'cust_1', name: 'Acme', email: 'jane@acme.test', phone: '+27821234567' },
             invoice: null,
             ...overrides,
@@ -45,6 +46,8 @@ function seedJob(overrides: Record<string, any> = {}) {
 beforeEach(() => {
     fakePrisma.$reset();
     seedJob();
+    // The atomic invoice-number counter lives on the company row.
+    fakePrisma.company.seed([{ id: COMPANY, name: 'Acme Co', invoiceSequence: 0, settings: { billing: { taxNumber: '4123456789' } } }]);
 });
 
 describe('POST /finance/jobs/:jobId/field-invoice', () => {

@@ -37,6 +37,25 @@ export const portalController = {
         res.status(StatusCodes.OK).json({ status: 'success', data: { estimate } });
     },
 
+    requestFinancing: async (req: Request, res: Response) => {
+        const body = z.object({ financingOptionId: z.string().min(1) }).parse(req.body);
+        const application = await portalService.requestFinancing(
+            req.params.token, req.params.estimateId, body.financingOptionId
+        );
+        res.status(StatusCodes.OK).json({ status: 'success', data: { application } });
+    },
+
+    getRescheduleOptions: async (req: Request, res: Response) => {
+        const data = await portalService.getRescheduleOptions(req.params.token, req.params.jobId);
+        res.status(StatusCodes.OK).json({ status: 'success', data });
+    },
+
+    rescheduleJob: async (req: Request, res: Response) => {
+        const body = z.object({ start: z.string().datetime() }).parse(req.body);
+        const job = await portalService.rescheduleJob(req.params.token, req.params.jobId, new Date(body.start));
+        res.status(StatusCodes.OK).json({ status: 'success', data: { job } });
+    },
+
     // --- Authenticated (office staff generates portal link) ---
     generateLink: async (req: Request, res: Response) => {
         const result = await portalService.generatePortalLink(req.params.customerId, req.user!.companyId);

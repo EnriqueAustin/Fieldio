@@ -80,6 +80,8 @@ interface Customer {
     phone: string | null;
     status: string;
     notes: string | null;
+    vatNumber: string | null;
+    billingAddress: string | null;
     properties: Property[];
     jobs: CustomerJob[];
     summary: {
@@ -177,7 +179,7 @@ export default function CustomerDetailPage() {
     const [propertyOpen, setPropertyOpen] = useState(false);
     const [noteOpen, setNoteOpen] = useState(false);
     const [editOpen, setEditOpen] = useState(false);
-    const [editForm, setEditForm] = useState({ name: "", email: "", phone: "" });
+    const [editForm, setEditForm] = useState({ name: "", email: "", phone: "", vatNumber: "", billingAddress: "" });
     const [propertyForm, setPropertyForm] = useState({
         addressLine1: "",
         addressLine2: "",
@@ -226,6 +228,8 @@ export default function CustomerDetailPage() {
                 name: editForm.name,
                 email: editForm.email || null,
                 phone: editForm.phone || null,
+                vatNumber: editForm.vatNumber.trim() || null,
+                billingAddress: editForm.billingAddress.trim() || null,
             }),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: ["customer", id] });
@@ -327,6 +331,8 @@ export default function CustomerDetailPage() {
                                         name: customer.name,
                                         email: customer.email ?? "",
                                         phone: customer.phone ?? "",
+                                        vatNumber: customer.vatNumber ?? "",
+                                        billingAddress: customer.billingAddress ?? "",
                                     });
                                     setFormError(null);
                                 }
@@ -364,7 +370,30 @@ export default function CustomerDetailPage() {
                                         <Input
                                             id="edit-phone"
                                             value={editForm.phone}
+                                            placeholder="082 123 4567"
                                             onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                                        />
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="edit-vat">VAT number</Label>
+                                        <Input
+                                            id="edit-vat"
+                                            value={editForm.vatNumber}
+                                            placeholder="4123456789"
+                                            onChange={(e) => setEditForm({ ...editForm, vatNumber: e.target.value })}
+                                        />
+                                        <p className="text-xs text-muted-foreground">
+                                            For SARS tax invoices over R5,000. 10 digits starting with 4, or leave blank.
+                                        </p>
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="edit-billing">Billing address</Label>
+                                        <Textarea
+                                            id="edit-billing"
+                                            rows={3}
+                                            value={editForm.billingAddress}
+                                            placeholder="Postal / billing address for invoices"
+                                            onChange={(e) => setEditForm({ ...editForm, billingAddress: e.target.value })}
                                         />
                                     </div>
                                     {formError && <p className="text-xs text-destructive">{formError}</p>}
@@ -422,6 +451,30 @@ export default function CustomerDetailPage() {
                     <p className="mt-1 text-2xl font-semibold tracking-tight">{customer.properties.length}</p>
                     <p className="mt-1 text-xs text-muted-foreground">{equipmentCount} items of equipment</p>
                 </div>
+            </div>
+
+            <div className="surface-card p-5">
+                <div className="flex items-center gap-2">
+                    <div className="icon-tile bg-slate-100 text-slate-500">
+                        <Receipt className="h-5 w-5" />
+                    </div>
+                    <div>
+                        <h3 className="font-semibold">Billing</h3>
+                        <p className="text-xs text-muted-foreground">
+                            Tax details used on SARS-compliant invoices over R5,000
+                        </p>
+                    </div>
+                </div>
+                <dl className="mt-4 grid gap-4 sm:grid-cols-2">
+                    <div>
+                        <dt className="text-xs font-medium uppercase tracking-wider text-muted-foreground">VAT number</dt>
+                        <dd className="mt-1 text-sm tabular-nums">{customer.vatNumber || "—"}</dd>
+                    </div>
+                    <div>
+                        <dt className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Billing address</dt>
+                        <dd className="mt-1 whitespace-pre-line text-sm">{customer.billingAddress || "—"}</dd>
+                    </div>
+                </dl>
             </div>
 
             <Tabs defaultValue="activity" className="w-full">

@@ -12,7 +12,8 @@ financingRouter.use(requireUser);
 const canWorkApplications = restrictTo('ADMIN', 'OFFICE', 'SALES');
 
 // Options (admin config)
-financingRouter.get('/options', catchAsync(financingController.getOptions));
+// Rates and amounts: every role except TECHNICIAN may read the product list.
+financingRouter.get('/options', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES', 'ACCOUNTANT'), catchAsync(financingController.getOptions));
 financingRouter.post('/options', restrictTo('ADMIN'), catchAsync(financingController.createOption));
 financingRouter.put('/options/:id', restrictTo('ADMIN'), catchAsync(financingController.updateOption));
 

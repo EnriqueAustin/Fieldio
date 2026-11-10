@@ -26,7 +26,11 @@ export default function TrackerPage() {
     if (err) return <div className="p-6 text-rose-600">Failed to load tracker.</div>;
     if (!data) return <div className="p-6">Loading…</div>;
 
-    const { job, customer, property, company, techLocation } = data;
+    const { job, customer, property, company, techLocation, eta } = data;
+    // Approximate, straight-line ETA from the tech's latest fresh ping (API only
+    // sends basis 'live' while en route). Refreshed by the 15s poll above.
+    const liveEta: { minutes: number; distanceKm: number } | null =
+        eta?.basis === "live" && typeof eta.minutes === "number" ? eta : null;
 
     return (
         <div className="min-h-screen bg-slate-50">
@@ -36,6 +40,21 @@ export default function TrackerPage() {
                     <div className="text-lg font-semibold mt-1">{job.title}</div>
                     <div className="text-sm text-slate-600 mt-0.5">Hi {customer?.name}, here's your live update.</div>
                 </div>
+
+                {liveEta && (
+                    <div className="bg-violet-600 text-white rounded-xl p-5 shadow-sm" data-testid="tracker-eta">
+                        <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-violet-100">
+                            <Truck className="h-4 w-4" />
+                            On the way
+                        </div>
+                        <div className="text-2xl font-semibold mt-1">
+                            {liveEta.minutes <= 1 ? "Arriving now" : `Arriving in about ${liveEta.minutes} min`}
+                        </div>
+                        <div className="text-sm text-violet-100 mt-0.5">
+                            About {liveEta.distanceKm} km away · estimate, may change with traffic
+                        </div>
+                    </div>
+                )}
 
                 <div className="bg-white rounded-xl p-5 shadow-sm space-y-3">
                     <Row icon={<Clock className="h-4 w-4" />} label="Status" value={job.status.replace(/_/g, " ")} />

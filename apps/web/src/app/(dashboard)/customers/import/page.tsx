@@ -15,6 +15,8 @@ const FIELDS = [
     "email",
     "phone",
     "notes",
+    "vatNumber",
+    "billingAddress",
     "addressLine1",
     "addressLine2",
     "city",
@@ -28,6 +30,8 @@ const FIELD_LABELS: Record<Field, string> = {
     email: "Email",
     phone: "Phone",
     notes: "Notes",
+    vatNumber: "VAT number",
+    billingAddress: "Billing address",
     addressLine1: "Address 1",
     addressLine2: "Address 2",
     city: "City",
@@ -36,11 +40,15 @@ const FIELD_LABELS: Record<Field, string> = {
 };
 
 // Header text (normalized) → field. Covers common spreadsheet variants.
+// Note: "address" maps to the site address (addressLine1), so the billing
+// address only picks up explicit "billing"/"postal address" headers.
 const HEADER_SYNONYMS: Record<string, Field> = {
     name: "name", customer: "name", customername: "name", fullname: "name", client: "name", company: "name", companyname: "name",
     email: "email", emailaddress: "email", mail: "email", "e-mail": "email",
     phone: "phone", phonenumber: "phone", mobile: "phone", cell: "phone", tel: "phone", telephone: "phone", contact: "phone", contactnumber: "phone",
     notes: "notes", note: "notes", comments: "notes", comment: "notes",
+    vat: "vatNumber", vatnumber: "vatNumber", vatno: "vatNumber", taxnumber: "vatNumber", vatreg: "vatNumber", vatregistration: "vatNumber",
+    billingaddress: "billingAddress", postaladdress: "billingAddress", billing: "billingAddress",
     address: "addressLine1", addressline1: "addressLine1", address1: "addressLine1", street: "addressLine1", streetaddress: "addressLine1", line1: "addressLine1",
     addressline2: "addressLine2", address2: "addressLine2", line2: "addressLine2", unit: "addressLine2", suite: "addressLine2",
     city: "city", town: "city", suburb: "city",
@@ -87,8 +95,8 @@ function parseCsv(text: string): string[][] {
     return rows.filter((r) => r.some((cell) => cell.trim() !== ""));
 }
 
-const TEMPLATE_HEADERS = "name,email,phone,notes,addressLine1,addressLine2,city,state,zip";
-const TEMPLATE_SAMPLE = 'Sarah van der Merwe,sarah@example.co.za,082 555 1234,VIP client,12 Oak Ave,,Sandton,Gauteng,2196';
+const TEMPLATE_HEADERS = "name,email,phone,notes,vatNumber,billingAddress,addressLine1,addressLine2,city,state,zip";
+const TEMPLATE_SAMPLE = 'Sarah van der Merwe,sarah@example.co.za,082 555 1234,VIP client,4123456789,PO Box 100 Sandton 2146,12 Oak Ave,,Sandton,Gauteng,2196';
 
 interface ImportResult {
     total: number;

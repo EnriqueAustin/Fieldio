@@ -2,6 +2,7 @@ import { Resend } from 'resend';
 import { prisma } from '@fieldio/database';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
+import { handleUnconfiguredProvider } from './provider-stub';
 
 let resendClient: Resend | null = null;
 
@@ -32,16 +33,13 @@ const send = async (params: {
 
     const client = getResend();
     if (!client) {
-        logger.info(
-            `[EMAIL:DEV] To: ${params.to} | Subject: ${params.subject}\n${params.html}`
-        );
-        if (log) {
-            await prisma.notificationLog.update({
-                where: { id: log.id },
-                data: { status: 'SENT', providerId: 'dev-stub' },
-            }).catch(() => undefined);
-        }
-        return { ok: true, dev: true };
+        return handleUnconfiguredProvider({
+            logId: log?.id,
+            channel: 'EMAIL',
+            missing: 'RESEND_API_KEY',
+            // Never log the body: it can hold password-reset links and pay links.
+            devLog: () => logger.info(`[EMAIL:DEV] To: ${params.to} | Subject: ${params.subject}`),
+        });
     }
 
     try {

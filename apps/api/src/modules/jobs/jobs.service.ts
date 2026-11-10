@@ -6,6 +6,8 @@ import { socketService } from '../../services/socket.service';
 import { notificationService } from '../../services/notifications/notification.service';
 import { PUBLIC_USER_SELECT } from '../../utils/publicSelects';
 import { closeOpenEntries } from '../time-tracking/timeTracking.service';
+import { formatInTimeZone, getCompanyTimezone, startOfDayInTimeZone } from '../../utils/timezone';
+import { getMissingRequiredForm } from '../digital-forms/digital-forms.service';
 
 const createJobSchema = z.object({
     projectId: z.string().uuid().optional().nullable(),
@@ -98,6 +100,52 @@ const quickCreateSchema = z.object({
 });
 
 const JOB_NOTE_ACTION = 'JOB_NOTE_ADDED';
+
+// Forward lifecycle order for the field status transitions this endpoint accepts.
+// CANCELED is terminal and reachable from any state, so it sits outside the chain.
+const STATUS_FORWARD_ORDER = ['REQUESTED', 'ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'COMPLETED'] as const;
+
+/**
+ * A replayed offline action can arrive out of order — e.g. an "ON_SITE" tap that
+ * only reaches the server after "COMPLETED" was already recorded. Such a move
+ * backwards through the lifecycle is ignored (the job is not reopened and its
+ * clock is not restarted). Re-sending the same status is allowed (idempotent).
+ */
+function isBackwardsTransition(current: string, next: string): boolean {
+    if (next === current) return false;
+    if (next === 'CANCELED') return false; // a job can be canceled from any state
+    const c = STATUS_FORWARD_ORDER.indexOf(current as (typeof STATUS_FORWARD_ORDER)[number]);
+    const n = STATUS_FORWARD_ORDER.indexOf(next as (typeof STATUS_FORWARD_ORDER)[number]);
+    if (c === -1) {
+        // `current` is terminal (CANCELED): any move back into the field lifecycle
+        // is a stale replay.
+        return STATUS_FORWARD_ORDER.includes(next as (typeof STATUS_FORWARD_ORDER)[number]);
+    }
+    if (n === -1) return false;
+    return n < c;
+}
+
+/**
+ * The timestamp a status change should stamp. An offline tap replays later, so
+ * the phone sends the real tap time as `clientAt`; we trust it only when it is a
+ * valid instant inside [now - 24h, now + 2min] and not earlier than the job's
+ * previous stamp. Anything else falls back to server time.
+ */
+function resolveEffectiveTime(
+    clientAt: string | undefined,
+    job: { actualStart?: Date | null; createdAt?: Date | null },
+    now: Date,
+): Date {
+    if (!clientAt) return now;
+    const d = new Date(clientAt);
+    if (Number.isNaN(d.getTime())) return now;
+    const earliest = now.getTime() - 24 * 60 * 60 * 1000;
+    const latest = now.getTime() + 2 * 60 * 1000;
+    if (d.getTime() < earliest || d.getTime() > latest) return now;
+    const prior = job.actualStart ?? job.createdAt ?? null;
+    if (prior && d.getTime() < new Date(prior).getTime()) return now;
+    return d;
+}
 
 async function getJobNotes(companyId: string, jobIds: string[]) {
     if (jobIds.length === 0) return [];
@@ -220,7 +268,7 @@ export const jobsService = {
                 const techName = [tech.firstName, tech.lastName].filter(Boolean).join(' ') || tech.email;
                 await notificationService.notifyCustomer(job.customerId, companyId, 'APPOINTMENT_REMINDER', {
                     when: job.scheduledStart
-                        ? new Date(job.scheduledStart).toLocaleString('en-ZA')
+                        ? formatInTimeZone(job.scheduledStart, await getCompanyTimezone(companyId))
                         : `soon (technician: ${techName})`,
                 });
             }
@@ -293,7 +341,7 @@ export const jobsService = {
                 const techName = [tech.firstName, tech.lastName].filter(Boolean).join(' ') || tech.email;
                 await notificationService.notifyCustomer(updated.customerId, companyId, 'APPOINTMENT_REMINDER', {
                     when: updated.scheduledStart
-                        ? new Date(updated.scheduledStart).toLocaleString('en-ZA')
+                        ? formatInTimeZone(updated.scheduledStart, await getCompanyTimezone(companyId))
                         : `soon (technician: ${techName})`,
                 });
             }
@@ -535,7 +583,7 @@ export const jobsService = {
         // Techs record what they used but must never see what the company
         // charges, so drop every priced field before the job leaves the server.
         if (userRole === 'TECHNICIAN') {
-            const { invoice, estimate, expenses, purchaseOrders, ...rest } = job;
+            const { invoice, estimate, expenses, purchaseOrders, summaryPdfUrl: _pdf, ...rest } = job;
             return {
                 ...rest,
                 lineItems: job.lineItems.map(({ unitPrice, total, ...item }) => item),
@@ -566,29 +614,65 @@ export const jobsService = {
             select: { vanId: true },
         });
 
-        const jobs = await prisma.job.findMany({
-            where: {
-                companyId,
-                deletedAt: null,
-                status: { notIn: ['COMPLETED', 'CANCELED'] },
-                OR: [
-                    { techId: userId },
-                    ...(vanMembership ? [{ vanId: vanMembership.vanId }] : []),
-                ],
-            },
-            orderBy: [{ scheduledStart: 'asc' }, { updatedAt: 'desc' }],
-            include: {
-                customer: { select: { id: true, name: true, phone: true, email: true } },
-                property: true,
-                checklist: { orderBy: { id: 'asc' } },
-                photos: { orderBy: { createdAt: 'desc' } },
-                signatures: { orderBy: { signedAt: 'desc' } },
-                lineItems: true,
-                van: { select: { id: true, name: true } },
-                // Timestamp only — techs must never see invoice amounts/totals.
-                invoice: { select: { createdAt: true } },
-            },
+        const assignmentOr = [
+            { techId: userId },
+            ...(vanMembership ? [{ vanId: vanMembership.vanId }] : []),
+        ];
+
+        // "Today" and the look-ahead window are in the company's zone, not the
+        // (often UTC) server's.
+        const tz = await getCompanyTimezone(companyId);
+        const now = new Date();
+        const startToday = startOfDayInTimeZone(now, tz);
+        // Open work is limited to overdue + today + the next 7 days so the phone
+        // list stays short; anything scheduled further out isn't surfaced yet.
+        const endWindow = new Date(startOfDayInTimeZone(now, tz, 8).getTime() - 1);
+
+        const listInclude = {
+            customer: { select: { id: true, name: true, phone: true, email: true } },
+            property: true,
+            checklist: { orderBy: { id: 'asc' as const } },
+            photos: { orderBy: { createdAt: 'desc' as const } },
+            signatures: { orderBy: { signedAt: 'desc' as const } },
+            lineItems: true,
+            van: { select: { id: true, name: true } },
+            // Timestamp only — techs must never see invoice amounts/totals.
+            invoice: { select: { createdAt: true } },
+        };
+
+        const [openJobs, completedTodayJobs] = await Promise.all([
+            prisma.job.findMany({
+                where: {
+                    companyId,
+                    deletedAt: null,
+                    status: { notIn: ['COMPLETED', 'CANCELED'] },
+                    OR: assignmentOr,
+                },
+                orderBy: [{ scheduledStart: 'asc' }, { updatedAt: 'desc' }],
+                include: listInclude,
+            }),
+            // Jobs finished today stay on the list so the tech can still send the
+            // pay link / summary and add after-photos.
+            prisma.job.findMany({
+                where: {
+                    companyId,
+                    deletedAt: null,
+                    status: 'COMPLETED',
+                    actualEnd: { gte: startToday },
+                    OR: assignmentOr,
+                },
+                orderBy: [{ actualEnd: 'desc' }],
+                include: listInclude,
+            }),
+        ]);
+
+        const windowedOpen = openJobs.filter((job) => {
+            // Unscheduled assigned work is always shown; far-future work is not.
+            if (!job.scheduledStart) return true;
+            return new Date(job.scheduledStart).getTime() <= endWindow.getTime();
         });
+
+        const jobs = [...windowedOpen, ...completedTodayJobs];
 
         const notes = await getJobNotes(companyId, jobs.map((j) => j.id));
         const notesByJobId = new Map<string, typeof notes>();
@@ -602,12 +686,25 @@ export const jobsService = {
         // company charges — strip pricing from line items before returning them.
         // The raw `invoice` relation is dropped in favour of a bare timestamp so no
         // amount can leak; the field console uses it only to show "invoice sent".
+        // The list also drops the heavy signature image payloads (dataUrl) — the
+        // job-detail GET still returns them for the signoff view.
         return jobs.map((job) => {
-            const { invoice, ...rest } = job;
+            // summaryPdfUrl points at the priced PDF, so it never goes to a tech.
+            const { invoice, summaryPdfUrl: _pdf, signatures, ...rest } = job as typeof job & {
+                summaryPdfUrl?: string | null;
+                signatures?: Array<{ id: string; signerName: string; signedAt: Date }>;
+            };
             return {
                 ...rest,
                 lineItems: job.lineItems.map(({ unitPrice, total, ...item }) => item),
+                signatures: (signatures ?? []).map((s) => ({
+                    id: s.id,
+                    signerName: s.signerName,
+                    signedAt: s.signedAt,
+                })),
                 invoicedAt: invoice?.createdAt ?? null,
+                // Only completed-today jobs reach this list in COMPLETED status.
+                completedToday: job.status === 'COMPLETED',
                 notes: notesByJobId.get(job.id) ?? [],
             };
         });
@@ -636,12 +733,26 @@ export const jobsService = {
         return { items, total, page, totalPages: Math.ceil(total / limit) };
     },
 
-    updateStatus: async (id: string, companyId: string, status: string, userId: string) => {
+    updateStatus: async (id: string, companyId: string, status: string, userId: string, clientAt?: string, actorRole?: string) => {
         const job = await prisma.job.findFirst({
             where: { id, companyId, deletedAt: null },
-            include: { checklist: true },
+            include: { checklist: true, signatures: true },
         });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        // Out-of-order guard: a replayed offline tap that would move the job
+        // backwards (e.g. ON_SITE landing after COMPLETED was recorded) is a no-op.
+        // We never reopen a finished job or restart its clock — return the job as-is.
+        if (isBackwardsTransition(job.status, status)) {
+            const current = await prisma.job.findFirst({
+                where: { id, companyId, deletedAt: null },
+                include: {
+                    tech: { select: { id: true, email: true, firstName: true, lastName: true } },
+                    customer: true,
+                },
+            });
+            return current;
+        }
 
         if (status === 'COMPLETED' && job.checklist.length > 0) {
             const incomplete = job.checklist.filter(c => !c.isCompleted);
@@ -653,6 +764,30 @@ export const jobsService = {
             }
         }
 
+        // Server-side completion gating mirrors the field console (apps/web
+        // .../technician-view.tsx + .../job-detail.tsx): a customer signature must
+        // be on file, and every form the office marked requiredForCompletion must
+        // have a submission for this job. Only enforced for technicians closing
+        // a job on site; the office can still close a job (e.g. confirmed by phone).
+        if (status === 'COMPLETED' && actorRole === 'TECHNICIAN') {
+            const signatures = (job as typeof job & { signatures?: unknown[] }).signatures ?? [];
+            if (signatures.length === 0) {
+                throw new AppError("Collect the customer's signature first", StatusCodes.BAD_REQUEST);
+            }
+            const missingForm = await getMissingRequiredForm(companyId, id);
+            if (missingForm) {
+                throw new AppError(`Submit the required form: ${missingForm}`, StatusCodes.BAD_REQUEST);
+            }
+        }
+
+        const now = new Date();
+        // Offline taps replay later: stamp with the real tap time when the phone
+        // sent a trustworthy `clientAt`, otherwise with server time.
+        const effective = resolveEffectiveTime(clientAt, job, now);
+        // A replayed action whose real tap was long ago must not fire time-sensitive
+        // "on my way"/"arrived" customer messages when it finally lands.
+        const isStale = now.getTime() - effective.getTime() > 15 * 60 * 1000;
+
         // Generate tracker token on first EN_ROUTE so the customer's SMS link works.
         const trackerToken = (status === 'EN_ROUTE' && !job.customerTrackingToken)
             ? require('crypto').randomBytes(20).toString('hex')
@@ -662,11 +797,11 @@ export const jobsService = {
             where: { id },
             data: {
                 status: status as any,
-                ...(status === 'EN_ROUTE' && !job.actualStart ? { actualStart: new Date() } : {}),
-                ...(status === 'ON_SITE' && !job.actualStart ? { actualStart: new Date() } : {}),
-                ...(status === 'COMPLETED' ? { actualEnd: new Date() } : {}),
-                ...(trackerToken ? { customerTrackingToken: trackerToken, onMyWaySentAt: new Date() } : {}),
-                ...(status === 'ON_SITE' ? { arrivedNotifiedAt: new Date() } : {}),
+                ...(status === 'EN_ROUTE' && !job.actualStart ? { actualStart: effective } : {}),
+                ...(status === 'ON_SITE' && !job.actualStart ? { actualStart: effective } : {}),
+                ...(status === 'COMPLETED' ? { actualEnd: effective } : {}),
+                ...(trackerToken ? { customerTrackingToken: trackerToken, onMyWaySentAt: effective } : {}),
+                ...(status === 'ON_SITE' ? { arrivedNotifiedAt: effective } : {}),
             },
             include: {
                 tech: { select: { id: true, email: true, firstName: true, lastName: true } },
@@ -674,19 +809,21 @@ export const jobsService = {
             },
         });
 
-        // Timeline event
+        // Timeline event — stamped at the effective (tap) time, not replay time.
         await prisma.jobTimelineEvent.create({
             data: {
                 companyId, jobId: id,
                 type: 'STATUS_CHANGE',
                 message: `Status: ${job.status} → ${status}`,
                 actorId: userId,
+                createdAt: effective,
             },
         }).catch(() => undefined);
 
         // The technician's timesheet is derived entirely from these transitions —
         // they never log hours by hand. TRAVEL runs while EN_ROUTE, WRENCH while
-        // ON_SITE, and the clock stops on completion.
+        // ON_SITE, and the clock stops on completion. The clock uses the effective
+        // tap time so a replayed transition bills the hours when they happened.
         if (updatedJob.techId) {
             // The clock simply mirrors the status: travelling while EN_ROUTE,
             // on site while ON_SITE, off otherwise.
@@ -708,13 +845,13 @@ export const jobsService = {
             // this to the current job used to leave two clocks going at once:
             // arriving at job B while job A was still marked on site billed both,
             // doubling the hours.
-            await closeOpenEntries(companyId, updatedJob.techId, new Date(), alreadyRunning?.id);
+            await closeOpenEntries(companyId, updatedJob.techId, effective, alreadyRunning?.id);
 
             if (clockType && !alreadyRunning) {
                 await prisma.timeEntry.create({
                     data: {
                         companyId, jobId: id, userId: updatedJob.techId,
-                        type: clockType, startTime: new Date(),
+                        type: clockType, startTime: effective,
                         description: `Auto-clocked on ${status}`,
                     },
                 });
@@ -727,7 +864,12 @@ export const jobsService = {
                 action: 'JOB_STATUS_CHANGE',
                 entityId: id,
                 entityType: 'JOB',
-                metadata: { oldStatus: job.status, newStatus: status },
+                metadata: {
+                    oldStatus: job.status,
+                    newStatus: status,
+                    clientAt: clientAt ?? null,
+                    effectiveAt: effective.toISOString(),
+                },
             },
         });
 
@@ -735,7 +877,9 @@ export const jobsService = {
             ? [updatedJob.tech.firstName, updatedJob.tech.lastName].filter(Boolean).join(' ') || updatedJob.tech.email
             : 'Your technician';
 
-        if (status === 'EN_ROUTE' && updatedJob.customer) {
+        // Time-sensitive customer messages are skipped for stale (replayed) taps;
+        // internal realtime updates and completion artefacts still go out.
+        if (status === 'EN_ROUTE' && updatedJob.customer && !isStale) {
             const token = updatedJob.customerTrackingToken;
             const trackingUrl = token ? `${process.env.WEB_URL || ''}/track/${token}` : '';
             await notificationService.notifyCustomer(updatedJob.customerId, companyId, 'JOB_EN_ROUTE', {
@@ -744,7 +888,7 @@ export const jobsService = {
             });
         }
 
-        if (status === 'ON_SITE' && updatedJob.customer) {
+        if (status === 'ON_SITE' && updatedJob.customer && !isStale) {
             await notificationService.notifyCustomer(updatedJob.customerId, companyId, 'JOB_STARTED', {
                 techName,
             });
@@ -984,17 +1128,8 @@ export const jobsService = {
             );
         }
 
-        if (result.customer && result.customerId) {
-            const techName = result.tech
-                ? [result.tech.firstName, result.tech.lastName].filter(Boolean).join(' ') || result.tech.email
-                : undefined;
-            if (techName) {
-                await notificationService.notifyCustomer(result.customerId, companyId, 'JOB_EN_ROUTE', {
-                    techName,
-                    trackingUrl: `${process.env.WEB_URL || ''}/track/${result.id}`,
-                });
-            }
-        }
+        // No customer "on the way" message here: the job was only booked. The
+        // real EN_ROUTE transition (updateStatus) sends it with a tracking token.
 
         return result;
     },

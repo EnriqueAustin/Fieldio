@@ -161,13 +161,15 @@ export function JobDetail({
                         signatureDataUrl={signature.signatureDataUrl}
                         setSignatureDataUrl={signature.setSignatureDataUrl}
                         onSaveSignature={() => signature.saveSignature(job.id)}
-                        isSaving={signature.signatureMutation.isPending}
+                        // Don't show "Saving…"/"Sending…" forever while the mutation sits
+                        // paused offline — only while a request is actually in flight.
+                        isSaving={signature.signatureMutation.isPending && !signature.signatureMutation.isPaused}
                         onSendSummary={() => summaryMutation.mutate({ jobId: job.id })}
                         isSendingSummary={summaryMutation.isPending}
                         canInvoice={canInvoice}
                         invoicedAt={job.invoicedAt}
                         onSendInvoice={() => fieldInvoice.sendInvoice(job.id)}
-                        isSendingInvoice={fieldInvoice.invoiceMutation.isPending}
+                        isSendingInvoice={fieldInvoice.invoiceMutation.isPending && !fieldInvoice.invoiceMutation.isPaused}
                     />
                 </TabsContent>
             </Tabs>
@@ -178,7 +180,11 @@ export function JobDetail({
                     {primary ? (
                         <button
                             type="button"
-                            disabled={primaryDisabled || statusMutation.isPending}
+                            // `isPending` stays true while a mutation is PAUSED offline, which
+                            // would wedge the action bar (tap Arrive, then can't tap Complete).
+                            // Only block on a genuinely in-flight request; the optimistic status
+                            // already advances `primary`, so a queued tap flips the button next.
+                            disabled={primaryDisabled || (statusMutation.isPending && !statusMutation.isPaused)}
                             onClick={() =>
                                 statusMutation.mutate({ jobId: job.id, status: primary.nextStatus })
                             }

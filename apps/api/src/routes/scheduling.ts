@@ -10,6 +10,7 @@ schedulingRouter.use(requireUser);
 schedulingRouter.get('/events', catchAsync(schedulingController.getEvents));
 schedulingRouter.get('/unscheduled', catchAsync(schedulingController.getUnscheduled));
 schedulingRouter.get('/my-week', catchAsync(schedulingController.getMyWeek));
+schedulingRouter.get('/my-route', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'TECHNICIAN'), catchAsync(schedulingController.getDayRoute));
 schedulingRouter.post('/jobs', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(schedulingController.createJob));
 schedulingRouter.patch('/jobs/:id', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(schedulingController.updateEvent));
 schedulingRouter.get('/jobs/:id/suggest-techs', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(schedulingController.suggestTechs));

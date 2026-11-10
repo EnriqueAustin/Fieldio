@@ -18,6 +18,7 @@ import { startMembershipMaintenanceScheduler } from './modules/memberships/maint
 import { startInventoryAlertScheduler } from './modules/inventory-alerts/inventory-alerts.service';
 import { startAppointmentReminderScheduler } from './modules/scheduling/reminders.service';
 import { startVanServiceScheduler } from './modules/vans/van-service.service';
+import { startIdempotencyKeyPurgeScheduler } from './middleware/idempotency';
 
 // Routes
 import { healthRouter } from './routes/health';
@@ -208,4 +209,5 @@ httpServer.listen(config.PORT, () => {
   startInventoryAlertScheduler();
   startAppointmentReminderScheduler();
   startVanServiceScheduler();
+  startIdempotencyKeyPurgeScheduler();
 });

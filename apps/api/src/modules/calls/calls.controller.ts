@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { callsService } from './calls.service';
+import { resolveCompanyForInboundNumber } from '../messaging/twilio-webhook';
 
 export const callsController = {
     list: async (req: Request, res: Response) => {
@@ -13,9 +14,10 @@ export const callsController = {
         res.status(StatusCodes.CREATED).json({ status: 'success', data: result });
     },
 
-    // Twilio Voice webhook — incoming
+    // Twilio Voice webhook — incoming. The company comes from the dialled (To)
+    // number, never from the query string.
     twilioVoice: async (req: Request, res: Response) => {
-        const companyId = (req.query.companyId as string) || req.body.companyId;
+        const companyId = await resolveCompanyForInboundNumber(req.body.To);
         const from = req.body.From as string;
         const to = req.body.To as string;
         const callSid = req.body.CallSid as string;
@@ -35,7 +37,7 @@ export const callsController = {
     },
 
     twilioStatus: async (req: Request, res: Response) => {
-        const companyId = (req.query.companyId as string) || req.body.companyId;
+        const companyId = await resolveCompanyForInboundNumber(req.body.To);
         const callSid = req.body.CallSid as string;
         const callStatus = req.body.CallStatus as string;
         const duration = Number(req.body.CallDuration || 0);

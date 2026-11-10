@@ -206,3 +206,30 @@ export const digitalFormsService = {
         return submission;
     }
 };
+
+/**
+ * Completion-gate helper used by jobs.service: returns the name of the first
+ * active template the office flagged `requiredForCompletion` that still has no
+ * submission for this job, or null when every required form is in. Mirrors the
+ * field console's `requiredPending` check (apps/web .../use-forms.ts) and keeps
+ * the form-schema read in one place. (`requiresCoc` is a permission gate, not a
+ * completion gate, so it is deliberately not considered here.)
+ */
+export async function getMissingRequiredForm(companyId: string, jobId: string): Promise<string | null> {
+    const templates = await prisma.digitalFormTemplate.findMany({
+        where: { companyId, active: true },
+    });
+    const required = templates.filter((t) =>
+        Boolean((t.schema as Record<string, unknown> | null)?.requiredForCompletion),
+    );
+    if (required.length === 0) return null;
+
+    const submissions = await prisma.digitalFormSubmission.findMany({
+        where: { companyId, jobId },
+        select: { templateId: true },
+    });
+    const submitted = new Set(submissions.map((s) => s.templateId));
+
+    const missing = required.find((t) => !submitted.has(t.id));
+    return missing ? missing.name : null;
+}

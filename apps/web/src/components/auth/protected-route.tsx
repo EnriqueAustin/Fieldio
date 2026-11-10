@@ -12,7 +12,7 @@ export default function ProtectedRoute({
     children: React.ReactNode
     allowedRoles?: string[]
 }) {
-    const { isAuthenticated, user, accessToken } = useAuthStore()
+    const { isAuthenticated, user, accessToken, sessionStatus } = useAuthStore()
     const router = useRouter()
     const [isBootstrapping, setIsBootstrapping] = useState(true)
 
@@ -25,7 +25,11 @@ export default function ProtectedRoute({
 
             // Shared single-flight refresh — hydrates the store on success.
             const token = await ensureFreshSession()
-            if (!token) {
+            // Only redirect to /login when the session was genuinely lost. If the
+            // refresh failed for a network reason (offline / timeout / 5xx), the
+            // persisted user survives (sessionStatus becomes 'unverified') and we
+            // render the cached UI below instead of bouncing the tech to login.
+            if (!token && !useAuthStore.getState().user) {
                 router.push("/login")
             }
             setIsBootstrapping(false)
@@ -40,7 +44,14 @@ export default function ProtectedRoute({
         }
     }, [allowedRoles, isBootstrapping, router, user])
 
-    if (isBootstrapping || !isAuthenticated || !accessToken) {
+    // Render when we hold a live token (verified online) OR when we have a
+    // persisted user but couldn't confirm the session due to a network failure
+    // (offline). The offline banner (separate component) surfaces the state.
+    const hasVerifiedSession = isAuthenticated && !!accessToken
+    const hasOfflineSession = !!user && sessionStatus === "unverified"
+
+    if (!hasVerifiedSession && !hasOfflineSession) {
+        // Still bootstrapping, or no session at all (bootstrap pushes to /login).
         return (
             <div className="flex h-screen items-center justify-center">
                 <div className="text-lg">Loading access...</div>

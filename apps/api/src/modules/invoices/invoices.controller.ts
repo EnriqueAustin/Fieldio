@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { z } from 'zod';
 import { invoiceService } from './invoices.service';
+import { invoicePdfService } from './invoice-pdf.service';
 
 // Masks a contact so a technician sees who the pay link went to without exposing
 // the full email/phone. e.g. "jane@acme.co" -> "j***@acme.co", "+27821234567" -> "•••4567".
@@ -80,6 +81,33 @@ export const invoiceController = {
     send: async (req: Request, res: Response) => {
         const invoice = await invoiceService.send(req.params.id, req.user!.companyId);
         res.status(StatusCodes.OK).json({ status: 'success', data: { invoice } });
+    },
+
+    void: async (req: Request, res: Response) => {
+        const { reason } = z
+            .object({ reason: z.string().trim().min(3).max(500) })
+            .parse(req.body);
+        const invoice = await invoiceService.void(req.params.id, req.user!.companyId, reason);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { invoice } });
+    },
+
+    // Tax invoice PDF (office). Returns the document inline.
+    pdf: async (req: Request, res: Response) => {
+        const { buffer, invoiceNumber } = await invoicePdfService.renderById(
+            req.params.id,
+            req.user!.companyId
+        );
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${invoiceNumber}.pdf"`);
+        res.status(StatusCodes.OK).send(buffer);
+    },
+
+    // Public tax invoice PDF via the pay-link token (no auth).
+    publicPdf: async (req: Request, res: Response) => {
+        const { buffer, invoiceNumber } = await invoicePdfService.renderByToken(req.params.token);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${invoiceNumber}.pdf"`);
+        res.status(StatusCodes.OK).send(buffer);
     },
 
     getOverdue: async (req: Request, res: Response) => {

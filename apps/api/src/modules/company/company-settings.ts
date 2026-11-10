@@ -12,6 +12,9 @@ export const companySettingsSchema = z.object({
         taxRate: z.number().min(0).max(100).default(15),
         taxNumber: z.string().optional().nullable(),
         invoiceHeading: z.string().default('Tax Invoice'),
+        // Prefix for generated invoice numbers (e.g. INV-0001). Read by the
+        // invoice numbering service. Upper-case letters and digits only.
+        invoicePrefix: z.string().regex(/^[A-Z0-9]{1,10}$/).default('INV'),
         companyRegistrationNumber: z.string().optional().nullable(),
         paymentTermsDays: z.number().int().min(0).max(365).default(7),
         paymentMethods: z.object({
@@ -99,6 +102,48 @@ export const companySettingsSchema = z.object({
         showOnEstimates: z.boolean().default(true),
         provider: z.string().optional().nullable(),
     }).default({}),
+    // Customer self-service from the portal link. Rescheduling moves a booked
+    // job on the dispatch board without the office, so it is OFF by default.
+    portal: z.object({
+        selfReschedule: z.object({
+            enabled: z.boolean().default(false),
+            minNoticeHours: z.number().int().min(0).max(168).default(24),
+            dayStartHour: z.number().int().min(0).max(23).default(8),
+            dayEndHour: z.number().int().min(1).max(24).default(17),
+            workDays: z.array(z.number().int().min(0).max(6)).default([1, 2, 3, 4, 5]),
+            horizonDays: z.number().int().min(1).max(60).default(14),
+            maxPerJob: z.number().int().min(1).max(10).default(2),
+        }).default({}),
+    }).default({}),
+    // Optional modules. These toggle only whether a feature appears in the
+    // navigation — a small plumbing shop starts with a lean nav and switches on
+    // what it needs. Core tools (Dashboard, Schedule, Jobs, Customers, Quotes,
+    // Invoices, Vans, Reports, Labour hours, Forms, Settings, Team) are never
+    // toggleable and are not listed here. Direct URLs to a hidden module still
+    // work; this is a nav concern, not a permission.
+    modules: z.object({
+        leads: z.boolean().default(false),
+        campaigns: z.boolean().default(false),
+        memberships: z.boolean().default(false),
+        financing: z.boolean().default(false),
+        projects: z.boolean().default(false),
+        permits: z.boolean().default(false),
+        subcontractors: z.boolean().default(false),
+        certifications: z.boolean().default(false),
+        warrantyClaims: z.boolean().default(false),
+        flatRate: z.boolean().default(false),
+        suppliers: z.boolean().default(true),
+        inventory: z.boolean().default(true),
+        calls: z.boolean().default(false),
+        inbox: z.boolean().default(true),
+        bookings: z.boolean().default(true),
+        scoreboard: z.boolean().default(false),
+        kpi: z.boolean().default(true),
+        dunning: z.boolean().default(false),
+        creditNotes: z.boolean().default(true),
+        statements: z.boolean().default(true),
+        reviews: z.boolean().default(false),
+    }).default({}),
 });
 
 export type CompanySettings = z.infer<typeof companySettingsSchema>;
@@ -115,6 +160,7 @@ export const defaultCompanySettings: CompanySettings = {
         taxRate: 15,
         taxNumber: null,
         invoiceHeading: 'Tax Invoice',
+        invoicePrefix: 'INV',
         companyRegistrationNumber: null,
         paymentTermsDays: 7,
         paymentMethods: {
@@ -198,6 +244,40 @@ export const defaultCompanySettings: CompanySettings = {
         enabled: false,
         showOnEstimates: true,
         provider: null,
+    },
+    portal: {
+        selfReschedule: {
+            enabled: false,
+            minNoticeHours: 24,
+            dayStartHour: 8,
+            dayEndHour: 17,
+            workDays: [1, 2, 3, 4, 5],
+            horizonDays: 14,
+            maxPerJob: 2,
+        },
+    },
+    modules: {
+        leads: false,
+        campaigns: false,
+        memberships: false,
+        financing: false,
+        projects: false,
+        permits: false,
+        subcontractors: false,
+        certifications: false,
+        warrantyClaims: false,
+        flatRate: false,
+        suppliers: true,
+        inventory: true,
+        calls: false,
+        inbox: true,
+        bookings: true,
+        scoreboard: false,
+        kpi: true,
+        dunning: false,
+        creditNotes: true,
+        statements: true,
+        reviews: false,
     },
 };
 

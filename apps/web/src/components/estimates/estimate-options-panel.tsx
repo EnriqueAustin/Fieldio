@@ -174,7 +174,10 @@ export function EstimateOptionsPanel({ estimateId }: Props) {
                                         </CollapsibleContent>
                                     </Collapsible>
                                     <div className="border-t pt-2 flex items-center justify-between">
-                                        <span className="text-xl font-bold">{formatCurrency(option.total)}</span>
+                                        <span className="text-xl font-bold">
+                                            {formatCurrency(option.total)}
+                                            <span className="ml-1 text-[11px] font-normal text-muted-foreground">excl. VAT</span>
+                                        </span>
                                         {!acceptedOption && (
                                             <Button
                                                 size="sm"
@@ -275,6 +278,7 @@ export function EstimateOptionsPanel({ estimateId }: Props) {
                         <div className="flex items-center justify-between pt-2 border-t">
                             <div className="font-semibold text-sm">
                                 Total: {formatCurrency(newOption.items.reduce((acc, i) => acc + i.quantity * i.unitPrice, 0))}
+                                <span className="ml-1 text-[11px] font-normal text-muted-foreground">excl. VAT</span>
                             </div>
                             <div className="flex gap-2">
                                 <Button variant="outline" size="sm" onClick={() => setAdding(false)}>Cancel</Button>

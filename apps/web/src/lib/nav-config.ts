@@ -6,7 +6,6 @@ import {
     Building2,
     Package,
     BookOpen,
-    Bell,
     Clock,
     UserCog,
     Inbox,
@@ -32,8 +31,13 @@ import {
     Receipt,
     type LucideIcon,
 } from "lucide-react";
+import type { CompanyModules, ModuleKey } from "./company-settings";
 
-export type NavItem = { label: string; href: string; icon: LucideIcon };
+// `module` tags an item as belonging to an optional module. Untagged items are
+// core (Dashboard, Schedule, Jobs, Customers, Quotes, Invoices, Vans, Reports,
+// Labour hours, Forms, Settings, Team) and always show. A tagged item shows only
+// when the company has that module switched on.
+export type NavItem = { label: string; href: string; icon: LucideIcon; module?: ModuleKey };
 export type NavGroup = { label?: string; items: NavItem[] };
 
 const adminGroups: NavGroup[] = [
@@ -42,12 +46,12 @@ const adminGroups: NavGroup[] = [
             { label: "Dashboard", href: "/", icon: LayoutDashboard },
             { label: "Schedule", href: "/schedule", icon: Calendar },
             { label: "Jobs", href: "/jobs", icon: Briefcase },
-            { label: "Projects", href: "/projects", icon: FolderKanban },
-            { label: "Bookings", href: "/bookings", icon: Inbox },
+            { label: "Projects", href: "/projects", icon: FolderKanban, module: "projects" },
+            { label: "Bookings", href: "/bookings", icon: Inbox, module: "bookings" },
             { label: "Customers", href: "/customers", icon: Users },
-            { label: "Leads", href: "/leads", icon: Filter },
-            { label: "Inbox", href: "/inbox", icon: MessageSquare },
-            { label: "Calls", href: "/calls", icon: Phone },
+            { label: "Leads", href: "/leads", icon: Filter, module: "leads" },
+            { label: "Inbox", href: "/inbox", icon: MessageSquare, module: "inbox" },
+            { label: "Calls", href: "/calls", icon: Phone, module: "calls" },
         ],
     },
     {
@@ -55,12 +59,12 @@ const adminGroups: NavGroup[] = [
         items: [
             { label: "Quotes", href: "/estimates", icon: FileSignature },
             { label: "Invoices", href: "/invoices", icon: Receipt },
-            { label: "Statements", href: "/statements", icon: FileText },
-            { label: "Credit Notes", href: "/credit-notes", icon: FileText },
-            { label: "Dunning", href: "/dunning", icon: AlertTriangle },
-            { label: "Memberships", href: "/memberships", icon: Crown },
-            { label: "Financing", href: "/financing", icon: CreditCard },
-            { label: "Campaigns", href: "/campaigns", icon: Megaphone },
+            { label: "Statements", href: "/statements", icon: FileText, module: "statements" },
+            { label: "Credit Notes", href: "/credit-notes", icon: FileText, module: "creditNotes" },
+            { label: "Dunning", href: "/dunning", icon: AlertTriangle, module: "dunning" },
+            { label: "Memberships", href: "/memberships", icon: Crown, module: "memberships" },
+            { label: "Financing", href: "/financing", icon: CreditCard, module: "financing" },
+            { label: "Campaigns", href: "/campaigns", icon: Megaphone, module: "campaigns" },
         ],
     },
     {
@@ -68,23 +72,23 @@ const adminGroups: NavGroup[] = [
         items: [
             { label: "Vans / Teams", href: "/vans", icon: Truck },
             { label: "Labour Hours", href: "/time-tracking", icon: Clock },
-            { label: "Inventory", href: "/inventory", icon: Package },
-            { label: "Suppliers", href: "/suppliers", icon: Truck },
-            { label: "Subcontractors", href: "/subcontractors", icon: HardHat },
-            { label: "Permits", href: "/permits", icon: ClipboardCheck },
-            { label: "Warranties", href: "/warranty-claims", icon: Shield },
-            { label: "Certifications", href: "/certifications", icon: Award },
+            { label: "Inventory", href: "/inventory", icon: Package, module: "inventory" },
+            { label: "Suppliers", href: "/suppliers", icon: Truck, module: "suppliers" },
+            { label: "Subcontractors", href: "/subcontractors", icon: HardHat, module: "subcontractors" },
+            { label: "Permits", href: "/permits", icon: ClipboardCheck, module: "permits" },
+            { label: "Warranties", href: "/warranty-claims", icon: Shield, module: "warrantyClaims" },
+            { label: "Certifications", href: "/certifications", icon: Award, module: "certifications" },
             { label: "Job Templates", href: "/job-templates", icon: FilePlus },
             { label: "Digital Forms", href: "/forms", icon: FileSignature },
-            { label: "Flat Rate", href: "/flat-rate", icon: Wrench },
+            { label: "Flat Rate", href: "/flat-rate", icon: Wrench, module: "flatRate" },
             { label: "Price Book", href: "/settings/price-book", icon: BookOpen },
         ],
     },
     {
         label: "Insights",
         items: [
-            { label: "KPI Dashboard", href: "/kpi", icon: TrendingUp },
-            { label: "Tech Scoreboard", href: "/scoreboard", icon: Award },
+            { label: "KPI Dashboard", href: "/kpi", icon: TrendingUp, module: "kpi" },
+            { label: "Tech Scoreboard", href: "/scoreboard", icon: Award, module: "scoreboard" },
             { label: "Reports", href: "/reports", icon: BarChart3 },
         ],
     },
@@ -92,7 +96,6 @@ const adminGroups: NavGroup[] = [
         label: "Workspace",
         items: [
             { label: "Team", href: "/settings/users", icon: UserCog },
-            { label: "Notifications", href: "/settings/notifications", icon: Bell },
             { label: "My Account", href: "/settings/account", icon: UserCog },
             { label: "Company", href: "/settings/company", icon: Building2 },
         ],
@@ -106,25 +109,24 @@ const dispatcherGroups: NavGroup[] = [
             { label: "Schedule", href: "/schedule", icon: Calendar },
             { label: "Jobs", href: "/jobs", icon: Briefcase },
             { label: "Quotes", href: "/estimates", icon: FileSignature },
-            { label: "Bookings", href: "/bookings", icon: Inbox },
+            { label: "Bookings", href: "/bookings", icon: Inbox, module: "bookings" },
             { label: "Customers", href: "/customers", icon: Users },
-            { label: "Inbox", href: "/inbox", icon: MessageSquare },
-            { label: "Calls", href: "/calls", icon: Phone },
+            { label: "Inbox", href: "/inbox", icon: MessageSquare, module: "inbox" },
+            { label: "Calls", href: "/calls", icon: Phone, module: "calls" },
         ],
     },
     {
         label: "Operations",
         items: [
             { label: "Vans / Teams", href: "/vans", icon: Truck },
-            { label: "Subcontractors", href: "/subcontractors", icon: HardHat },
+            { label: "Subcontractors", href: "/subcontractors", icon: HardHat, module: "subcontractors" },
             { label: "Job Templates", href: "/job-templates", icon: FilePlus },
-            { label: "Permits", href: "/permits", icon: ClipboardCheck },
+            { label: "Permits", href: "/permits", icon: ClipboardCheck, module: "permits" },
         ],
     },
     {
         label: "Settings",
         items: [
-            { label: "Notifications", href: "/settings/notifications", icon: Bell },
             { label: "My Account", href: "/settings/account", icon: UserCog },
         ],
     },
@@ -134,12 +136,13 @@ const officeGroups: NavGroup[] = [
     {
         items: [
             { label: "Dashboard", href: "/", icon: LayoutDashboard },
+            { label: "Schedule", href: "/schedule", icon: Calendar },
             { label: "Jobs", href: "/jobs", icon: Briefcase },
             { label: "Customers", href: "/customers", icon: Users },
-            { label: "Leads", href: "/leads", icon: Filter },
-            { label: "Bookings", href: "/bookings", icon: Inbox },
-            { label: "Inbox", href: "/inbox", icon: MessageSquare },
-            { label: "Calls", href: "/calls", icon: Phone },
+            { label: "Leads", href: "/leads", icon: Filter, module: "leads" },
+            { label: "Bookings", href: "/bookings", icon: Inbox, module: "bookings" },
+            { label: "Inbox", href: "/inbox", icon: MessageSquare, module: "inbox" },
+            { label: "Calls", href: "/calls", icon: Phone, module: "calls" },
         ],
     },
     {
@@ -147,16 +150,21 @@ const officeGroups: NavGroup[] = [
         items: [
             { label: "Quotes", href: "/estimates", icon: FileSignature },
             { label: "Invoices", href: "/invoices", icon: Receipt },
-            { label: "Statements", href: "/statements", icon: FileText },
-            { label: "Credit Notes", href: "/credit-notes", icon: FileText },
-            { label: "Dunning", href: "/dunning", icon: AlertTriangle },
-            { label: "Memberships", href: "/memberships", icon: Crown },
+            { label: "Statements", href: "/statements", icon: FileText, module: "statements" },
+            { label: "Credit Notes", href: "/credit-notes", icon: FileText, module: "creditNotes" },
+            { label: "Dunning", href: "/dunning", icon: AlertTriangle, module: "dunning" },
+            { label: "Memberships", href: "/memberships", icon: Crown, module: "memberships" },
+        ],
+    },
+    {
+        label: "Insights",
+        items: [
+            { label: "Reports", href: "/reports", icon: BarChart3 },
         ],
     },
     {
         label: "Settings",
         items: [
-            { label: "Notifications", href: "/settings/notifications", icon: Bell },
             { label: "My Account", href: "/settings/account", icon: UserCog },
         ],
     },
@@ -166,18 +174,17 @@ const csrGroups: NavGroup[] = [
     {
         items: [
             { label: "Dashboard", href: "/", icon: LayoutDashboard },
-            { label: "Inbox", href: "/inbox", icon: MessageSquare },
-            { label: "Calls", href: "/calls", icon: Phone },
-            { label: "Bookings", href: "/bookings", icon: Inbox },
+            { label: "Inbox", href: "/inbox", icon: MessageSquare, module: "inbox" },
+            { label: "Calls", href: "/calls", icon: Phone, module: "calls" },
+            { label: "Bookings", href: "/bookings", icon: Inbox, module: "bookings" },
             { label: "Customers", href: "/customers", icon: Users },
-            { label: "Leads", href: "/leads", icon: Filter },
+            { label: "Leads", href: "/leads", icon: Filter, module: "leads" },
             { label: "Jobs", href: "/jobs", icon: Briefcase },
         ],
     },
     {
         label: "Settings",
         items: [
-            { label: "Notifications", href: "/settings/notifications", icon: Bell },
             { label: "My Account", href: "/settings/account", icon: UserCog },
         ],
     },
@@ -186,26 +193,25 @@ const csrGroups: NavGroup[] = [
 const salesGroups: NavGroup[] = [
     {
         items: [
-            { label: "Pipeline", href: "/leads", icon: Filter },
+            { label: "Pipeline", href: "/leads", icon: Filter, module: "leads" },
             { label: "Quotes", href: "/estimates", icon: FileSignature },
             { label: "Customers", href: "/customers", icon: Users },
-            { label: "Bookings", href: "/bookings", icon: Inbox },
+            { label: "Bookings", href: "/bookings", icon: Inbox, module: "bookings" },
             { label: "Jobs", href: "/jobs", icon: Briefcase },
-            { label: "Inbox", href: "/inbox", icon: MessageSquare },
+            { label: "Inbox", href: "/inbox", icon: MessageSquare, module: "inbox" },
         ],
     },
     {
         label: "Growth",
         items: [
-            { label: "Campaigns", href: "/campaigns", icon: Megaphone },
-            { label: "Memberships", href: "/memberships", icon: Crown },
-            { label: "Financing", href: "/financing", icon: CreditCard },
+            { label: "Campaigns", href: "/campaigns", icon: Megaphone, module: "campaigns" },
+            { label: "Memberships", href: "/memberships", icon: Crown, module: "memberships" },
+            { label: "Financing", href: "/financing", icon: CreditCard, module: "financing" },
         ],
     },
     {
         label: "Settings",
         items: [
-            { label: "Notifications", href: "/settings/notifications", icon: Bell },
             { label: "My Account", href: "/settings/account", icon: UserCog },
         ],
     },
@@ -216,16 +222,16 @@ const accountantGroups: NavGroup[] = [
         items: [
             { label: "Dashboard", href: "/", icon: LayoutDashboard },
             { label: "Invoices", href: "/invoices", icon: Receipt },
-            { label: "Statements", href: "/statements", icon: FileText },
-            { label: "Credit Notes", href: "/credit-notes", icon: FileText },
-            { label: "Dunning", href: "/dunning", icon: AlertTriangle },
+            { label: "Statements", href: "/statements", icon: FileText, module: "statements" },
+            { label: "Credit Notes", href: "/credit-notes", icon: FileText, module: "creditNotes" },
+            { label: "Dunning", href: "/dunning", icon: AlertTriangle, module: "dunning" },
         ],
     },
     {
         label: "Insights",
         items: [
-            { label: "KPI Dashboard", href: "/kpi", icon: TrendingUp },
-            { label: "Tech Scoreboard", href: "/scoreboard", icon: Award },
+            { label: "KPI Dashboard", href: "/kpi", icon: TrendingUp, module: "kpi" },
+            { label: "Tech Scoreboard", href: "/scoreboard", icon: Award, module: "scoreboard" },
             { label: "Reports", href: "/reports", icon: BarChart3 },
             { label: "Labour Hours", href: "/time-tracking", icon: Clock },
         ],
@@ -233,7 +239,6 @@ const accountantGroups: NavGroup[] = [
     {
         label: "Settings",
         items: [
-            { label: "Notifications", href: "/settings/notifications", icon: Bell },
             { label: "My Account", href: "/settings/account", icon: UserCog },
         ],
     },
@@ -244,7 +249,7 @@ const technicianGroups: NavGroup[] = [
         items: [
             { label: "My Jobs", href: "/", icon: Briefcase },
             { label: "My Schedule", href: "/my-schedule", icon: Calendar },
-            { label: "Inbox", href: "/inbox", icon: MessageSquare },
+            { label: "Inbox", href: "/inbox", icon: MessageSquare, module: "inbox" },
         ],
     },
     {
@@ -257,7 +262,6 @@ const technicianGroups: NavGroup[] = [
     {
         label: "Settings",
         items: [
-            { label: "Notifications", href: "/settings/notifications", icon: Bell },
             { label: "My Account", href: "/settings/account", icon: UserCog },
         ],
     },
@@ -283,7 +287,7 @@ export function getNavGroupsForRole(role?: string | null): NavGroup[] {
     }
 }
 
-export type MobileNavItem = { label: string; href: string; icon: LucideIcon };
+export type MobileNavItem = { label: string; href: string; icon: LucideIcon; module?: ModuleKey };
 
 // The clock is a technician's most-used control after the job list itself, so it
 // earns a tab. It previously lived only in the sidebar, which is hidden on the
@@ -293,21 +297,21 @@ const technicianMobile: MobileNavItem[] = [
     { label: "Schedule", href: "/my-schedule", icon: Calendar },
     { label: "Hours", href: "/time-tracking", icon: Clock },
     { label: "Van", href: "/my-van/stock", icon: Package },
-    { label: "Inbox", href: "/inbox", icon: MessageSquare },
+    { label: "Inbox", href: "/inbox", icon: MessageSquare, module: "inbox" },
 ];
 
 const dispatcherMobile: MobileNavItem[] = [
     { label: "Dispatch", href: "/schedule", icon: Calendar },
     { label: "Jobs", href: "/jobs", icon: Briefcase },
-    { label: "Bookings", href: "/bookings", icon: Inbox },
-    { label: "Inbox", href: "/inbox", icon: MessageSquare },
+    { label: "Bookings", href: "/bookings", icon: Inbox, module: "bookings" },
+    { label: "Inbox", href: "/inbox", icon: MessageSquare, module: "inbox" },
 ];
 
 const officeMobile: MobileNavItem[] = [
     { label: "Home", href: "/", icon: LayoutDashboard },
     { label: "Jobs", href: "/jobs", icon: Briefcase },
     { label: "Customers", href: "/customers", icon: Users },
-    { label: "Inbox", href: "/inbox", icon: MessageSquare },
+    { label: "Inbox", href: "/inbox", icon: MessageSquare, module: "inbox" },
 ];
 
 const adminMobile: MobileNavItem[] = [
@@ -332,4 +336,23 @@ export function getMobileNavForRole(role?: string | null): MobileNavItem[] {
         default:
             return adminMobile;
     }
+}
+
+// A tagged item shows only when its module is on. An untagged (core) item always
+// shows. Until the company's modules have loaded, `modules` is undefined and only
+// core items render — so the extras never flash in and then disappear.
+const moduleVisible = (module: ModuleKey | undefined, modules?: CompanyModules): boolean =>
+    !module || (modules ? modules[module] === true : false);
+
+export function filterNavGroups(groups: NavGroup[], modules?: CompanyModules): NavGroup[] {
+    return groups
+        .map((group) => ({
+            ...group,
+            items: group.items.filter((item) => moduleVisible(item.module, modules)),
+        }))
+        .filter((group) => group.items.length > 0);
+}
+
+export function filterMobileNav(items: MobileNavItem[], modules?: CompanyModules): MobileNavItem[] {
+    return items.filter((item) => moduleVisible(item.module, modules));
 }

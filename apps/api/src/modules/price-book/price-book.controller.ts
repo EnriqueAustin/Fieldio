@@ -1,13 +1,19 @@
 import { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { priceBookService } from './price-book.service';
+import { priceBookService, ListOptions } from './price-book.service';
 
 export const priceBookController = {
     getAll: async (req: Request, res: Response) => {
-        const includeInactive = req.query.includeInactive === 'true';
-        const category = req.query.category as string | undefined;
-        const items = await priceBookService.getAll(req.user!.companyId, includeInactive, category, req.user!.role);
-        res.status(StatusCodes.OK).json({ status: 'success', data: { items } });
+        const opts: ListOptions = {
+            search: req.query.search as string | undefined,
+            category: req.query.category as string | undefined,
+            type: req.query.type as string | undefined,
+            includeInactive: req.query.includeInactive === 'true',
+            page: req.query.page ? Number(req.query.page) : undefined,
+            pageSize: req.query.limit ? Number(req.query.limit) : undefined,
+        };
+        const data = await priceBookService.getAll(req.user!.companyId, opts, req.user!.role);
+        res.status(StatusCodes.OK).json({ status: 'success', data });
     },
 
     getCategories: async (req: Request, res: Response) => {
@@ -30,8 +36,13 @@ export const priceBookController = {
         res.status(StatusCodes.OK).json({ status: 'success', data: { item } });
     },
 
-    bulkCreate: async (req: Request, res: Response) => {
-        const result = await priceBookService.bulkCreate(req.user!.companyId, req.body.items);
-        res.status(StatusCodes.CREATED).json({ status: 'success', data: { count: result.count } });
+    archive: async (req: Request, res: Response) => {
+        const item = await priceBookService.archive(req.params.id, req.user!.companyId);
+        res.status(StatusCodes.OK).json({ status: 'success', data: { item } });
+    },
+
+    bulkImport: async (req: Request, res: Response) => {
+        const result = await priceBookService.bulkImport(req.user!.companyId, req.body.rows ?? req.body.items);
+        res.status(StatusCodes.OK).json({ status: 'success', data: result });
     },
 };

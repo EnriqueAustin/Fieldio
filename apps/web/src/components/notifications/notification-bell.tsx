@@ -9,39 +9,36 @@ import {
     PopoverTrigger,
 } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
-import { socket } from "../../lib/socket"; // Assume we need to export the socket instance globally or use context
+import { socket } from "../../lib/socket";
 import { useToast } from "../ui/use-toast";
+import { useAuthStore } from "../../store/auth";
 
-// Need to export socket from somewhere accessible or use the one from SchedulePage? 
-// Better pattern: Create a SocketContext provider, but for now we'll import if possible or re-init (careful with multiple connections).
-// Actually, let's create a simple useSocket hook or similar.
-// For this file, assuming we have a global socket instance or we init it here.
-
+// The server only delivers notification:received to this user's own room.
 export function NotificationBell() {
     const [notifications, setNotifications] = useState<any[]>([]);
     const { toast } = useToast();
+    const accessToken = useAuthStore((s) => s.accessToken);
 
     useEffect(() => {
-        // Ideally this socket is the same instance as in SchedulePage
+        if (!accessToken) return;
         if (!socket.connected) {
             socket.connect();
         }
 
-        socket.on('notification:received', (data: any) => {
-            // Here we should filter if it's for THIS user.
-            // For MVP demo, all company users see it.
+        const onNotification = (data: any) => {
             setNotifications(prev => [data, ...prev]);
 
             toast({
                 title: data.title,
                 description: data.message,
             });
-        });
+        };
+        socket.on('notification:received', onNotification);
 
         return () => {
-            socket.off('notification:received');
+            socket.off('notification:received', onNotification);
         };
-    }, [toast]);
+    }, [toast, accessToken]);
 
     return (
         <Popover>

@@ -16,6 +16,9 @@ import {
 } from "./types";
 import type { useJobProgress } from "./use-job-progress";
 import { useJobForms } from "./use-forms";
+import { TodaysRouteCard } from "./todays-route-card";
+import { DoneTodaySection } from "./done-today-section";
+import { googleMapsLink, wazeLink } from "../../../lib/maps-link";
 
 interface TechnicianHomeProps {
     name: string;
@@ -26,8 +29,8 @@ interface TechnicianHomeProps {
     canCompleteNext: boolean;
 }
 
-/** Mobile field home: compact header, an "Up next" hero with inline actions, and
- *  the day's jobs grouped Overdue / Today / Upcoming, time-sorted. */
+/** Mobile field home: compact header, an "Up next" hero with inline actions,
+ *  today's route, and the jobs grouped Overdue / Today / Upcoming, time-sorted. */
 export function TechnicianHome({
     name,
     jobs,
@@ -43,7 +46,15 @@ export function TechnicianHome({
     // screen opens on what they are actually driving to, not a wall of next week.
     const [showAllUpcoming, setShowAllUpcoming] = useState(false);
     const UPCOMING_PREVIEW = 3;
-    const mapsHref = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(getAddress(nextJob))}`;
+    // Rural plots/farms don't geocode, so navigate to the property's real
+    // coordinates when we have them and fall back to the address text otherwise.
+    const navDest = {
+        lat: nextJob.property.geoLat,
+        lng: nextJob.property.geoLng,
+        address: getAddress(nextJob),
+    };
+    const googleHref = googleMapsLink(navDest);
+    const wazeHref = wazeLink(navDest);
     const phoneHref = nextJob.customer.phone ? `tel:${nextJob.customer.phone}` : null;
     // Keep the hero "Complete job" gate consistent with the job screen: a required
     // compliance form blocks completion too. Cached, so no duplicate fetch.
@@ -99,7 +110,9 @@ export function TechnicianHome({
                     {primary && (
                         <button
                             type="button"
-                            disabled={primaryDisabled || statusMutation.isPending}
+                            // A paused (offline) status change is already applied optimistically,
+                            // so only a genuinely in-flight request should disable the button.
+                            disabled={primaryDisabled || (statusMutation.isPending && !statusMutation.isPaused)}
                             onClick={() => statusMutation.mutate({ jobId: nextJob.id, status: primary.nextStatus })}
                             className="flex min-h-[52px] w-full items-center justify-center rounded-xl bg-primary text-base font-semibold text-primary-foreground transition active:scale-[0.99] disabled:opacity-50"
                         >
@@ -107,26 +120,40 @@ export function TechnicianHome({
                         </button>
                     )}
 
-                    <div className="grid grid-cols-2 gap-3">
-                        <a
-                            href={mapsHref}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-slate-300 text-sm font-semibold active:scale-[0.98]"
-                        >
-                            <Navigation className="h-4 w-4" />
-                            Navigate
-                        </a>
+                    {/* Navigation: Google Maps (primary) + Waze (secondary) side by
+                        side — both deep-link straight into turn-by-turn. Call sits on
+                        its own row so three actions stay tidy at 375px. */}
+                    <div className="space-y-3">
+                        <div className="grid grid-cols-2 gap-3">
+                            <a
+                                href={googleHref}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex min-h-[48px] items-center justify-center gap-2 rounded-xl bg-primary text-sm font-semibold text-primary-foreground active:scale-[0.98]"
+                            >
+                                <Navigation className="h-4 w-4" />
+                                Google Maps
+                            </a>
+                            <a
+                                href={wazeHref}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-slate-300 text-sm font-semibold active:scale-[0.98]"
+                            >
+                                <Navigation className="h-4 w-4" />
+                                Waze
+                            </a>
+                        </div>
                         {phoneHref ? (
                             <a
                                 href={phoneHref}
-                                className="flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-slate-300 text-sm font-semibold active:scale-[0.98]"
+                                className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl border border-slate-300 text-sm font-semibold active:scale-[0.98]"
                             >
                                 <Phone className="h-4 w-4" />
                                 Call
                             </a>
                         ) : (
-                            <span className="flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-dashed border-slate-200 text-sm font-semibold text-muted-foreground">
+                            <span className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-200 text-sm font-semibold text-muted-foreground">
                                 <Phone className="h-4 w-4" />
                                 No phone
                             </span>
@@ -134,6 +161,9 @@ export function TechnicianHome({
                     </div>
                 </CardContent>
             </Card>
+
+            {/* Suggested visiting order for today (renders nothing without stops) */}
+            <TodaysRouteCard jobs={jobs} onOpenJob={onOpenJob} />
 
             {/* Grouped job list */}
             {sections.map(({ group, jobs: groupJobsList }) => {
@@ -173,6 +203,10 @@ export function TechnicianHome({
                     </div>
                 );
             })}
+
+            {/* Finished today — collapsed, so the tech can reopen a job to send the
+                pay link/summary or add after-photos without it crowding the list. */}
+            <DoneTodaySection jobs={jobs} onOpenJob={onOpenJob} />
         </div>
     );
 }

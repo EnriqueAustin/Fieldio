@@ -21,8 +21,9 @@ export const paymentsController = {
     },
 
     handlePayFastITN: async (req: Request, res: Response) => {
-        const sourceIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || '';
-        const result = await paymentsService.handlePayFastITN(req.body, sourceIp);
+        // req.ip honours the app's `trust proxy` setting; a raw X-Forwarded-For
+        // header is client-controlled and must never be trusted directly.
+        const result = await paymentsService.handlePayFastITN(req.body ?? {}, req.ip);
         res.status(result.received ? StatusCodes.OK : StatusCodes.BAD_REQUEST)
             .send(result.received ? 'OK' : 'FAIL');
     },
@@ -41,6 +42,7 @@ export const paymentsController = {
             .object({
                 amount: z.number().positive(),
                 method: z.enum(['CASH', 'CHECK', 'EFT', 'OTHER']),
+                reference: z.string().max(100).optional(),
                 note: z.string().optional(),
             })
             .parse(req.body);
