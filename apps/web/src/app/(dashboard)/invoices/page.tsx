@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import api from "../../../lib/api";
@@ -48,35 +48,49 @@ function formatDate(d: string | null) {
 }
 
 export default function InvoicesPage() {
+    const LIMIT = 20;
     const [tab, setTab] = useState<(typeof STATUS_TABS)[number]>("ALL");
     const [search, setSearch] = useState("");
+    const [debouncedSearch, setDebouncedSearch] = useState("");
+    const [page, setPage] = useState(1);
     const [creating, setCreating] = useState(false);
     const [recordingBatch, setRecordingBatch] = useState(false);
     const [bulkGenerating, setBulkGenerating] = useState(false);
 
+    // Debounce the search box so typing doesn't fire a request per keystroke.
+    useEffect(() => {
+        const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+        return () => clearTimeout(t);
+    }, [search]);
+
+    // Any change of filter or search returns to the first page.
+    useEffect(() => {
+        setPage(1);
+    }, [tab, debouncedSearch]);
+
+    // Server-side paging + status + search: the list is no longer capped at a
+    // client-filtered first page, so invoice 101 is reachable.
     const { data, isLoading } = useQuery({
-        queryKey: ["invoices", tab],
-        queryFn: () =>
-            api
-                .get(`/finance/invoices?limit=100${tab !== "ALL" ? `&status=${tab}` : ""}`)
-                .then((r) => r.data.data),
+        queryKey: ["invoices", tab, debouncedSearch, page],
+        queryFn: () => {
+            const params = new URLSearchParams({ page: String(page), limit: String(LIMIT) });
+            if (tab !== "ALL") params.set("status", tab);
+            if (debouncedSearch) params.set("search", debouncedSearch);
+            return api.get(`/finance/invoices?${params.toString()}`).then((r) => r.data.data);
+        },
+        placeholderData: keepPreviousData,
     });
 
     const invoices: Invoice[] = data?.items ?? [];
+    const total: number = data?.total ?? 0;
+    const totalPages: number = data?.totalPages ?? 1;
 
-    const filtered = useMemo(() => {
-        const q = search.trim().toLowerCase();
-        if (!q) return invoices;
-        return invoices.filter(
-            (i) =>
-                (i.job?.customer?.name ?? "").toLowerCase().includes(q) ||
-                (i.invoiceNumber ?? "").toLowerCase().includes(q) ||
-                (i.job?.title ?? "").toLowerCase().includes(q)
-        );
-    }, [invoices, search]);
-
-    const totalBilled = filtered.reduce((sum, i) => sum + Number(i.total), 0);
-    const outstanding = filtered.reduce((sum, i) => sum + Number(i.balance), 0);
+    // Footer sums over the current page. VOID invoices are cancelled paper and
+    // must never count toward billed revenue.
+    const totalBilled = invoices
+        .filter((i) => i.status !== "VOID")
+        .reduce((sum, i) => sum + Number(i.total), 0);
+    const outstanding = invoices.reduce((sum, i) => sum + Number(i.balance), 0);
 
     return (
         <div className="space-y-6">
@@ -148,7 +162,7 @@ export default function InvoicesPage() {
 
             {isLoading ? (
                 <div className="surface-card h-96 animate-pulse" />
-            ) : filtered.length === 0 ? (
+            ) : invoices.length === 0 ? (
                 <div className="surface-card flex flex-col items-center text-center py-16 px-6">
                     <div className="h-12 w-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
                         <Receipt className="h-5 w-5" />
@@ -162,8 +176,9 @@ export default function InvoicesPage() {
                 <div className="surface-card overflow-hidden">
                     <div className="px-5 py-3 border-b border-border/60 bg-slate-50/70 flex items-center justify-between text-xs text-muted-foreground">
                         <span>
-                            {filtered.length} invoice{filtered.length !== 1 ? "s" : ""} · billed{" "}
+                            {total} invoice{total !== 1 ? "s" : ""} · billed{" "}
                             <span className="font-semibold text-foreground">{formatCurrency(totalBilled)}</span>
+                            <span className="text-muted-foreground"> (this page, excl. void)</span>
                         </span>
                         <span>
                             Outstanding:{" "}
@@ -171,7 +186,7 @@ export default function InvoicesPage() {
                         </span>
                     </div>
                     <div className="divide-y divide-border/60">
-                        {filtered.map((inv) => (
+                        {invoices.map((inv) => (
                             <div
                                 key={inv.id}
                                 className="flex items-center gap-4 px-5 py-4 hover:bg-slate-50/70 transition"
@@ -216,6 +231,30 @@ export default function InvoicesPage() {
                                 )}
                             </div>
                         ))}
+                    </div>
+                </div>
+            )}
+
+            {!isLoading && invoices.length > 0 && totalPages > 1 && (
+                <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">
+                        Page {page} of {totalPages}
+                    </span>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => setPage((p) => Math.max(1, p - 1))}
+                            disabled={page <= 1}
+                            className="inline-flex items-center rounded-lg border border-border bg-white px-3 py-1.5 text-sm font-medium hover:bg-slate-50 transition disabled:opacity-40"
+                        >
+                            Previous
+                        </button>
+                        <button
+                            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                            disabled={page >= totalPages}
+                            className="inline-flex items-center rounded-lg border border-border bg-white px-3 py-1.5 text-sm font-medium hover:bg-slate-50 transition disabled:opacity-40"
+                        >
+                            Next
+                        </button>
                     </div>
                 </div>
             )}

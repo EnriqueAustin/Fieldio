@@ -15,6 +15,7 @@ import {
     Loader2,
     AlertCircle,
     Receipt,
+    Undo2,
 } from "lucide-react";
 import api from "../../../../lib/api";
 import { downloadFile } from "../../../../lib/download";
@@ -23,6 +24,7 @@ import { StatusPill } from "../../../../components/ui/status-pill";
 import { useToast } from "../../../../hooks/use-toast";
 import { RecordPaymentDialog } from "../../../../components/invoices/record-payment-dialog";
 import { VoidInvoiceDialog } from "../../../../components/invoices/void-invoice-dialog";
+import { ReversePaymentDialog } from "../../../../components/invoices/reverse-payment-dialog";
 
 interface InvoiceItem {
     name: string;
@@ -38,9 +40,11 @@ interface InvoicePayment {
     method: string;
     status: string;
     createdAt: string;
+    paidAt?: string | null;
     reference?: string | null;
     note?: string | null;
     overpayment?: number | null;
+    reversal?: { reason?: string; reversedAt?: string } | null;
     metadata?: { reference?: string; note?: string; overpayment?: number } | null;
 }
 
@@ -115,6 +119,7 @@ export default function InvoiceDetailPage() {
     const [recording, setRecording] = useState(false);
     const [voiding, setVoiding] = useState(false);
     const [downloading, setDownloading] = useState(false);
+    const [reversing, setReversing] = useState<InvoicePayment | null>(null);
 
     const { data, isLoading, isError, error } = useQuery({
         queryKey: ["invoice", id],
@@ -466,20 +471,40 @@ export default function InvoiceDetailPage() {
                                         <div className="text-sm font-medium">
                                             {PAYMENT_METHOD_LABELS[p.method] ?? p.method}
                                             {p.status === "REFUNDED" && (
-                                                <span className="ml-2 text-xs text-rose-600">(refunded)</span>
+                                                <span className="ml-2 text-xs text-rose-600">(reversed)</span>
                                             )}
                                         </div>
                                         <div className="text-xs text-muted-foreground truncate">
-                                            {formatDateTime(p.createdAt)}
+                                            {p.paidAt ? formatDate(p.paidAt) : formatDateTime(p.createdAt)}
                                             {refOrNote ? ` · ${refOrNote}` : ""}
                                         </div>
-                                    </div>
-                                    <div className="text-right shrink-0">
-                                        <div className="font-semibold text-sm">{formatCurrency(Number(p.amount))}</div>
-                                        {overpayment > 0 && (
-                                            <div className="text-[10px] text-amber-600">
-                                                {formatCurrency(overpayment)} overpayment
+                                        {p.status === "REFUNDED" && p.reversal?.reason && (
+                                            <div className="text-[10px] text-rose-600 truncate">
+                                                Reversed: {p.reversal.reason}
                                             </div>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-3 shrink-0">
+                                        <div className="text-right">
+                                            <div className="font-semibold text-sm">
+                                                {formatCurrency(Number(p.amount))}
+                                            </div>
+                                            {overpayment > 0 && (
+                                                <div className="text-[10px] text-amber-600">
+                                                    {formatCurrency(overpayment)} overpayment
+                                                </div>
+                                            )}
+                                        </div>
+                                        {p.status === "SUCCEEDED" && (
+                                            <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                onClick={() => setReversing(p)}
+                                                className="gap-1.5 text-rose-600 hover:text-rose-700"
+                                            >
+                                                <Undo2 className="h-3.5 w-3.5" />
+                                                Reverse
+                                            </Button>
                                         )}
                                     </div>
                                 </div>
@@ -496,6 +521,14 @@ export default function InvoiceDetailPage() {
                 onOpenChange={setRecording}
             />
             <VoidInvoiceDialog invoiceId={data.id} open={voiding} onOpenChange={setVoiding} />
+            <ReversePaymentDialog
+                invoiceId={data.id}
+                paymentId={reversing?.id ?? null}
+                amount={Number(reversing?.amount ?? 0)}
+                method={PAYMENT_METHOD_LABELS[reversing?.method ?? ""] ?? reversing?.method ?? "payment"}
+                open={!!reversing}
+                onOpenChange={(v) => !v && setReversing(null)}
+            />
         </div>
     );
 }

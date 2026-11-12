@@ -398,6 +398,18 @@ export const paymentsService = {
                     const invoice = await tx.invoice.findUnique({ where: { id: params.invoiceId } });
                     if (!invoice) throw new AppError('Invoice not found', StatusCodes.NOT_FOUND);
 
+                    // A VOID invoice must never resurrect as PAID, and a DRAFT has
+                    // not been issued yet — neither may take a payment. 409 so the
+                    // office sees a clear conflict (matches the bulk-EFT guard).
+                    if (invoice.status === 'VOID' || invoice.status === 'DRAFT') {
+                        throw new AppError(
+                            invoice.status === 'VOID'
+                                ? 'This invoice is void and cannot take a payment'
+                                : 'This invoice has not been sent yet and cannot take a payment',
+                            StatusCodes.CONFLICT,
+                        );
+                    }
+
                     const balanceCents = Math.max(0, toCents(invoice.balance));
                     const newBalanceCents = Math.max(0, balanceCents - amountCents);
                     const overpaymentCents = Math.max(0, amountCents - balanceCents);
@@ -491,6 +503,9 @@ export const paymentsService = {
         method: 'CASH' | 'CHECK' | 'EFT' | 'OTHER';
         reference?: string;
         note?: string;
+        /** Effective payment date from the office form (ISO). Kept in metadata
+         * until a Payment.paidAt column exists (see service note / migration). */
+        paidAt?: string;
     }) => {
         const invoice = await prisma.invoice.findFirst({
             where: { id: params.invoiceId, companyId: params.companyId },
@@ -499,6 +514,7 @@ export const paymentsService = {
         const metadata = {
             ...(params.reference ? { reference: params.reference } : {}),
             ...(params.note ? { note: params.note } : {}),
+            ...(params.paidAt ? { paidAt: params.paidAt } : {}),
         };
         return paymentsService._recordPayment({
             invoiceId: invoice.id,
@@ -530,6 +546,119 @@ export const paymentsService = {
                 ...(params.note ? { note: params.note } : {}),
             },
         });
+    },
+
+    /**
+     * Reverse a recorded payment (mis-keyed / wrong invoice). The payment is
+     * marked REFUNDED (the schema has no REVERSED value) and the invoice balance
+     * and status are recomputed from the remaining COMPLETED (SUCCEEDED) payments
+     * inside a transaction, using the same optimistic-concurrency guard as
+     * _recordPayment. The reason + actor are kept in Payment.metadata and an
+     * AuditLog row is written. Once reversed, no payment remains, so the invoice
+     * can be voided. A second reverse of the same payment is a 409.
+     */
+    reversePayment: async (params: {
+        paymentId: string;
+        companyId: string;
+        reason: string;
+        actor: { userId: string; role?: string };
+    }) => {
+        const MAX_ATTEMPTS = 5;
+        let result!: { payment: any; invoice: any };
+        for (let attempt = 1; ; attempt++) {
+            try {
+                result = await prisma.$transaction(async (tx) => {
+                    const payment = await tx.payment.findFirst({
+                        where: { id: params.paymentId, companyId: params.companyId },
+                    });
+                    if (!payment) throw new AppError('Payment not found', StatusCodes.NOT_FOUND);
+                    if (payment.status === 'REFUNDED') {
+                        throw new AppError('Payment is already reversed', StatusCodes.CONFLICT);
+                    }
+                    if (payment.status !== 'SUCCEEDED') {
+                        throw new AppError('Only a completed payment can be reversed', StatusCodes.BAD_REQUEST);
+                    }
+
+                    const invoice = await tx.invoice.findUnique({ where: { id: payment.invoiceId } });
+                    if (!invoice) throw new AppError('Invoice not found', StatusCodes.NOT_FOUND);
+
+                    // Recompute the balance from every COMPLETED payment except this one.
+                    const remaining = await tx.payment.findMany({
+                        where: { invoiceId: invoice.id, status: 'SUCCEEDED', id: { not: payment.id } },
+                    });
+                    const paidCents = remaining.reduce((sum: number, p: any) => sum + toCents(p.amount), 0);
+                    const totalCents = toCents(invoice.total);
+                    const newBalanceCents = Math.max(0, totalCents - paidCents);
+                    const fullyPaid = paidCents > 0 && newBalanceCents === 0;
+                    // Nothing paid any more → back to SENT (payable / voidable again).
+                    const newStatus = fullyPaid ? 'PAID' : paidCents > 0 ? 'PARTIAL' : 'SENT';
+
+                    // Conditional on the balance we read — never clobber a concurrent write.
+                    const written = await tx.invoice.updateMany({
+                        where: { id: invoice.id, balance: invoice.balance },
+                        data: {
+                            balance: fromCents(newBalanceCents),
+                            status: newStatus,
+                            paidAt: fullyPaid ? invoice.paidAt : null,
+                        },
+                    });
+                    if (written.count === 0) throw new BalanceConflictError();
+
+                    const existingMeta = (payment.metadata as any) ?? {};
+                    const reversedPayment = await tx.payment.update({
+                        where: { id: payment.id },
+                        data: {
+                            status: 'REFUNDED',
+                            metadata: {
+                                ...existingMeta,
+                                reversal: {
+                                    reason: params.reason,
+                                    reversedBy: params.actor.userId,
+                                    reversedAt: new Date().toISOString(),
+                                },
+                            } as any,
+                        },
+                    });
+
+                    await tx.auditLog.create({
+                        data: {
+                            companyId: params.companyId,
+                            userId: params.actor.userId,
+                            action: 'PAYMENT_REVERSED',
+                            entityId: payment.id,
+                            entityType: 'PAYMENT',
+                            metadata: {
+                                invoiceId: invoice.id,
+                                amount: Number(payment.amount),
+                                method: payment.method,
+                                reason: params.reason,
+                                newStatus,
+                                newBalance: fromCents(newBalanceCents),
+                            },
+                        },
+                    });
+
+                    const updated = await tx.invoice.findUnique({ where: { id: invoice.id } });
+                    return { payment: reversedPayment, invoice: updated! };
+                });
+                break;
+            } catch (e) {
+                if (e instanceof BalanceConflictError && attempt < MAX_ATTEMPTS) continue;
+                if (e instanceof BalanceConflictError) {
+                    throw new AppError('Invoice is being updated, please retry', StatusCodes.CONFLICT);
+                }
+                throw e;
+            }
+        }
+
+        socketService.emitToCompany(result.invoice.companyId, 'invoice:paid', {
+            invoiceId: result.invoice.id,
+            balance: result.invoice.balance,
+            status: result.invoice.status,
+            overpayment: 0,
+        });
+
+        return result;
     },
 
     /**

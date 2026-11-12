@@ -57,6 +57,10 @@ export function RecordPaymentDialog({
     const [date, setDate] = useState(todayInJohannesburg());
     const [reference, setReference] = useState("");
     const [note, setNote] = useState("");
+    // One idempotency key per user action: minted when the dialog opens and
+    // reused on every retry (a double-tap or a failed-then-retried submit) so
+    // the money is booked at most once.
+    const [idemKey, setIdemKey] = useState("");
 
     // Reset the form each time the dialog opens, defaulting the amount to the
     // outstanding balance.
@@ -67,6 +71,7 @@ export function RecordPaymentDialog({
             setDate(todayInJohannesburg());
             setReference("");
             setNote("");
+            setIdemKey(crypto.randomUUID());
         }
     }, [open, balance]);
 
@@ -77,20 +82,25 @@ export function RecordPaymentDialog({
     const record = useMutation({
         mutationFn: () => {
             const method = METHODS[methodIdx];
-            // The API stores the reference on its own; the method label for OTHER
-            // and a non-today date are folded into the note.
+            // The API stores the reference and the effective date (paidAt) on
+            // their own; only the method label for OTHER is folded into the note.
             const parts: string[] = [];
             if (method.tag) parts.push(method.tag);
-            if (date && date !== todayInJohannesburg()) parts.push(`Dated ${date}`);
             if (note.trim()) parts.push(note.trim());
             const composedNote = parts.join(" · ") || undefined;
             return api
-                .post(`/payments/invoices/${invoiceId}/record`, {
-                    amount: Number(amountNum.toFixed(2)),
-                    method: method.value,
-                    note: composedNote,
-                    reference: reference.trim() ? reference.trim().slice(0, 100) : undefined,
-                })
+                .post(
+                    `/payments/invoices/${invoiceId}/record`,
+                    {
+                        amount: Number(amountNum.toFixed(2)),
+                        method: method.value,
+                        note: composedNote,
+                        reference: reference.trim() ? reference.trim().slice(0, 100) : undefined,
+                        // Effective date the money was received (stored as metadata.paidAt).
+                        paidAt: date || undefined,
+                    },
+                    { headers: { "Idempotency-Key": idemKey } }
+                )
                 .then((r) => r.data.data);
         },
         onSuccess: (data: { overpayment?: number }) => {

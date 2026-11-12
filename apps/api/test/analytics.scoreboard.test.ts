@@ -23,20 +23,21 @@ function seed() {
         { id: 'tech_gone', companyId: COMPANY, role: 'TECHNICIAN', status: 'INACTIVE', email: 'gone@test.io' },
     ]);
     fakePrisma.job.seed([
+        // Revenue is now the ex-VAT subtotal of issued invoices (DRAFT/VOID earn nothing).
         {
             id: 'job_a1', companyId: COMPANY, techId: 'tech_a', status: 'COMPLETED',
             actualStart: hoursAgo(4), actualEnd: hoursAgo(2),
-            invoice: { total: 1500 },
+            invoice: { subtotal: 1500, total: 1725, status: 'PAID' },
         },
         {
             id: 'job_a2', companyId: COMPANY, techId: 'tech_a', status: 'COMPLETED',
             actualStart: hoursAgo(30), actualEnd: hoursAgo(26),
-            invoice: { total: 500 },
+            invoice: { subtotal: 500, total: 575, status: 'SENT' },
         },
         {
             id: 'job_b1', companyId: COMPANY, techId: 'tech_b', status: 'COMPLETED',
             actualStart: hoursAgo(8), actualEnd: hoursAgo(7),
-            invoice: { total: 900 },
+            invoice: { subtotal: 900, total: 1035, status: 'PAID' },
         },
     ]);
     // A warranty claim against job_a2 breaks tech_a's first-time-fix on that job.

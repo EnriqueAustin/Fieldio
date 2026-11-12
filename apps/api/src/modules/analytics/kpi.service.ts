@@ -12,20 +12,23 @@ export const kpiService = {
     ) => {
         const cfg = typeof opts === 'number' ? { days: opts } : opts;
         const days = cfg.days ?? 30;
+        const tz = await getCompanyTimezone(companyId);
         const to = cfg.to ?? new Date();
-        const since = cfg.from ?? startOf(await getCompanyTimezone(companyId), days);
+        const since = cfg.from ?? startOf(tz, days);
         // Equal-length immediately-preceding window for vs-previous comparisons.
         const spanMs = Math.max(to.getTime() - since.getTime(), 86_400_000);
         const prevSince = new Date(since.getTime() - spanMs);
 
+        // Revenue EX-VAT: sum the invoice subtotal, not the VAT-inclusive total,
+        // so KPI revenue reconciles with Sage (~15% lower than total).
         const [thisRevenue, prevRevenue] = await Promise.all([
             prisma.invoice.aggregate({
-                _sum: { total: true },
+                _sum: { subtotal: true },
                 _count: true,
                 where: { companyId, deletedAt: null, createdAt: { gte: since, lte: to }, status: { in: ['SENT', 'PAID', 'PARTIAL', 'OVERDUE'] } },
             }),
             prisma.invoice.aggregate({
-                _sum: { total: true },
+                _sum: { subtotal: true },
                 _count: true,
                 where: { companyId, deletedAt: null, createdAt: { gte: prevSince, lt: since }, status: { in: ['SENT', 'PAID', 'PARTIAL', 'OVERDUE'] } },
             }),
@@ -66,14 +69,14 @@ export const kpiService = {
 
         const pctChange = (curr: number, prev: number) => (prev > 0 ? (curr - prev) / prev : 0);
 
-        const totalRevenue = Number(thisRevenue._sum.total ?? 0);
+        const totalRevenue = Number(thisRevenue._sum.subtotal ?? 0);
         const invoiceCount = thisRevenue._count;
         const avgTicket = invoiceCount > 0 ? totalRevenue / invoiceCount : 0;
         const closeRate = estSent > 0 ? estApproved / estSent : 0;
-        const revenueChange = pctChange(totalRevenue, Number(prevRevenue._sum.total ?? 0));
+        const revenueChange = pctChange(totalRevenue, Number(prevRevenue._sum.subtotal ?? 0));
 
         const prevInvoiceCount = prevRevenue._count;
-        const prevAvgTicket = prevInvoiceCount > 0 ? Number(prevRevenue._sum.total ?? 0) / prevInvoiceCount : 0;
+        const prevAvgTicket = prevInvoiceCount > 0 ? Number(prevRevenue._sum.subtotal ?? 0) / prevInvoiceCount : 0;
         const prevCloseRate = prevEstSent > 0 ? prevEstApproved / prevEstSent : 0;
         const avgTicketChange = pctChange(avgTicket, prevAvgTicket);
         const closeRateChange = pctChange(closeRate, prevCloseRate);
@@ -83,7 +86,7 @@ export const kpiService = {
         const salesByTech = await prisma.$queryRaw<Array<{ techId: string; name: string; revenue: number; jobs: bigint }>>`
             SELECT j."techId" as "techId",
                    COALESCE(u."firstName" || ' ' || u."lastName", u.email) as name,
-                   COALESCE(SUM(i.total), 0)::float as revenue,
+                   COALESCE(SUM(i.subtotal), 0)::float as revenue,
                    COUNT(j.id) as jobs
             FROM "Job" j
             JOIN "User" u ON u.id = j."techId"
@@ -98,25 +101,36 @@ export const kpiService = {
             LIMIT 5
         `;
 
-        // Capture snapshot for historical comparison
-        await prisma.kpiSnapshot.create({
-            data: {
-                companyId,
-                periodStart: since,
-                periodEnd: to,
-                revenue: totalRevenue,
-                invoicesCount: invoiceCount,
-                avgTicket,
-                closeRate,
-                arOpenTotal: arOpen,
-                arOver30: ar30,
-                arOver60: ar60,
-                arOver90: ar90,
-                membersActive,
-                membersChurned,
-                jobsCompleted,
-            },
-        }).catch(() => undefined);
+        // Capture at most one snapshot per company per day. The KPI page refetches
+        // every 60s, so a create-on-every-read floods the table; instead we upsert
+        // today's row (keyed on the company-timezone day) in place.
+        const snapshotData = {
+            periodStart: since,
+            periodEnd: to,
+            revenue: totalRevenue,
+            invoicesCount: invoiceCount,
+            avgTicket,
+            closeRate,
+            arOpenTotal: arOpen,
+            arOver30: ar30,
+            arOver60: ar60,
+            arOver90: ar90,
+            membersActive,
+            membersChurned,
+            jobsCompleted,
+        };
+        await (async () => {
+            const dayStart = startOfDayInTimeZone(new Date(), tz);
+            const todays = await prisma.kpiSnapshot.findFirst({
+                where: { companyId, capturedAt: { gte: dayStart } },
+                orderBy: { capturedAt: 'desc' },
+            });
+            if (todays) {
+                await prisma.kpiSnapshot.update({ where: { id: todays.id }, data: snapshotData });
+            } else {
+                await prisma.kpiSnapshot.create({ data: { companyId, capturedAt: new Date(), ...snapshotData } });
+            }
+        })().catch(() => undefined);
 
         return {
             periodDays: days,

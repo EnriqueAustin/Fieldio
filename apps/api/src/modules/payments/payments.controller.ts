@@ -44,6 +44,9 @@ export const paymentsController = {
                 method: z.enum(['CASH', 'CHECK', 'EFT', 'OTHER']),
                 reference: z.string().max(100).optional(),
                 note: z.string().optional(),
+                // Effective date the money was received (office form). Accepts a
+                // yyyy-mm-dd or a full ISO datetime; stored in Payment.metadata.paidAt.
+                paidAt: z.string().optional(),
             })
             .parse(req.body);
         const result = await paymentsService.recordManualPayment({
@@ -52,6 +55,24 @@ export const paymentsController = {
             ...body,
         });
         res.status(StatusCodes.CREATED).json({ status: 'success', data: result });
+    },
+
+    // Reverse a recorded payment (ADMIN / OFFICE / ACCOUNTANT). Recomputes the
+    // invoice balance from the remaining completed payments.
+    reverse: async (req: Request, res: Response) => {
+        const { reason } = z
+            .object({ reason: z.string().trim().min(3).max(500) })
+            .parse(req.body);
+        const result = await paymentsService.reversePayment({
+            paymentId: req.params.paymentId,
+            companyId: req.user!.companyId,
+            reason,
+            actor: { userId: req.user!.userId, role: req.user!.role },
+        });
+        res.status(StatusCodes.OK).json({
+            status: 'success',
+            data: { payment: result.payment, invoice: result.invoice },
+        });
     },
 
     // Bulk EFT reconciliation — dry-run matching of pasted/uploaded statement lines.

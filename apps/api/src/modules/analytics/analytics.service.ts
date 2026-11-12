@@ -1,39 +1,61 @@
 import { prisma } from '@fieldio/database';
+import { getCompanyTimezone, zonedParts, zonedTimeToUtc } from '../../utils/timezone';
+
+// Invoice statuses that represent real, issued revenue — DRAFT (not issued) and
+// VOID (cancelled) are always excluded from revenue and margin.
+const REVENUE_STATUSES = ['SENT', 'PAID', 'PARTIAL', 'OVERDUE'] as const;
+
+// Start of the current month in the company's timezone (not the server's UTC).
+const monthStartInTz = (tz: string): Date => {
+    const p = zonedParts(new Date(), tz);
+    return zonedTimeToUtc(p.year, p.month, 1, 0, 0, tz);
+};
 
 export const analyticsService = {
     getDashboardStats: async (
         companyId: string,
         range?: { from?: Date; to?: Date }
     ) => {
+        const tz = await getCompanyTimezone(companyId);
         const now = new Date();
-        const from = range?.from ?? new Date(now.getFullYear(), now.getMonth(), 1);
+        const from = range?.from ?? monthStartInTz(tz);
         const to = range?.to ?? now;
 
-        const invoiceRangeWhere = {
-            companyId,
-            deletedAt: null,
-            createdAt: { gte: from, lte: to },
-        };
-
+        // Revenue EX-VAT: sum the invoice subtotal (not the VAT-inclusive total),
+        // and never count DRAFT (not issued) or VOID (cancelled) invoices.
         const totalRevenue = await prisma.invoice.aggregate({
-            where: invoiceRangeWhere,
-            _sum: { total: true },
+            where: {
+                companyId,
+                deletedAt: null,
+                createdAt: { gte: from, lte: to },
+                status: { in: [...REVENUE_STATUSES] },
+            },
+            _sum: { subtotal: true },
         });
 
+        // Outstanding = balances still owed on open invoices only (SENT / PARTIAL /
+        // OVERDUE). `status != PAID` would wrongly fold in DRAFT and VOID.
         const outstandingRevenue = await prisma.invoice.aggregate({
-            where: { companyId, deletedAt: null, status: { not: 'PAID' } },
+            where: { companyId, deletedAt: null, status: { in: ['SENT', 'PARTIAL', 'OVERDUE'] } },
             _sum: { balance: true },
         });
 
-        const jobsCount = await prisma.job.groupBy({
-            by: ['status'],
+        // Count jobs in JS so "active" can exclude both COMPLETED and CANCELED
+        // (a canceled job is not active work).
+        const rangeJobs = await prisma.job.findMany({
             where: { companyId, deletedAt: null, createdAt: { gte: from, lte: to } },
-            _count: { id: true },
+            select: { status: true },
         });
-
-        const totalJobs = jobsCount.reduce((acc, curr) => acc + curr._count.id, 0);
-        const completedJobs = jobsCount.find((j) => j.status === 'COMPLETED')?._count.id || 0;
-        const activeJobs = totalJobs - completedJobs;
+        const breakdownMap = new Map<string, number>();
+        for (const j of rangeJobs) breakdownMap.set(j.status, (breakdownMap.get(j.status) ?? 0) + 1);
+        const totalJobs = rangeJobs.length;
+        const completedJobs = breakdownMap.get('COMPLETED') ?? 0;
+        const canceledJobs = breakdownMap.get('CANCELED') ?? 0;
+        const activeJobs = Math.max(0, totalJobs - completedJobs - canceledJobs);
+        const jobsCount = Array.from(breakdownMap.entries()).map(([status, count]) => ({
+            status,
+            _count: { id: count },
+        }));
 
         const totalCustomers = await prisma.customer.count({
             where: { companyId, deletedAt: null },
@@ -59,40 +81,45 @@ export const analyticsService = {
             },
         });
 
-        const [estimateStats, overdueInvoices, totalTechnicians, utilizedTechnicians] = await Promise.all([
-            prisma.estimate.groupBy({
-                by: ['status'],
-                where: { companyId, createdAt: { gte: from, lte: to } },
-                _count: { id: true },
-            }),
-            prisma.invoice.count({
-                where: {
-                    companyId,
-                    deletedAt: null,
-                    status: { in: ['SENT', 'PARTIAL', 'OVERDUE'] },
-                    dueDate: { lt: now },
-                },
-            }),
-            prisma.user.count({
-                where: { companyId, role: 'TECHNICIAN', status: 'ACTIVE' },
-            }),
-            prisma.job.findMany({
-                where: {
-                    companyId,
-                    deletedAt: null,
-                    techId: { not: null },
-                    status: { in: ['ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'COMPLETED'] },
-                    scheduledStart: { gte: from, lte: to },
-                },
-                select: { techId: true },
-                distinct: ['techId'],
-            }),
-        ]);
+        // Close rate: count ALL estimates in the sent-set, not just the first group.
+        // The previous .find() on groupBy results read a single status bucket, so
+        // the denominator could be smaller than the numerator and the rate >100%.
+        const [sentEstimates, approvedEstimates, overdueInvoices, totalTechnicians, utilizedTechnicians] =
+            await Promise.all([
+                prisma.estimate.count({
+                    where: {
+                        companyId,
+                        createdAt: { gte: from, lte: to },
+                        status: { in: ['SENT', 'APPROVED', 'DECLINED'] },
+                    },
+                }),
+                prisma.estimate.count({
+                    where: { companyId, createdAt: { gte: from, lte: to }, status: 'APPROVED' },
+                }),
+                prisma.invoice.count({
+                    where: {
+                        companyId,
+                        deletedAt: null,
+                        status: { in: ['SENT', 'PARTIAL', 'OVERDUE'] },
+                        dueDate: { lt: now },
+                    },
+                }),
+                prisma.user.count({
+                    where: { companyId, role: 'TECHNICIAN', status: 'ACTIVE' },
+                }),
+                prisma.job.findMany({
+                    where: {
+                        companyId,
+                        deletedAt: null,
+                        techId: { not: null },
+                        status: { in: ['ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'COMPLETED'] },
+                        scheduledStart: { gte: from, lte: to },
+                    },
+                    select: { techId: true },
+                    distinct: ['techId'],
+                }),
+            ]);
 
-        const sentEstimates =
-            estimateStats.find((item) => ['SENT', 'APPROVED', 'DECLINED'].includes(item.status))?._count.id ?? 0;
-        const approvedEstimates =
-            estimateStats.find((item) => item.status === 'APPROVED')?._count.id ?? 0;
         const conversionRate = sentEstimates ? Math.round((approvedEstimates / sentEstimates) * 100) : 0;
         const utilizationRate = totalTechnicians
             ? Math.round((utilizedTechnicians.length / totalTechnicians) * 100)
@@ -101,10 +128,18 @@ export const analyticsService = {
         return {
             range: { from, to },
             revenue: {
-                total: totalRevenue._sum.total || 0,
-                outstanding: outstandingRevenue._sum.balance || 0,
+                // EX-VAT (invoice subtotal). Label surfaced so the UI can say so.
+                total: Number(totalRevenue._sum.subtotal || 0),
+                outstanding: Number(outstandingRevenue._sum.balance || 0),
+                label: 'Revenue (ex VAT)',
             },
-            jobs: { total: totalJobs, completed: completedJobs, active: activeJobs, breakdown: jobsCount },
+            jobs: {
+                total: totalJobs,
+                completed: completedJobs,
+                active: activeJobs,
+                canceled: canceledJobs,
+                breakdown: jobsCount,
+            },
             customers: { total: totalCustomers },
             estimates: { sent: sentEstimates, approved: approvedEstimates, conversionRate },
             technicians: { total: totalTechnicians, active: activeTechs.length, utilizationRate },
@@ -115,8 +150,9 @@ export const analyticsService = {
     },
 
     getJobCostingReport: async (companyId: string, range?: { from?: Date; to?: Date }) => {
+        const tz = await getCompanyTimezone(companyId);
         const now = new Date();
-        const from = range?.from ?? new Date(now.getFullYear(), now.getMonth(), 1);
+        const from = range?.from ?? monthStartInTz(tz);
         const to = range?.to ?? now;
 
         const jobs = await prisma.job.findMany({
@@ -127,37 +163,46 @@ export const analyticsService = {
                 actualEnd: { gte: from, lte: to },
             },
             include: {
-                lineItems: true,
                 expenses: true,
-                invoice: { select: { total: true, balance: true, status: true } },
+                invoice: { select: { subtotal: true, total: true, balance: true, status: true } },
                 customer: { select: { name: true } },
-                tech: { select: { id: true, email: true, firstName: true, lastName: true } },
+                tech: { select: { id: true, email: true, firstName: true, lastName: true, hourlyCost: true } },
                 purchaseOrders: { select: { total: true, status: true } },
             },
         });
 
+        // Whether any tech on these jobs has a cost rate — drives the UI label and
+        // whether labour is included in cost at all.
+        let anyLabourCosted = false;
+
         const report = jobs.map((job) => {
-            const laborCost = job.lineItems
-                .filter((li) => li.type === 'LABOR')
-                .reduce((sum, li) => sum + Number(li.total), 0);
-            const materialCost = job.lineItems
-                .filter((li) => li.type === 'MATERIAL')
-                .reduce((sum, li) => sum + Number(li.total), 0);
-            const serviceCost = job.lineItems
-                .filter((li) => li.type === 'SERVICE')
-                .reduce((sum, li) => sum + Number(li.total), 0);
+            // Real out-of-pocket cost only. JobLineItem carries the SELLING price,
+            // not a cost, so line items are NOT cost — material cost comes from
+            // purchase orders and expenses. Labour cost is added only when the
+            // assigned tech has an hourlyCost rate; otherwise it is left out.
             const expenseTotal = job.expenses.reduce((sum, e) => sum + Number(e.amount), 0);
             const poTotal = job.purchaseOrders
                 .filter((po) => po.status !== 'CANCELED')
                 .reduce((sum, po) => sum + Number(po.total), 0);
-            const totalCost = laborCost + materialCost + expenseTotal + poTotal;
-            const invoiceTotal = job.invoice ? Number(job.invoice.total) : 0;
-            const profit = invoiceTotal - totalCost;
-            const margin = invoiceTotal > 0 ? Math.round((profit / invoiceTotal) * 100) : 0;
+            const materialCost = expenseTotal + poTotal;
 
             const durationHours = job.actualStart && job.actualEnd
                 ? (job.actualEnd.getTime() - job.actualStart.getTime()) / (1000 * 60 * 60)
                 : 0;
+
+            const hourlyCost = job.tech?.hourlyCost != null ? Number(job.tech.hourlyCost) : null;
+            const labourCosted = hourlyCost != null && hourlyCost > 0 && durationHours > 0;
+            const labourCost = labourCosted ? hourlyCost! * durationHours : 0;
+            if (labourCosted) anyLabourCosted = true;
+
+            const totalCost = materialCost + labourCost;
+
+            // Revenue EX-VAT from the invoice subtotal; VOID/DRAFT invoices earn nothing.
+            const invoiceCounts =
+                job.invoice && REVENUE_STATUSES.includes(job.invoice.status as any);
+            const revenue = invoiceCounts ? Number(job.invoice!.subtotal) : 0;
+            const profit = revenue - totalCost;
+            const margin = revenue > 0 ? Math.round((profit / revenue) * 100) : 0;
 
             return {
                 jobId: job.id,
@@ -168,32 +213,47 @@ export const analyticsService = {
                     : null,
                 completedAt: job.actualEnd,
                 durationHours: Math.round(durationHours * 100) / 100,
-                costs: { labor: laborCost, material: materialCost, service: serviceCost, expenses: expenseTotal, purchaseOrders: poTotal, total: totalCost },
-                invoiceTotal,
-                profit,
+                costs: {
+                    material: Math.round(materialCost * 100) / 100,
+                    expenses: Math.round(expenseTotal * 100) / 100,
+                    purchaseOrders: Math.round(poTotal * 100) / 100,
+                    labour: Math.round(labourCost * 100) / 100,
+                    labourCosted,
+                    total: Math.round(totalCost * 100) / 100,
+                },
+                // Revenue EX-VAT (invoice subtotal). `invoiceTotal` kept for the
+                // existing UI column; it is the ex-VAT revenue, not the gross total.
+                invoiceTotal: Math.round(revenue * 100) / 100,
+                profit: Math.round(profit * 100) / 100,
                 margin,
             };
         });
 
         const summary = {
             totalJobs: report.length,
-            totalRevenue: report.reduce((s, r) => s + r.invoiceTotal, 0),
-            totalCosts: report.reduce((s, r) => s + r.costs.total, 0),
-            totalProfit: report.reduce((s, r) => s + r.profit, 0),
+            totalRevenue: Math.round(report.reduce((s, r) => s + r.invoiceTotal, 0) * 100) / 100,
+            totalCosts: Math.round(report.reduce((s, r) => s + r.costs.total, 0) * 100) / 100,
+            totalProfit: Math.round(report.reduce((s, r) => s + r.profit, 0) * 100) / 100,
             avgMargin: report.length
                 ? Math.round(report.reduce((s, r) => s + r.margin, 0) / report.length)
                 : 0,
             avgDurationHours: report.length
                 ? Math.round((report.reduce((s, r) => s + r.durationHours, 0) / report.length) * 100) / 100
                 : 0,
+            // Flags for the UI: revenue is ex-VAT, material cost is PO+expenses,
+            // and labour is only included for techs with a cost rate.
+            revenueBasis: 'ex_vat_subtotal',
+            materialCostBasis: 'purchase_orders_and_expenses',
+            labourIncluded: anyLabourCosted,
         };
 
         return { range: { from, to }, summary, jobs: report };
     },
 
     getTimesheetReport: async (companyId: string, range?: { from?: Date; to?: Date }) => {
+        const tz = await getCompanyTimezone(companyId);
         const now = new Date();
-        const from = range?.from ?? new Date(now.getFullYear(), now.getMonth(), 1);
+        const from = range?.from ?? monthStartInTz(tz);
         const to = range?.to ?? now;
 
         const jobs = await prisma.job.findMany({
@@ -277,8 +337,9 @@ export const analyticsService = {
         companyId: string,
         range?: { from?: Date; to?: Date }
     ) => {
+        const tz = await getCompanyTimezone(companyId);
         const now = new Date();
-        const from = range?.from ?? new Date(now.getFullYear(), now.getMonth(), 1);
+        const from = range?.from ?? monthStartInTz(tz);
         const to = range?.to ?? now;
 
         const jobs = await prisma.job.findMany({
@@ -291,7 +352,7 @@ export const analyticsService = {
             },
             include: {
                 tech: { select: { id: true, email: true, firstName: true, lastName: true } },
-                invoice: { select: { total: true, status: true } },
+                invoice: { select: { subtotal: true, total: true, status: true } },
                 lineItems: true,
             },
         });
@@ -319,7 +380,11 @@ export const analyticsService = {
                 });
             }
 
-            const revenue = job.invoice ? Number(job.invoice.total) : 0;
+            // Revenue EX-VAT (invoice subtotal); exclude DRAFT / VOID invoices.
+            const revenue =
+                job.invoice && REVENUE_STATUSES.includes(job.invoice.status as any)
+                    ? Number(job.invoice.subtotal)
+                    : 0;
             const laborValue = job.lineItems
                 .filter((li) => li.type === 'LABOR')
                 .reduce((sum, li) => sum + Number(li.total), 0);
@@ -365,7 +430,7 @@ export const analyticsService = {
                 prisma.job.findMany({
                     where: { companyId, techId: tech.id, status: 'COMPLETED', deletedAt: null, actualEnd: { gte: from, lte: to } },
                     include: {
-                        invoice: { select: { total: true, status: true } },
+                        invoice: { select: { subtotal: true, status: true } },
                         lineItems: true,
                     },
                 }),
@@ -388,7 +453,11 @@ export const analyticsService = {
                 }),
             ]);
 
-            const revenue = completedJobs.reduce((sum, j) => sum + (j.invoice ? Number(j.invoice.total) : 0), 0);
+            // Revenue EX-VAT (subtotal), counting only issued invoices (not DRAFT / VOID).
+            const revenue = completedJobs.reduce(
+                (sum, j) => sum + (j.invoice && REVENUE_STATUSES.includes(j.invoice.status as any) ? Number(j.invoice.subtotal) : 0),
+                0,
+            );
             const avgTicket = completedJobs.length > 0 ? revenue / completedJobs.length : 0;
 
             const sentEstimates = estimates.filter((e) => ['SENT', 'APPROVED', 'DECLINED'].includes(e.status));
@@ -643,7 +712,7 @@ export const analyticsService = {
                     techId: true,
                     actualStart: true,
                     actualEnd: true,
-                    invoice: { select: { total: true } },
+                    invoice: { select: { subtotal: true, status: true } },
                 },
             }),
             prisma.warrantyClaim.findMany({
@@ -683,7 +752,11 @@ export const analyticsService = {
             if (!job.techId) continue;
             const acc = ensure(job.techId);
             acc.jobsCompleted += 1;
-            acc.revenue += job.invoice ? Number(job.invoice.total) : 0;
+            // Revenue EX-VAT (subtotal), excluding DRAFT / VOID invoices.
+            acc.revenue +=
+                job.invoice && REVENUE_STATUSES.includes(job.invoice.status as any)
+                    ? Number(job.invoice.subtotal)
+                    : 0;
             if (job.actualStart && job.actualEnd) {
                 const hours =
                     (new Date(job.actualEnd).getTime() - new Date(job.actualStart).getTime()) /

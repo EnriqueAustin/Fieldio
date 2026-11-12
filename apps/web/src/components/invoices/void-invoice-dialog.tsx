@@ -29,14 +29,25 @@ export function VoidInvoiceDialog({
     const qc = useQueryClient();
     const { toast } = useToast();
     const [reason, setReason] = useState("");
+    // One idempotency key per void action, reused on retry so a double-tap voids once.
+    const [idemKey, setIdemKey] = useState("");
 
     useEffect(() => {
-        if (open) setReason("");
+        if (open) {
+            setReason("");
+            setIdemKey(crypto.randomUUID());
+        }
     }, [open]);
 
     const voidInvoice = useMutation({
         mutationFn: () =>
-            api.post(`/finance/invoices/${invoiceId}/void`, { reason: reason.trim() }).then((r) => r.data.data),
+            api
+                .post(
+                    `/finance/invoices/${invoiceId}/void`,
+                    { reason: reason.trim() },
+                    { headers: { "Idempotency-Key": idemKey } }
+                )
+                .then((r) => r.data.data),
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ["invoice", invoiceId] });
             qc.invalidateQueries({ queryKey: ["invoices"] });

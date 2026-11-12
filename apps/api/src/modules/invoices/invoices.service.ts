@@ -198,6 +198,9 @@ export const invoiceService = {
             include: { job: { include: { customer: true } } },
         });
         if (!invoice) throw new AppError('Invoice not found', StatusCodes.NOT_FOUND);
+        if (invoice.status === 'VOID') {
+            throw new AppError('A void invoice cannot be sent', StatusCodes.CONFLICT);
+        }
 
         const updated = await prisma.invoice.update({
             where: { id: invoice.id },
@@ -244,9 +247,13 @@ export const invoiceService = {
             method: p.method as string,
             status: p.status as string,
             createdAt: p.createdAt ?? null,
+            // Effective payment date entered by the office (metadata.paidAt),
+            // falling back to when the row was recorded.
+            paidAt: (p.metadata as any)?.paidAt ?? null,
             reference: (p.metadata as any)?.reference ?? null,
             note: (p.metadata as any)?.note ?? null,
             overpayment: Number((p.metadata as any)?.overpayment ?? 0),
+            reversal: (p.metadata as any)?.reversal ?? null,
         }));
 
         // Office-only detail payload: everything a detail page needs, incl. the
@@ -331,10 +338,22 @@ export const invoiceService = {
         });
     },
 
-    getAll: async (companyId: string, page = 1, limit = 20, status?: string) => {
+    getAll: async (companyId: string, page = 1, limit = 20, status?: string, search?: string) => {
         const skip = (page - 1) * limit;
         const where: any = { companyId, deletedAt: null };
         if (status) where.status = status;
+
+        // Server-side search across invoice number, customer name and job title so
+        // the list is not capped at a client-filtered first page.
+        const q = search?.trim();
+        if (q) {
+            where.OR = [
+                { invoiceNumber: { contains: q, mode: 'insensitive' } },
+                { customerName: { contains: q, mode: 'insensitive' } },
+                { job: { is: { title: { contains: q, mode: 'insensitive' } } } },
+                { job: { is: { customer: { is: { name: { contains: q, mode: 'insensitive' } } } } } },
+            ];
+        }
 
         const [items, total] = await Promise.all([
             prisma.invoice.findMany({
@@ -429,17 +448,5 @@ export const invoiceService = {
             }
         }
         return results;
-    },
-
-    softDelete: async (id: string, companyId: string) => {
-        const invoice = await prisma.invoice.findFirst({ where: { id, companyId, deletedAt: null } });
-        if (!invoice) throw new AppError('Invoice not found', StatusCodes.NOT_FOUND);
-        if (invoice.status === 'PAID') throw new AppError('Cannot void a paid invoice', StatusCodes.BAD_REQUEST);
-
-        await prisma.invoice.update({
-            where: { id },
-            data: { deletedAt: new Date(), status: 'VOID' },
-        });
-        return { deleted: true };
     },
 };

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import api from "../../../lib/api";
 import { downloadFile } from "../../../lib/download";
 import { toast } from "../../../components/ui/use-toast";
@@ -15,7 +16,9 @@ interface JobCostRow {
     customer: string;
     tech: string | null;
     durationHours: number;
-    costs: { labor: number; material: number; service: number; expenses: number; purchaseOrders: number; total: number };
+    // Costs are real out-of-pocket: material = POs + expenses, plus labour only
+    // when the assigned tech has a cost rate. invoiceTotal is ex-VAT revenue.
+    costs: { material: number; expenses: number; purchaseOrders: number; labour: number; labourCosted: boolean; total: number };
     invoiceTotal: number;
     profit: number;
     margin: number;
@@ -36,12 +39,44 @@ interface EarningsTech {
 
 export default function ReportsPage() {
     const [tab, setTab] = useState<Tab>("costing");
-    const [costingData, setCostingData] = useState<{ summary: any; jobs: JobCostRow[] } | null>(null);
-    const [timesheetData, setTimesheetData] = useState<{ technicians: TimesheetTech[]; totalHours: number } | null>(null);
-    const [earningsData, setEarningsData] = useState<{ technicians: EarningsTech[]; totals: any } | null>(null);
     const [from, setFrom] = useState("");
     const [to, setTo] = useState("");
     const [exporting, setExporting] = useState<string | null>(null);
+
+    // The From/To pickers now drive the reports (not just the Sage CSVs): the
+    // range is part of each query key, so changing it (or the tab) refetches.
+    const rangeParams = () => {
+        const p: Record<string, string> = {};
+        if (from) p.from = from;
+        if (to) p.to = to;
+        return p;
+    };
+
+    const costing = useQuery({
+        queryKey: ["report", "costing", from, to],
+        queryFn: () =>
+            api.get("/analytics/job-costing", { params: rangeParams() }).then((r) => r.data.data.report),
+        enabled: tab === "costing",
+        placeholderData: keepPreviousData,
+    });
+    const timesheet = useQuery({
+        queryKey: ["report", "timesheet", from, to],
+        queryFn: () =>
+            api.get("/analytics/timesheet", { params: rangeParams() }).then((r) => r.data.data.report),
+        enabled: tab === "timesheet",
+        placeholderData: keepPreviousData,
+    });
+    const earnings = useQuery({
+        queryKey: ["report", "earnings", from, to],
+        queryFn: () =>
+            api.get("/analytics/tech-earnings", { params: rangeParams() }).then((r) => r.data.data.report),
+        enabled: tab === "earnings",
+        placeholderData: keepPreviousData,
+    });
+
+    const costingData = costing.data as { summary: any; jobs: JobCostRow[] } | undefined;
+    const timesheetData = timesheet.data as { technicians: TimesheetTech[]; totalHours: number } | undefined;
+    const earningsData = earnings.data as { technicians: EarningsTech[]; totals: any } | undefined;
 
     const runExport = async (key: string, path: string, label: string, dateFiltered: boolean) => {
         setExporting(key);
@@ -64,18 +99,6 @@ export default function ReportsPage() {
         { key: "job-costing", path: "/finance/export/sage/job-costing", label: "Sage Job Costing", dated: true },
         { key: "customers", path: "/finance/export/sage/customers", label: "Sage Customers", dated: false },
     ];
-
-    useEffect(() => {
-        if (tab === "costing" && !costingData) {
-            api.get("/analytics/job-costing").then(r => setCostingData(r.data.data.report)).catch(console.error);
-        }
-        if (tab === "timesheet" && !timesheetData) {
-            api.get("/analytics/timesheet").then(r => setTimesheetData(r.data.data.report)).catch(console.error);
-        }
-        if (tab === "earnings" && !earningsData) {
-            api.get("/analytics/tech-earnings").then(r => setEarningsData(r.data.data.report)).catch(console.error);
-        }
-    }, [tab]);
 
     const fmt = (n: number) => `R ${n.toFixed(2)}`;
 
@@ -135,6 +158,10 @@ export default function ReportsPage() {
 
             {tab === "costing" && costingData && (
                 <div className="space-y-4">
+                    <p className="text-xs text-muted-foreground">
+                        Revenue is ex-VAT (invoice subtotal). Material cost is drawn from purchase orders and
+                        expenses{costingData.summary?.labourIncluded ? ", plus labour for techs with a cost rate" : " (labour is excluded — no tech cost rate is set)"}.
+                    </p>
                     <div className="grid gap-4 md:grid-cols-4">
                         <div className="surface-card p-5">
                             <div className="flex items-center gap-3"><DollarSign className="h-5 w-5 text-emerald-600" /><div>

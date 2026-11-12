@@ -3,6 +3,7 @@ import { paymentsController } from '../modules/payments/payments.controller';
 import { paymentsService } from '../modules/payments/payments.service';
 import { invoiceController } from '../modules/invoices/invoices.controller';
 import { requireUser, restrictTo } from '../middleware/auth';
+import { idempotency } from '../middleware/idempotency';
 import { catchAsync } from '../utils/catchAsync';
 import { logger } from '../utils/logger';
 
@@ -56,5 +57,13 @@ paymentsRouter.get(
 paymentsRouter.post(
     '/invoices/:invoiceId/record',
     restrictTo('ADMIN', 'OFFICE'),
+    idempotency,
     catchAsync(paymentsController.recordManual)
+);
+// Reverse a mis-keyed payment. ACCOUNTANT may correct the books too.
+paymentsRouter.post(
+    '/:paymentId/reverse',
+    restrictTo('ADMIN', 'OFFICE', 'ACCOUNTANT'),
+    idempotency,
+    catchAsync(paymentsController.reverse)
 );
