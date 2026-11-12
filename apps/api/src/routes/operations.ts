@@ -34,8 +34,10 @@ operationsRouter.post(
 // Expense amounts are costs; techs submit receipts but don't read the ledger back.
 operationsRouter.get('/jobs/:jobId/expenses', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES', 'ACCOUNTANT'), catchAsync(expensesController.getByJob));
 
-// Properties
-operationsRouter.get('/properties', catchAsync(propertyController.list));
-operationsRouter.get('/property-assets', catchAsync(propertyController.listAssets));
+// Properties — the whole customer address book + installed assets. Office/dispatch
+// only, never TECHNICIAN (techs get the one property on their job via /jobs/:id).
+const PROPERTY_READ = ['ADMIN', 'OFFICE', 'DISPATCHER'] as const;
+operationsRouter.get('/properties', restrictTo(...PROPERTY_READ), catchAsync(propertyController.list));
+operationsRouter.get('/property-assets', restrictTo(...PROPERTY_READ), catchAsync(propertyController.listAssets));
 operationsRouter.post('/properties/:propertyId/assets', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(propertyController.createAsset));
 operationsRouter.patch('/property-assets/:assetId', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(propertyController.updateAsset));

@@ -15,7 +15,13 @@ import { AlertCircle, Loader2 } from "lucide-react";
 const registerSchema = z.object({
     companyName: z.string().min(2, "Company name must be at least 2 characters"),
     email: z.string().email("Invalid email address"),
-    password: z.string().min(8, "Password must be at least 8 characters"),
+    // Must match the API rule: at least 8 chars with an upper, a lower and a digit.
+    password: z
+        .string()
+        .min(8, "Password must be at least 8 characters")
+        .regex(/[A-Z]/, "Include at least one uppercase letter")
+        .regex(/[a-z]/, "Include at least one lowercase letter")
+        .regex(/[0-9]/, "Include at least one number"),
 });
 
 type RegisterForm = z.infer<typeof registerSchema>;
@@ -23,6 +29,7 @@ type RegisterForm = z.infer<typeof registerSchema>;
 export default function RegisterPage() {
     const router = useRouter();
     const [error, setError] = useState<string | null>(null);
+    const [closed, setClosed] = useState(false);
 
     const {
         register,
@@ -36,9 +43,32 @@ export default function RegisterPage() {
             await api.post("/auth/register", data);
             router.push("/login?registered=true");
         } catch (err: any) {
+            if (err.response?.status === 403) {
+                setClosed(true);
+                return;
+            }
             setError(err.response?.data?.message || "Registration failed");
         }
     };
+
+    if (closed) {
+        return (
+            <div className="space-y-8">
+                <div>
+                    <h1 className="text-2xl font-semibold tracking-tight">Registration is closed</h1>
+                    <p className="mt-1.5 text-sm text-muted-foreground">
+                        Ask your administrator for an account.
+                    </p>
+                </div>
+                <p className="text-sm text-center text-muted-foreground">
+                    Already have an account?{" "}
+                    <Link href="/login" className="font-medium text-foreground hover:underline">
+                        Sign in
+                    </Link>
+                </p>
+            </div>
+        );
+    }
 
     return (
         <div className="space-y-8">
@@ -77,7 +107,7 @@ export default function RegisterPage() {
                     <Input
                         id="password"
                         type="password"
-                        placeholder="At least 8 characters"
+                        placeholder="8+ chars, with a capital, a lowercase and a number"
                         autoComplete="new-password"
                         {...register("password")}
                     />

@@ -7,7 +7,9 @@ import { catchAsync } from '../utils/catchAsync';
 export const documentsRouter = Router();
 documentsRouter.use(requireUser);
 
-documentsRouter.get('/', catchAsync(async (req: Request, res: Response) => {
+// Document listing has no per-entity ownership check, so keep it off technician tokens —
+// office roles only. (Tech screens never call GET /documents.)
+documentsRouter.get('/', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES', 'ACCOUNTANT'), catchAsync(async (req: Request, res: Response) => {
     const entityType = req.query.entityType as any;
     const entityId = req.query.entityId as string;
     if (!entityType || !entityId) {

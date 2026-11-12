@@ -24,6 +24,17 @@ export const parseTrustProxy = (raw: unknown): TrustProxySetting => {
     return value;
 };
 
+/**
+ * Parses a strict boolean env flag: true only for "true"/"1" (case-insensitive);
+ * everything else — including unset — is false. Used for opt-in feature gates
+ * that must default OFF.
+ */
+export const parseBooleanFlag = (raw: unknown): boolean => {
+    if (typeof raw === 'boolean') return raw;
+    const value = String(raw ?? '').trim().toLowerCase();
+    return value === 'true' || value === '1';
+};
+
 const PLACEHOLDER_SECRET = /change|secret|example/i;
 
 /** Returns a startup error when production JWT secrets are placeholders, else null. */
@@ -48,6 +59,8 @@ export const envSchema = z.object({
     NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
     TRUST_PROXY: z.any().transform(parseTrustProxy),
     API_BODY_LIMIT: z.string().default('2mb'),
+    // Public self-registration (POST /auth/register). OFF unless explicitly "true"/"1".
+    ALLOW_PUBLIC_REGISTRATION: z.any().transform(parseBooleanFlag),
     DATABASE_URL: z.string().min(1),
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
     JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),

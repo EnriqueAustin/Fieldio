@@ -119,13 +119,6 @@ export default function LoginPage() {
                     )}
                 </Button>
             </form>
-
-            <p className="text-sm text-center text-muted-foreground">
-                Don&apos;t have an account?{" "}
-                <Link href="/register" className="font-medium text-foreground hover:underline">
-                    Start a free trial
-                </Link>
-            </p>
         </div>
     );
 }

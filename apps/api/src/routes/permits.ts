@@ -7,9 +7,12 @@ export const permitRouter = Router();
 
 permitRouter.use(requireUser);
 
-permitRouter.get('/', catchAsync(permitController.getAll));
-permitRouter.get('/inspections/upcoming', catchAsync(permitController.getUpcoming));
-permitRouter.get('/:id', catchAsync(permitController.getOne));
+// Permits carry fees — office/dispatch only, never TECHNICIAN.
+const PERMIT_READ = ['ADMIN', 'OFFICE', 'DISPATCHER'] as const;
+
+permitRouter.get('/', restrictTo(...PERMIT_READ), catchAsync(permitController.getAll));
+permitRouter.get('/inspections/upcoming', restrictTo(...PERMIT_READ), catchAsync(permitController.getUpcoming));
+permitRouter.get('/:id', restrictTo(...PERMIT_READ), catchAsync(permitController.getOne));
 permitRouter.post('/', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(permitController.create));
 permitRouter.put('/:id', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(permitController.update));
 permitRouter.delete('/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(permitController.delete));

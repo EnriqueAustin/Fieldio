@@ -11,6 +11,23 @@ import { digitalFormsRouter } from '../../src/routes/digitalForms';
 import { searchRouter } from '../../src/routes/search';
 import { schedulingRouter, publicTrackerRouter } from '../../src/routes/scheduling';
 import { messagingRouter, publicMessagingRouter } from '../../src/routes/messaging';
+// Routers exercised by the RBAC sweep (test/rbac.sweep.test.ts).
+import { authRouter } from '../../src/routes/auth';
+import { userRouter } from '../../src/routes/users';
+import { operationsRouter } from '../../src/routes/operations';
+import { trackingRouter } from '../../src/routes/tracking';
+import { bookingsRouter } from '../../src/routes/bookings';
+import { recurringRouter } from '../../src/routes/recurring';
+import { projectsRouter } from '../../src/routes/projects';
+import { inventoryTransfersRouter } from '../../src/routes/inventoryTransfers';
+import { permitRouter } from '../../src/routes/permits';
+import { warrantyClaimRouter } from '../../src/routes/warrantyClaims';
+import { certificationRouter } from '../../src/routes/certifications';
+import { leadsRouter } from '../../src/routes/leads';
+import { dunningRouter } from '../../src/routes/dunning';
+import { documentsRouter } from '../../src/routes/documents';
+import { inventoryAlertsRouter } from '../../src/routes/inventoryAlerts';
+import { branchesRouter } from '../../src/routes/branches';
 import { signAccessToken } from '../../src/utils/jwt';
 
 // Builds an Express app that mirrors the middleware chain of the real
@@ -36,12 +53,28 @@ export function buildTestApp(): Express {
     app.use('/search', searchRouter);
     app.use('/schedule', schedulingRouter);
     app.use('/messaging', messagingRouter);
+    app.use('/auth', authRouter);
+    app.use('/users', userRouter);
+    app.use('/operations', operationsRouter);
+    app.use('/tracking', trackingRouter);
+    app.use('/bookings', bookingsRouter);
+    app.use('/recurring', recurringRouter);
+    app.use('/projects', projectsRouter);
+    app.use('/inventory-transfers', inventoryTransfersRouter);
+    app.use('/permits', permitRouter);
+    app.use('/warranty-claims', warrantyClaimRouter);
+    app.use('/certifications', certificationRouter);
+    app.use('/leads', leadsRouter);
+    app.use('/dunning', dunningRouter);
+    app.use('/documents', documentsRouter);
+    app.use('/inventory-alerts', inventoryAlertsRouter);
+    app.use('/branches', branchesRouter);
 
     app.use(errorHandler);
     return app;
 }
 
-type Role = 'ADMIN' | 'OFFICE' | 'DISPATCHER' | 'TECHNICIAN' | 'ACCOUNTANT' | 'SALES';
+type Role = 'ADMIN' | 'OFFICE' | 'DISPATCHER' | 'TECHNICIAN' | 'ACCOUNTANT' | 'SALES' | 'CSR';
 
 // Produces an Authorization header value for a user of the given role/company.
 export function authHeader(opts: { role: Role; companyId?: string; userId?: string }) {

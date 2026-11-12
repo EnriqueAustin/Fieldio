@@ -17,5 +17,8 @@ digitalFormsRouter.get('/jobs/:jobId/forms', catchAsync(digitalFormsController.g
 
 // Field write — offline-queued, so it carries an Idempotency-Key.
 digitalFormsRouter.post('/submissions', idempotency, catchAsync(digitalFormsController.submitForm));
-digitalFormsRouter.get('/submissions', catchAsync(digitalFormsController.getSubmissions));
-digitalFormsRouter.get('/submissions/:id', catchAsync(digitalFormsController.getSubmissionDetails));
+// Reading every CoC submission company-wide is an office review view — never TECHNICIAN.
+// (Techs see their own job's submissions via GET /digital-forms/jobs/:jobId/forms.)
+const SUBMISSION_READ = ['ADMIN', 'OFFICE', 'DISPATCHER'] as const;
+digitalFormsRouter.get('/submissions', restrictTo(...SUBMISSION_READ), catchAsync(digitalFormsController.getSubmissions));
+digitalFormsRouter.get('/submissions/:id', restrictTo(...SUBMISSION_READ), catchAsync(digitalFormsController.getSubmissionDetails));

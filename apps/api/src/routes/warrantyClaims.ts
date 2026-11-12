@@ -7,9 +7,13 @@ export const warrantyClaimRouter = Router();
 
 warrantyClaimRouter.use(requireUser);
 
-warrantyClaimRouter.get('/', catchAsync(warrantyClaimController.getAll));
-warrantyClaimRouter.get('/expiring-warranties', catchAsync(warrantyClaimController.getExpiringWarranties));
-warrantyClaimRouter.get('/asset/:assetId', catchAsync(warrantyClaimController.getByAsset));
-warrantyClaimRouter.get('/:id', catchAsync(warrantyClaimController.getOne));
+// Warranty claims surface the whole customer address book + assets — office only, never TECHNICIAN.
+// (The tech site-history card reads warranty summaries via /jobs/:id/site-history, not these routes.)
+const WARRANTY_READ = ['ADMIN', 'OFFICE', 'DISPATCHER', 'CSR'] as const;
+
+warrantyClaimRouter.get('/', restrictTo(...WARRANTY_READ), catchAsync(warrantyClaimController.getAll));
+warrantyClaimRouter.get('/expiring-warranties', restrictTo(...WARRANTY_READ), catchAsync(warrantyClaimController.getExpiringWarranties));
+warrantyClaimRouter.get('/asset/:assetId', restrictTo(...WARRANTY_READ), catchAsync(warrantyClaimController.getByAsset));
+warrantyClaimRouter.get('/:id', restrictTo(...WARRANTY_READ), catchAsync(warrantyClaimController.getOne));
 warrantyClaimRouter.post('/', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(warrantyClaimController.create));
 warrantyClaimRouter.put('/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(warrantyClaimController.update));

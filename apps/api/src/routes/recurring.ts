@@ -5,6 +5,7 @@ import { catchAsync } from '../utils/catchAsync';
 
 export const recurringRouter = Router();
 recurringRouter.use(requireUser);
-recurringRouter.get('/', catchAsync(recurringController.list));
+// Recurring plans carry priced templates — office/sales/accounting only, never TECHNICIAN.
+recurringRouter.get('/', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES', 'ACCOUNTANT'), catchAsync(recurringController.list));
 recurringRouter.post('/', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(recurringController.create));
 recurringRouter.delete('/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(recurringController.deactivate));

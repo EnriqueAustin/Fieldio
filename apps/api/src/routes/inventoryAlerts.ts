@@ -7,7 +7,10 @@ import { catchAsync } from '../utils/catchAsync';
 export const inventoryAlertsRouter = Router();
 inventoryAlertsRouter.use(requireUser);
 
-inventoryAlertsRouter.get('/targets', catchAsync(async (req: Request, res: Response) => {
+// Inventory alerts/targets are stock-management views — office/dispatch only, never TECHNICIAN.
+const INVENTORY_VIEW = ['ADMIN', 'OFFICE', 'DISPATCHER'] as const;
+
+inventoryAlertsRouter.get('/targets', restrictTo(...INVENTORY_VIEW), catchAsync(async (req: Request, res: Response) => {
     const targets = await inventoryAlertsService.listTargets(req.user!.companyId, req.query.vanId as string | undefined);
     res.status(StatusCodes.OK).json({ status: 'success', data: { targets } });
 }));
@@ -22,7 +25,7 @@ inventoryAlertsRouter.delete('/targets/:id', restrictTo('ADMIN', 'OFFICE'), catc
     res.status(StatusCodes.OK).json({ status: 'success' });
 }));
 
-inventoryAlertsRouter.get('/', catchAsync(async (req: Request, res: Response) => {
+inventoryAlertsRouter.get('/', restrictTo(...INVENTORY_VIEW), catchAsync(async (req: Request, res: Response) => {
     const alerts = await inventoryAlertsService.listAlerts(req.user!.companyId, (req.query.status as any) || 'OPEN');
     res.status(StatusCodes.OK).json({ status: 'success', data: { alerts } });
 }));

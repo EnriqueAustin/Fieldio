@@ -261,6 +261,17 @@ export function createFakePrisma() {
         financingOption: table('financingOption'),
         financingApplication: table('financingApplication'),
         userLocationPing: table('userLocationPing'),
+        // Registered for the RBAC sweep (rbac.sweep.test.ts): empty tables let a
+        // guarded office-role read return 200 instead of 500 on a missing model.
+        project: table('project'),
+        recurringPlan: table('recurringPlan'),
+        permit: table('permit'),
+        bookingRequest: table('bookingRequest'),
+        dunningRule: table('dunningRule'),
+        inventoryTransfer: table('inventoryTransfer'),
+        documentFile: table('documentFile'),
+        techCertification: table('techCertification'),
+        branch: table('branch'),
         smsThread: table('smsThread'),
         smsMessage: table('smsMessage'),
         notificationLog: table('notificationLog'),

@@ -5,7 +5,8 @@ import { catchAsync } from '../utils/catchAsync';
 
 export const dunningRouter = Router();
 dunningRouter.use(requireUser);
-dunningRouter.get('/rules', catchAsync(dunningController.listRules));
+// Dunning rules are billing config — office/accounting only, never TECHNICIAN.
+dunningRouter.get('/rules', restrictTo('ADMIN', 'OFFICE', 'ACCOUNTANT'), catchAsync(dunningController.listRules));
 dunningRouter.post('/rules', restrictTo('ADMIN', 'OFFICE', 'ACCOUNTANT'), catchAsync(dunningController.createRule));
 dunningRouter.patch('/rules/:id', restrictTo('ADMIN', 'OFFICE', 'ACCOUNTANT'), catchAsync(dunningController.updateRule));
 dunningRouter.delete('/rules/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(dunningController.deleteRule));

@@ -7,7 +7,11 @@ export const inventoryTransfersRouter = Router();
 
 inventoryTransfersRouter.use(requireUser);
 
-inventoryTransfersRouter.post('/', catchAsync(inventoryTransfersController.createTransfer));
-inventoryTransfersRouter.get('/', catchAsync(inventoryTransfersController.getTransfers));
+// Transfers move stock between warehouse and vans and expose unitCost on completion —
+// office/dispatch only, never TECHNICIAN. (My-Van stock draws go through /vans/:id/inventory/*.)
+const TRANSFER_ROLES = ['ADMIN', 'OFFICE', 'DISPATCHER'] as const;
+
+inventoryTransfersRouter.post('/', restrictTo(...TRANSFER_ROLES), catchAsync(inventoryTransfersController.createTransfer));
+inventoryTransfersRouter.get('/', restrictTo(...TRANSFER_ROLES), catchAsync(inventoryTransfersController.getTransfers));
 inventoryTransfersRouter.post('/:id/complete', restrictTo('ADMIN', 'OFFICE'), catchAsync(inventoryTransfersController.completeTransfer));
 inventoryTransfersRouter.post('/:id/cancel', restrictTo('ADMIN', 'OFFICE'), catchAsync(inventoryTransfersController.cancelTransfer));
