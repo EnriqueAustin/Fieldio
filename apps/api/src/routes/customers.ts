@@ -20,6 +20,16 @@ customerRouter.delete('/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(customer
 
 // Nested Property Routes
 customerRouter.post('/:customerId/properties', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(propertyController.create));
+customerRouter.patch(
+    '/:customerId/properties/:propertyId',
+    restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'CSR'),
+    catchAsync(propertyController.update)
+);
+customerRouter.delete(
+    '/:customerId/properties/:propertyId',
+    restrictTo('ADMIN', 'OFFICE'),
+    catchAsync(propertyController.delete)
+);
 customerRouter.post(
     '/:customerId/properties/:propertyId/assets',
     restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'),

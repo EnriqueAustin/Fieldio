@@ -38,7 +38,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../../../components
 import { Avatar, AvatarFallback } from "../../../../components/ui/avatar";
 import { cn, displayName, formatZAR } from "../../../../lib/utils";
 import { useCan } from "../../../../lib/permissions";
+import { useAuthStore } from "../../../../store/auth";
 import { StatusPill } from "../../../../components/dashboard/shared";
+import { PropertySiteActions } from "../../../../components/customers/property-site-actions";
 
 interface Asset {
     id: string;
@@ -175,11 +177,22 @@ export default function CustomerDetailPage() {
     const { id } = useParams<{ id: string }>();
     const qc = useQueryClient();
     const canEdit = useCan("manageCustomers");
+    const role = useAuthStore((s) => s.user?.role);
+    // Deleting a site is ADMIN / OFFICE only (matches the API guard).
+    const canDeleteSite = role === "ADMIN" || role === "OFFICE";
 
     const [propertyOpen, setPropertyOpen] = useState(false);
     const [noteOpen, setNoteOpen] = useState(false);
     const [editOpen, setEditOpen] = useState(false);
-    const [editForm, setEditForm] = useState({ name: "", email: "", phone: "", vatNumber: "", billingAddress: "" });
+    const [editForm, setEditForm] = useState({
+        name: "",
+        email: "",
+        phone: "",
+        vatNumber: "",
+        billingAddress: "",
+        notes: "",
+        status: "ACTIVE",
+    });
     const [propertyForm, setPropertyForm] = useState({
         addressLine1: "",
         addressLine2: "",
@@ -230,6 +243,8 @@ export default function CustomerDetailPage() {
                 phone: editForm.phone || null,
                 vatNumber: editForm.vatNumber.trim() || null,
                 billingAddress: editForm.billingAddress.trim() || null,
+                notes: editForm.notes.trim() || null,
+                status: editForm.status,
             }),
         onSuccess: () => {
             void qc.invalidateQueries({ queryKey: ["customer", id] });
@@ -333,6 +348,8 @@ export default function CustomerDetailPage() {
                                         phone: customer.phone ?? "",
                                         vatNumber: customer.vatNumber ?? "",
                                         billingAddress: customer.billingAddress ?? "",
+                                        notes: customer.notes ?? "",
+                                        status: customer.status ?? "ACTIVE",
                                     });
                                     setFormError(null);
                                 }
@@ -394,6 +411,29 @@ export default function CustomerDetailPage() {
                                             value={editForm.billingAddress}
                                             placeholder="Postal / billing address for invoices"
                                             onChange={(e) => setEditForm({ ...editForm, billingAddress: e.target.value })}
+                                        />
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="edit-status">Status</Label>
+                                        <select
+                                            id="edit-status"
+                                            value={editForm.status}
+                                            onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
+                                            className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm"
+                                        >
+                                            <option value="ACTIVE">Active</option>
+                                            <option value="LEAD">Lead</option>
+                                            <option value="ARCHIVED">Archived</option>
+                                        </select>
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="edit-notes">Notes</Label>
+                                        <Textarea
+                                            id="edit-notes"
+                                            rows={3}
+                                            value={editForm.notes}
+                                            placeholder="Internal notes about this customer"
+                                            onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
                                         />
                                     </div>
                                     {formError && <p className="text-xs text-destructive">{formError}</p>}
@@ -823,6 +863,20 @@ export default function CustomerDetailPage() {
                                             <Plus className="h-4 w-4" /> Job at this site
                                         </Link>
                                     )}
+
+                                    <PropertySiteActions
+                                        customerId={customer.id}
+                                        property={{
+                                            id: prop.id,
+                                            addressLine1: prop.addressLine1,
+                                            addressLine2: prop.addressLine2,
+                                            city: prop.city,
+                                            state: prop.state,
+                                            zip: prop.zip,
+                                        }}
+                                        canEdit={canEdit}
+                                        canDelete={canDeleteSite}
+                                    />
                                 </div>
                             ))}
                         </div>

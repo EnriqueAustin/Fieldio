@@ -32,10 +32,14 @@ import {
     Wrench,
     Clock,
     Search,
+    MessageSquare,
+    PenLine,
 } from "lucide-react";
 import Link from "next/link";
 import { format } from "date-fns";
 import { StatusPill } from "@/components/ui/status-pill";
+import { useAuthStore } from "@/store/auth";
+import { JobOfficeControls } from "@/components/jobs/job-office-controls";
 import {
     Dialog,
     DialogContent,
@@ -84,13 +88,31 @@ interface CostSummary {
     margin: number;
 }
 
+interface JobNote {
+    id: string;
+    message: string;
+    createdAt: string;
+    author?: { name?: string | null } | null;
+}
+
+interface JobSignature {
+    id: string;
+    signerName: string;
+    signedAt: string;
+    signatureUrl?: string | null;
+    signatureDataUrl?: string | null;
+}
+
 interface Job {
     id: string;
     title: string;
     status: string;
+    priority?: string | null;
     description: string;
     scheduledStart: string;
     scheduledEnd: string;
+    techId?: string | null;
+    vanId?: string | null;
     customer: { name: string; phone: string; email: string };
     property: { addressLine1: string; city: string; state: string; zip: string; latitude?: number | null; longitude?: number | null };
     checklist: { id: string; label: string; isCompleted: boolean }[];
@@ -98,6 +120,9 @@ interface Job {
     tech: { firstName?: string; lastName?: string; email: string } | null;
     van?: { id: string; name: string; registration?: string | null; members: VanMember[] } | null;
     invoice: { id: string; total: string; status: string; balance?: string } | null;
+    estimate?: { id: string; status?: string | null; total?: string | null } | null;
+    signatures?: JobSignature[];
+    notes?: JobNote[];
     costSummary?: CostSummary | null;
 }
 
@@ -209,6 +234,10 @@ export default function JobDetailPage() {
         enabled: !!id,
     });
     const job = jobQuery.data ?? null;
+    const role = useAuthStore((s) => s.user?.role);
+    // Technicians never get the office controls (edit / cancel / reopen /
+    // reschedule); they work the job from the mobile console instead.
+    const isOffice = !!role && role !== "TECHNICIAN";
 
     const expensesQuery = useQuery<Expense[]>({
         queryKey: ["job-expenses", id],
@@ -420,6 +449,27 @@ export default function JobDetailPage() {
                     </div>
                 </div>
 
+                {isOffice && (
+                    <div className="mt-4 border-t border-border/60 pt-4">
+                        <JobOfficeControls
+                            job={{
+                                id: job.id,
+                                title: job.title,
+                                description: job.description,
+                                priority: job.priority,
+                                status: job.status,
+                                techId: job.techId,
+                                vanId: job.vanId,
+                                scheduledStart: job.scheduledStart,
+                                scheduledEnd: job.scheduledEnd,
+                                invoice: job.invoice ? { id: job.invoice.id } : null,
+                            }}
+                            role={role!}
+                            onChanged={fetchJob}
+                        />
+                    </div>
+                )}
+
                 {/* Stepper */}
                 <div className="mt-6">
                     <div className="flex items-center justify-between">
@@ -535,6 +585,80 @@ export default function JobDetailPage() {
                                     </div>
                                 </div>
                             </div>
+
+                            {job.estimate && (
+                                <div className="surface-card p-6">
+                                    <div className="flex items-start gap-4">
+                                        <div className="icon-tile bg-violet-50 text-violet-600">
+                                            <FileText className="h-5 w-5" />
+                                        </div>
+                                        <div className="flex-1">
+                                            <h3 className="font-semibold">Quote</h3>
+                                            <p className="mt-1 text-sm text-muted-foreground">
+                                                {job.estimate.status ? job.estimate.status : "Linked estimate"}
+                                                {job.estimate.total != null
+                                                    ? ` · R${Number(job.estimate.total).toFixed(2)}`
+                                                    : ""}
+                                            </p>
+                                            <Link
+                                                href={`/estimates/${job.estimate.id}`}
+                                                className="inline-flex items-center gap-1.5 mt-2 text-xs font-medium text-blue-600 hover:text-blue-700"
+                                            >
+                                                View quote →
+                                            </Link>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {job.signatures && job.signatures.length > 0 && (() => {
+                                const sig = job.signatures[0];
+                                const src = sig.signatureUrl || sig.signatureDataUrl;
+                                return (
+                                    <div className="surface-card p-6">
+                                        <div className="flex items-start gap-4">
+                                            <div className="icon-tile bg-emerald-50 text-emerald-600">
+                                                <PenLine className="h-5 w-5" />
+                                            </div>
+                                            <div className="flex-1">
+                                                <h3 className="font-semibold">Customer sign-off</h3>
+                                                <p className="mt-1 text-sm text-muted-foreground">
+                                                    {sig.signerName} · {format(new Date(sig.signedAt), "MMM d, h:mm a")}
+                                                </p>
+                                                {src && (
+                                                    <img
+                                                        src={src}
+                                                        alt={`Signature by ${sig.signerName}`}
+                                                        className="mt-3 max-h-32 rounded-lg border border-border bg-white"
+                                                    />
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })()}
+
+                            {job.notes && job.notes.length > 0 && (
+                                <div className="surface-card p-6">
+                                    <h3 className="font-semibold mb-3">Internal notes</h3>
+                                    <ol className="space-y-3">
+                                        {job.notes.map((n) => (
+                                            <li key={n.id} className="flex gap-3">
+                                                <div className="icon-tile h-8 w-8 bg-slate-100 text-slate-600 shrink-0">
+                                                    <MessageSquare className="h-4 w-4" />
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <p className="text-sm whitespace-pre-line">{n.message}</p>
+                                                    <p className="mt-0.5 text-xs text-muted-foreground">
+                                                        {n.author?.name ? `${n.author.name} · ` : ""}
+                                                        {format(new Date(n.createdAt), "MMM d, h:mm a")}
+                                                    </p>
+                                                </div>
+                                            </li>
+                                        ))}
+                                    </ol>
+                                </div>
+                            )}
                         </TabsContent>
 
                         <TabsContent value="line-items" className="mt-4">

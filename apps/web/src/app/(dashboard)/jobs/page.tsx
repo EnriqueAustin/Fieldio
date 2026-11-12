@@ -1,15 +1,14 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import api from "../../../lib/api";
-import { Button } from "../../../components/ui/button";
 import { format } from "date-fns";
 import { Avatar, AvatarFallback } from "../../../components/ui/avatar";
 import { StatusPill } from "../../../components/ui/status-pill";
-import { Briefcase, Plus, Search, Filter, Calendar as CalIcon, Zap } from "lucide-react";
+import { Briefcase, Plus, Search, Calendar as CalIcon, Zap, ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "../../../lib/utils";
 
 interface Job {
@@ -22,47 +21,85 @@ interface Job {
     tech: { email: string } | null;
 }
 
+// GET /jobs returns a page of rows plus pagination meta. There is no per-status
+// count endpoint, so the filter tabs carry no badge counts.
+interface JobsResponse {
+    items: Job[];
+    total: number;
+    page: number;
+    totalPages: number;
+}
+
 const FILTERS = ["ALL", "REQUESTED", "ASSIGNED", "EN_ROUTE", "ON_SITE", "COMPLETED"] as const;
+type FilterValue = (typeof FILTERS)[number];
+const LIMIT = 25;
 
 interface Branch { id: string; name: string }
 
 export default function JobsPage() {
-    const [filter, setFilter] = useState<(typeof FILTERS)[number]>("ALL");
-    const [query, setQuery] = useState("");
-    const [branchId, setBranchId] = useState<string>(() =>
-        (typeof window !== "undefined" && localStorage.getItem("branchFilter")) || ""
+    const router = useRouter();
+    const searchParams = useSearchParams();
+
+    const statusParam = (searchParams.get("status") ?? "ALL") as FilterValue;
+    const filter: FilterValue = (FILTERS as readonly string[]).includes(statusParam) ? statusParam : "ALL";
+    const page = Math.max(1, Number(searchParams.get("page")) || 1);
+
+    // Search has no server-side param on GET /jobs, so it filters the current
+    // page client-side only.
+    const [query, setQuery] = useState(searchParams.get("q") ?? "");
+    const [branchId, setBranchId] = useState<string>(
+        () =>
+            searchParams.get("branchId") ??
+            (typeof window !== "undefined" ? localStorage.getItem("branchFilter") ?? "" : "")
     );
+
+    // Reflect filter / page / branch into the URL so the view is shareable and
+    // survives a refresh. Defaults (ALL / empty) are dropped from the query.
+    const updateUrl = (patch: Record<string, string | number | undefined>) => {
+        const params = new URLSearchParams(searchParams.toString());
+        for (const [k, v] of Object.entries(patch)) {
+            if (v === undefined || v === "" || v === "ALL") params.delete(k);
+            else params.set(k, String(v));
+        }
+        const qs = params.toString();
+        router.replace(qs ? `/jobs?${qs}` : "/jobs");
+    };
 
     const { data: branchesData } = useQuery<Branch[]>({
         queryKey: ["branches"],
-        queryFn: () => api.get("/branches").then(r => r.data.data.branches),
+        queryFn: () => api.get("/branches").then((r) => r.data.data.branches),
     });
     const branches = branchesData ?? [];
 
-    const { data, isLoading: loading } = useQuery({
-        queryKey: ["jobs", branchId],
-        queryFn: () => api.get("/jobs", { params: branchId ? { branchId } : {} })
-            .then((res) => res.data.data.items ?? []),
+    const { data, isLoading: loading } = useQuery<JobsResponse>({
+        queryKey: ["jobs", filter, page, branchId],
+        queryFn: () =>
+            api
+                .get("/jobs", {
+                    params: {
+                        page,
+                        limit: LIMIT,
+                        ...(filter !== "ALL" ? { status: filter } : {}),
+                        ...(branchId ? { branchId } : {}),
+                    },
+                })
+                .then((res) => res.data.data as JobsResponse),
     });
-    const jobs: Job[] = data ?? [];
 
-    const filtered = useMemo(() => {
-        return jobs
-            .filter((j) => filter === "ALL" || j.status === filter)
-            .filter((j) =>
-                query
-                    ? `${j.title} ${j.customer?.name} ${j.tech?.email ?? ""}`
-                          .toLowerCase()
-                          .includes(query.toLowerCase())
-                    : true
-            );
-    }, [jobs, filter, query]);
+    const jobs = data?.items ?? [];
+    const total = data?.total ?? 0;
+    const totalPages = data?.totalPages ?? 1;
 
-    const counts = useMemo(() => {
-        const c: Record<string, number> = { ALL: jobs.length };
-        for (const j of jobs) c[j.status] = (c[j.status] ?? 0) + 1;
-        return c;
-    }, [jobs]);
+    const visible = useMemo(() => {
+        if (!query) return jobs;
+        const q = query.toLowerCase();
+        return jobs.filter((j) =>
+            `${j.title} ${j.customer?.name ?? ""} ${j.tech?.email ?? ""}`.toLowerCase().includes(q)
+        );
+    }, [jobs, query]);
+
+    const rangeStart = total === 0 ? 0 : (page - 1) * LIMIT + 1;
+    const rangeEnd = Math.min(page * LIMIT, total);
 
     return (
         <div className="space-y-6">
@@ -97,8 +134,11 @@ export default function JobsPage() {
                     <input
                         type="search"
                         value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                        placeholder="Search by job title, customer or technician…"
+                        onChange={(e) => {
+                            setQuery(e.target.value);
+                            updateUrl({ q: e.target.value || undefined });
+                        }}
+                        placeholder="Search this page by job title, customer or technician…"
                         className="w-full rounded-lg border border-border bg-background/60 pl-9 pr-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]"
                     />
                 </div>
@@ -108,11 +148,16 @@ export default function JobsPage() {
                         onChange={(e) => {
                             setBranchId(e.target.value);
                             if (typeof window !== "undefined") localStorage.setItem("branchFilter", e.target.value);
+                            updateUrl({ branchId: e.target.value || undefined, page: 1 });
                         }}
                         className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium"
                     >
                         <option value="">All branches</option>
-                        {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                        {branches.map((b) => (
+                            <option key={b.id} value={b.id}>
+                                {b.name}
+                            </option>
+                        ))}
                     </select>
                 )}
                 <div className="flex items-center gap-1 overflow-x-auto scrollbar-thin">
@@ -121,7 +166,7 @@ export default function JobsPage() {
                         return (
                             <button
                                 key={f}
-                                onClick={() => setFilter(f)}
+                                onClick={() => updateUrl({ status: f, page: 1 })}
                                 className={cn(
                                     "whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-medium transition",
                                     active
@@ -130,14 +175,6 @@ export default function JobsPage() {
                                 )}
                             >
                                 {f === "ALL" ? "All" : f.replace("_", " ")}
-                                <span
-                                    className={cn(
-                                        "ml-1.5 inline-flex items-center justify-center rounded-full px-1.5 py-0.5 text-[10px]",
-                                        active ? "bg-white/15 text-white" : "bg-slate-100 text-slate-600"
-                                    )}
-                                >
-                                    {counts[f] ?? 0}
-                                </span>
                             </button>
                         );
                     })}
@@ -166,7 +203,7 @@ export default function JobsPage() {
                                     </td>
                                 </tr>
                             ))
-                        ) : filtered.length === 0 ? (
+                        ) : visible.length === 0 ? (
                             <tr>
                                 <td colSpan={6}>
                                     <div className="flex flex-col items-center text-center py-16">
@@ -181,7 +218,7 @@ export default function JobsPage() {
                                 </td>
                             </tr>
                         ) : (
-                            filtered.map((job) => (
+                            visible.map((job) => (
                                 <tr key={job.id} className="hover:bg-slate-50/70 transition">
                                     <td className="px-6 py-3.5">
                                         <Link
@@ -237,6 +274,37 @@ export default function JobsPage() {
                         )}
                     </tbody>
                 </table>
+
+                {/* Pager — totals come straight from the API's pagination meta */}
+                {!loading && total > 0 && (
+                    <div className="flex items-center justify-between border-t border-border/60 px-6 py-3">
+                        <p className="text-xs text-muted-foreground">
+                            Showing {rangeStart}–{rangeEnd} of {total}
+                            {query && (
+                                <span className="ml-1">({visible.length} match on this page)</span>
+                            )}
+                        </p>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => updateUrl({ page: page - 1 })}
+                                disabled={page <= 1}
+                                className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                <ChevronLeft className="h-3.5 w-3.5" /> Prev
+                            </button>
+                            <span className="text-xs text-muted-foreground">
+                                Page {page} of {totalPages}
+                            </span>
+                            <button
+                                onClick={() => updateUrl({ page: page + 1 })}
+                                disabled={page >= totalPages}
+                                className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                Next <ChevronRight className="h-3.5 w-3.5" />
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );

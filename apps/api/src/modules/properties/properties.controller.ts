@@ -38,8 +38,21 @@ export const propertyController = {
         res.status(StatusCodes.OK).json({ status: 'success', data: { asset } });
     },
 
+    update: async (req: Request, res: Response) => {
+        const property = await propertyService.update(
+            req.params.propertyId,
+            req.params.customerId,
+            req.user!.companyId,
+            req.body,
+        );
+        res.status(StatusCodes.OK).json({ status: 'success', data: { property } });
+    },
+
     delete: async (req: Request, res: Response) => {
-        await propertyService.delete(req.params.id, req.user!.companyId);
+        // Nested route gives customerId + propertyId; the legacy flat `id` param
+        // is still accepted so any other caller keeps working.
+        const propertyId = req.params.propertyId ?? req.params.id;
+        await propertyService.delete(propertyId, req.user!.companyId, req.params.customerId);
         res.status(StatusCodes.OK).json({ status: 'success' });
     },
 };

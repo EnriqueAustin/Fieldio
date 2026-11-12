@@ -30,6 +30,19 @@ const createAssetSchema = z.object({
 
 const updateAssetSchema = createAssetSchema.omit({ propertyId: true }).partial();
 
+// Field names mirror the Property model: `state` is the province and `zip` the
+// postal code. The model has no access-notes column, so that field is omitted.
+// lat/lng clear to null, which is why they are nullable.
+const updatePropertySchema = z.object({
+    addressLine1: z.string().min(1).optional(),
+    addressLine2: z.string().optional().nullable(),
+    city: z.string().min(1).optional(),
+    state: z.string().optional(),
+    zip: z.string().optional(),
+    geoLat: z.number().nullable().optional(),
+    geoLng: z.number().nullable().optional(),
+});
+
 export const propertyService = {
     list: async (companyId: string, customerId?: string) => {
         return prisma.property.findMany({
@@ -68,13 +81,45 @@ export const propertyService = {
         });
     },
 
-    delete: async (id: string, companyId: string) => {
+    update: async (
+        propertyId: string,
+        customerId: string,
+        companyId: string,
+        input: z.infer<typeof updatePropertySchema>,
+    ) => {
+        const parsed = updatePropertySchema.parse(input);
+        // The site must belong to BOTH the caller's company and the customer in
+        // the URL — a mismatch is a 404, never a cross-tenant edit.
         const property = await prisma.property.findFirst({
-            where: { id, companyId },
+            where: { id: propertyId, companyId, customerId },
+        });
+        if (!property) throw new AppError('Property not found', StatusCodes.NOT_FOUND);
+
+        return prisma.property.update({
+            where: { id: propertyId },
+            data: parsed,
+        });
+    },
+
+    delete: async (id: string, companyId: string, customerId?: string) => {
+        const property = await prisma.property.findFirst({
+            where: { id, companyId, ...(customerId ? { customerId } : {}) },
         });
 
         if (!property) {
             throw new AppError('Property not found', StatusCodes.NOT_FOUND);
+        }
+
+        // The Property model has no soft-delete column, so a site with service
+        // history cannot be removed without orphaning jobs. Refuse instead.
+        const jobCount = await prisma.job.count({
+            where: { companyId, propertyId: id, deletedAt: null },
+        });
+        if (jobCount > 0) {
+            throw new AppError(
+                'This site has jobs linked to it and cannot be deleted. Move or remove those jobs first.',
+                StatusCodes.CONFLICT,
+            );
         }
 
         return prisma.property.delete({
