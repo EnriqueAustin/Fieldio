@@ -14,7 +14,7 @@ export const vansController = {
     },
 
     getOne: async (req: Request, res: Response) => {
-        const van = await vansService.getOne(req.params.id, req.user!.companyId);
+        const van = await vansService.getOne(req.params.id, req.user!.companyId, req.user!.role);
         res.status(StatusCodes.OK).json({ status: 'success', data: { van } });
     },
 
@@ -64,6 +64,18 @@ export const vansController = {
             req.body,
         );
         res.status(StatusCodes.CREATED).json({ status: 'success', data: result });
+    },
+
+    adjust: async (req: Request, res: Response) => {
+        const result = await vansService.adjust(
+            req.params.id,
+            req.params.itemId,
+            req.user!.companyId,
+            req.user!.userId,
+            req.user!.role,
+            req.body,
+        );
+        res.status(StatusCodes.OK).json({ status: 'success', data: result });
     },
 
     getStockUsage: async (req: Request, res: Response) => {

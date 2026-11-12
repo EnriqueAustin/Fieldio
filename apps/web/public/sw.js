@@ -10,12 +10,17 @@
 // the in-app "update available" toast), then activates and clientsClaim()s so
 // the next controllerchange can trigger a single reload.
 
-const CACHE_NAME = 'fieldio-v3';
+const CACHE_NAME = 'fieldio-v4';
 const OFFLINE_URL = '/offline.html';
 
-// App shell + assets we want available on a cold, signal-less launch.
+// App shell + assets we want available on a cold, signal-less launch. The two
+// field routes are precached so a tech who force-quit the app can still open
+// their schedule and van stock with no signal (they were navigation-only before,
+// so only "/" survived cold offline).
 const APP_SHELL = [
     '/',
+    '/my-schedule',
+    '/my-van/stock',
     OFFLINE_URL,
     '/manifest.json',
     '/icons/icon-192.png',
@@ -67,19 +72,37 @@ self.addEventListener('fetch', (event) => {
     // origin) are cached by the React Query persister, not the SW.
     if (url.origin !== self.location.origin) return;
 
-    // App navigations: network-first, fall back to the matching cached page,
-    // then the cached app shell, then the dedicated offline page so a cold
-    // offline launch shows the Fieldio frame instead of a browser error.
+    // App navigations: network-first, and cache each successful page so it can be
+    // served on a later cold, signal-less launch (not just "/"). On failure fall
+    // back to the matching cached page, then the cached app shell, then the
+    // dedicated offline page so a cold offline launch shows the Fieldio frame.
     if (request.mode === 'navigate') {
         event.respondWith(
-            fetch(request).catch(async () => {
-                const cache = await caches.open(CACHE_NAME);
-                return (
-                    (await cache.match(request)) ||
-                    (await cache.match('/')) ||
-                    (await cache.match(OFFLINE_URL))
-                );
-            })
+            (async () => {
+                try {
+                    const networkResponse = await fetch(request);
+                    // Cache successful, non-redirected same-origin navigations only.
+                    // (A redirect to /login can't be cache.put under a nav request,
+                    // and we never want to pin an auth bounce as a page.)
+                    if (
+                        networkResponse &&
+                        networkResponse.ok &&
+                        networkResponse.type === 'basic' &&
+                        !networkResponse.redirected
+                    ) {
+                        const copy = networkResponse.clone();
+                        caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => {});
+                    }
+                    return networkResponse;
+                } catch {
+                    const cache = await caches.open(CACHE_NAME);
+                    return (
+                        (await cache.match(request)) ||
+                        (await cache.match('/')) ||
+                        (await cache.match(OFFLINE_URL))
+                    );
+                }
+            })()
         );
         return;
     }

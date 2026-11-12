@@ -18,12 +18,16 @@ vanRouter.patch('/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(vansController
 vanRouter.post('/:id/members', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(vansController.addMember));
 vanRouter.delete('/:id/members/:userId', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(vansController.removeMember));
 vanRouter.get('/:id/inventory', catchAsync(vansController.getVanInventory));
-vanRouter.post('/:id/inventory/:itemId/request-restock', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'TECHNICIAN'), catchAsync(vansController.requestRestock));
+// Restock requests and stepper adjustments are field writes — offline-queued,
+// so they carry an Idempotency-Key and must dedupe on replay.
+vanRouter.post('/:id/inventory/:itemId/request-restock', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'TECHNICIAN'), idempotency, catchAsync(vansController.requestRestock));
+vanRouter.post('/:id/inventory/:itemId/adjust', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'TECHNICIAN'), idempotency, catchAsync(vansController.adjust));
 // Van stock usage is a field write — offline-queued, so it carries an Idempotency-Key.
 vanRouter.post('/:id/inventory/:itemId/use', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'TECHNICIAN'), idempotency, catchAsync(vansController.useStock));
 vanRouter.get('/:id/stock-usage', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(vansController.getStockUsage));
 
-vanRouter.get('/:id/service-logs', catchAsync(async (req: Request, res: Response) => {
+// Service logs carry costs — never exposed to technicians (audit P0 #5).
+vanRouter.get('/:id/service-logs', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(async (req: Request, res: Response) => {
     const logs = await vanServiceService.listLogs(req.params.id, req.user!.companyId);
     res.status(StatusCodes.OK).json({ status: 'success', data: { logs } });
 }));

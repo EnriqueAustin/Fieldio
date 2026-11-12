@@ -165,7 +165,9 @@ export function JobDetail({
                         // paused offline — only while a request is actually in flight.
                         isSaving={signature.signatureMutation.isPending && !signature.signatureMutation.isPaused}
                         onSendSummary={() => summaryMutation.mutate({ jobId: job.id })}
-                        isSendingSummary={summaryMutation.isPending}
+                        // Don't show "Sending…" forever while the mutation sits paused
+                        // offline — only while a request is actually in flight.
+                        isSendingSummary={summaryMutation.isPending && !summaryMutation.isPaused}
                         canInvoice={canInvoice}
                         invoicedAt={job.invoicedAt}
                         onSendInvoice={() => fieldInvoice.sendInvoice(job.id)}

@@ -8,6 +8,7 @@ import {
     putPhotoBlob,
     delPhotoBlob,
     listQueuedPhotos,
+    countQueuedPhotos,
     type QueuedPhoto,
 } from "../../../lib/offline-db";
 import { resizeImageForUpload } from "../../../lib/image-resize";
@@ -24,6 +25,20 @@ export interface QueuedUpload {
 }
 
 const ASSIGNED_JOBS_KEY = ["technician-assigned-jobs"];
+
+// Cap the on-device photo queue so a tech out of signal for a long stretch can't
+// silently exhaust the browser's storage quota (which would start throwing on
+// every capture). ~60 resized photos ≈ well under the ~150MB budget; we also
+// check the live storage estimate where the browser exposes it.
+const MAX_QUEUED_PHOTOS = 60;
+const MAX_QUEUED_BYTES = 150 * 1024 * 1024;
+const QUEUE_WARN_AT = MAX_QUEUED_PHOTOS - 10;
+
+/** True when the IndexedDB write failed because the device is out of storage. */
+function isQuotaError(err: unknown): boolean {
+    const name = (err as { name?: string } | null)?.name;
+    return name === "QuotaExceededError" || name === "NS_ERROR_DOM_QUOTA_REACHED";
+}
 
 /** Job-photo capture: bytes go to IndexedDB, upload is offline-queued. */
 export function useJobPhotos() {
@@ -132,17 +147,60 @@ export function useJobPhotos() {
     /** Resize on-device, persist the bytes to IndexedDB, then queue the upload so
      *  it survives reconnect and reload even with no signal. */
     const queuePhotoUpload = async (jobId: string, file: File, caption: string) => {
+        // Refuse to queue past the cap so we fail loudly here, not silently later
+        // when IndexedDB starts throwing mid-capture.
+        const queuedCount = await countQueuedPhotos();
+        if (queuedCount >= MAX_QUEUED_PHOTOS) {
+            toast({
+                title: "Photo queue full",
+                description: "Too many photos are waiting to upload. Reconnect to sync them before adding more.",
+                variant: "destructive",
+            });
+            return;
+        }
+        // Where the browser exposes it, bail before a near-full disk throws.
+        try {
+            const estimate = await navigator.storage?.estimate?.();
+            if (estimate?.usage != null && estimate.usage >= MAX_QUEUED_BYTES) {
+                toast({
+                    title: "Storage almost full",
+                    description: "Free up space or reconnect to sync queued photos before adding more.",
+                    variant: "destructive",
+                });
+                return;
+            }
+        } catch {
+            /* estimate() unsupported — fall back to the count cap above */
+        }
+
         const blobId = `photo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         // 3–8MB camera shots → ~300–500KB before they ever touch the network.
         const resized = await resizeImageForUpload(file);
-        await putPhotoBlob(blobId, {
-            jobId,
-            caption,
-            blob: resized,
-            fileName: resized.name || `${blobId}.jpg`,
-            createdAt: Date.now(),
-        });
+        try {
+            await putPhotoBlob(blobId, {
+                jobId,
+                caption,
+                blob: resized,
+                fileName: resized.name || `${blobId}.jpg`,
+                createdAt: Date.now(),
+            });
+        } catch (err) {
+            toast({
+                title: isQuotaError(err) ? "Storage full — photo not saved" : "Couldn't save photo",
+                description: isQuotaError(err)
+                    ? "Reconnect to sync queued photos, then try again."
+                    : "Please try again.",
+                variant: "destructive",
+            });
+            return; // never fire the mutation for a blob we failed to persist
+        }
         photoMutation.mutate({ jobId, blobId, caption });
+        if (queuedCount + 1 >= QUEUE_WARN_AT) {
+            toast({
+                title: "Photo queue almost full",
+                description: "Reconnect soon to upload the photos waiting on your phone.",
+            });
+        }
         setPhotoFile(null);
         setPhotoCaption("");
         const fileInput = document.getElementById("technician-photo-upload") as HTMLInputElement | null;

@@ -31,6 +31,17 @@ const useStockSchema = z.object({
     quantity: z.number().int().positive().default(1),
 });
 
+// Delta stepper: +n adds, -n removes. Zero is a no-op (idempotent replay safety).
+const adjustStockSchema = z.object({
+    delta: z.number().int(),
+});
+
+/** Drop the cost field from a van inventory row — techs never see part costs. */
+const stripCost = <T extends Record<string, unknown>>(row: T) => {
+    const { unitCost, ...rest } = row as Record<string, unknown>;
+    return rest;
+};
+
 export const vansService = {
     create: async (companyId: string, input: unknown) => {
         const parsed = createVanSchema.parse(input);
@@ -55,7 +66,7 @@ export const vansService = {
         });
     },
 
-    getOne: async (id: string, companyId: string) => {
+    getOne: async (id: string, companyId: string, role?: string) => {
         const van = await prisma.van.findFirst({
             where: { id, companyId },
             include: {
@@ -76,6 +87,12 @@ export const vansService = {
             },
         });
         if (!van) throw new AppError('Van not found', StatusCodes.NOT_FOUND);
+
+        // Techs manage stock on their van but must never see what parts cost —
+        // mirror getVanInventory and strip unitCost from the embedded inventory.
+        if (role === 'TECHNICIAN' && Array.isArray((van as any).inventory)) {
+            (van as any).inventory = (van as any).inventory.map((i: Record<string, unknown>) => stripCost(i));
+        }
         return van;
     },
 
@@ -264,7 +281,7 @@ export const vansService = {
         const item = await prisma.inventoryItem.findFirst({ where: { id: itemId, companyId, vanId } });
         if (!item) throw new AppError('Item not found on this van', StatusCodes.NOT_FOUND);
         if (item.quantity < quantity) {
-            throw new AppError('Not enough stock on the van to use that quantity', StatusCodes.BAD_REQUEST);
+            throw new AppError('Not enough stock on the van to use that quantity', StatusCodes.CONFLICT);
         }
 
         // The job must exist in the company; a tech must be assigned to it (or its van).
@@ -277,11 +294,21 @@ export const vansService = {
             }
         }
 
-        const remaining = item.quantity - quantity;
-        const updated = await prisma.inventoryItem.update({
-            where: { id: itemId },
-            data: { quantity: remaining },
+        // Atomic decrement so two crew members drawing from the same van can't
+        // overwrite each other (the old read-modify-write lost one of the draws).
+        // The post-decrement guard rolls the transaction back if a concurrent
+        // draw slipped past the pre-check and pushed the count below zero.
+        const updated = await prisma.$transaction(async (tx) => {
+            const next = await tx.inventoryItem.update({
+                where: { id: itemId },
+                data: { quantity: { decrement: quantity } },
+            });
+            if (next.quantity < 0) {
+                throw new AppError('Not enough stock on the van to use that quantity', StatusCodes.CONFLICT);
+            }
+            return next;
         });
+        const remaining = updated.quantity;
 
         await prisma.auditLog.create({
             data: {
@@ -323,11 +350,78 @@ export const vansService = {
         });
 
         // Strip cost for techs, mirroring getVanInventory.
+        return { item: role === 'TECHNICIAN' ? stripCost(updated as Record<string, unknown>) : updated };
+    },
+
+    /**
+     * Delta-based stock adjustment for the field stepper (+1 / -1 per tap) and
+     * restocking. A delta is race-safe where an absolute set was not: two crew
+     * members each tapping -1 both apply, instead of the second clobbering the
+     * first. The post-update guard refuses to drive the count below zero.
+     */
+    adjust: async (
+        vanId: string,
+        itemId: string,
+        companyId: string,
+        userId: string,
+        role: string | undefined,
+        input: unknown,
+    ) => {
+        const { delta } = adjustStockSchema.parse(input);
+
+        const van = await prisma.van.findFirst({ where: { id: vanId, companyId } });
+        if (!van) throw new AppError('Van not found', StatusCodes.NOT_FOUND);
+
+        // Techs may only adjust stock on a van they belong to.
         if (role === 'TECHNICIAN') {
-            const { unitCost, ...rest } = updated as Record<string, unknown>;
-            return { item: rest };
+            const membership = await prisma.vanMember.findFirst({
+                where: { userId, van: { id: vanId, companyId } },
+            });
+            if (!membership) {
+                throw new AppError('You can only adjust stock on your own van', StatusCodes.FORBIDDEN);
+            }
         }
-        return { item: updated };
+
+        const item = await prisma.inventoryItem.findFirst({ where: { id: itemId, companyId, vanId } });
+        if (!item) throw new AppError('Item not found on this van', StatusCodes.NOT_FOUND);
+
+        if (delta === 0) {
+            return { item: role === 'TECHNICIAN' ? stripCost(item as Record<string, unknown>) : item };
+        }
+        if (item.quantity + delta < 0) {
+            throw new AppError('Not enough stock on the van', StatusCodes.CONFLICT);
+        }
+
+        const updated = await prisma.$transaction(async (tx) => {
+            const next = await tx.inventoryItem.update({
+                where: { id: itemId },
+                data: { quantity: { increment: delta } },
+            });
+            if (next.quantity < 0) {
+                throw new AppError('Not enough stock on the van', StatusCodes.CONFLICT);
+            }
+            return next;
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                companyId,
+                userId,
+                action: 'VAN_STOCK_ADJUSTED',
+                entityId: itemId,
+                entityType: 'INVENTORY_ITEM',
+                metadata: { vanId, itemName: item.name, delta, remaining: updated.quantity },
+            },
+        });
+
+        socketService.emitToCompany(companyId, 'inventory:adjusted', {
+            vanId,
+            itemId,
+            delta,
+            remaining: updated.quantity,
+        });
+
+        return { item: role === 'TECHNICIAN' ? stripCost(updated as Record<string, unknown>) : updated };
     },
 
     /**

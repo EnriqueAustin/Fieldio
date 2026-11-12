@@ -67,9 +67,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
             defaultOptions: {
                 queries: {
                     staleTime: 60 * 1000,
-                    // Keep cached data for a day so the field console renders
-                    // with no signal and survives an app reload.
-                    gcTime: 24 * 60 * 60 * 1000,
+                    // Keep cached data for a week so a tech who loses signal on
+                    // Friday still has their jobs (and the offline queue) on
+                    // Monday. Must match the persister maxAge below.
+                    gcTime: 7 * 24 * 60 * 60 * 1000,
                     // Retry at most twice, and only for transient failures. A 4xx
                     // (incl. 401/403/404) is final — retrying wastes signal and
                     // delays showing the cached data.
@@ -132,7 +133,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
             client={queryClient}
             persistOptions={{
                 persister,
-                maxAge: 24 * 60 * 60 * 1000,
+                // 7 days: a tech off-signal over a weekend must still restore the
+                // cache and the queued mutations. Shape is unchanged, so no buster bump.
+                maxAge: 7 * 24 * 60 * 60 * 1000,
                 buster: 'v1',
                 dehydrateOptions: {
                     shouldDehydrateMutation: isReplayableMutation,
@@ -147,8 +150,21 @@ export function Providers({ children }: { children: React.ReactNode }) {
                 // This is the reload/restore path; the reconnect path is handled by
                 // the onlineManager listener above — the two don't overlap.
                 ensureFreshSession().finally(() => {
+                    // Resume offline-queued (paused) mutations.
                     queryClient.resumePausedMutations().then(() => {
                         queryClient.invalidateQueries();
+                    });
+                    // Mutations restored as 'pending' (in flight when we reloaded) or
+                    // errored-but-retryable are NOT paused, so the call above skips them
+                    // and they'd show "Syncing…" forever. Kick each one off again — the
+                    // stable Idempotency-Key makes a re-run safe.
+                    queryClient.getMutationCache().getAll().forEach((m) => {
+                        if (!isReplayableMutation(m)) return;
+                        if (!m.state.isPaused && m.state.status !== 'success') {
+                            void (m as unknown as { continue?: () => Promise<unknown> })
+                                .continue?.()
+                                ?.catch(() => undefined);
+                        }
                     });
                 });
             }}

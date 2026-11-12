@@ -17,8 +17,14 @@ type Row = {
     jobLabel: string;
     kind: "paused" | "syncing" | "retrying" | "failed";
     message?: string;
+    // A "syncing" row whose request has been in flight > STUCK_MS — offer Retry.
+    stuck: boolean;
     mutation: Mutation<any, any, any, any>;
 };
+
+// How long a request may sit "Syncing…" before we assume it wedged (lost socket,
+// a reconnect that never resolved) and surface a Retry button.
+const STUCK_MS = 30_000;
 
 /** The offline outbox: every field change that is queued, syncing, or has failed
  *  to sync, with Retry and Discard. Opened from the offline banner. Shows no
@@ -60,12 +66,16 @@ export function OutboxSheet({ open, onClose }: OutboxSheetProps) {
                         kind === "failed"
                             ? (m.state.failureReason as any)?.response?.data?.message
                             : undefined;
+                    const submittedAt = (m.state as any).submittedAt as number | undefined;
+                    const stuck =
+                        kind === "syncing" && !!submittedAt && Date.now() - submittedAt > STUCK_MS;
                     return {
                         id: m.mutationId,
                         action: label.action,
                         jobLabel: nameFor(label.jobId),
                         kind,
                         message: serverMessage,
+                        stuck,
                         mutation: m,
                     };
                 });
@@ -73,7 +83,14 @@ export function OutboxSheet({ open, onClose }: OutboxSheetProps) {
         };
 
         refresh();
-        return cache.subscribe(refresh);
+        // A row crosses the "stuck" threshold with no cache event, so also re-check
+        // on a timer while the sheet is open.
+        const timer = setInterval(refresh, 5_000);
+        const unsubscribe = cache.subscribe(refresh);
+        return () => {
+            clearInterval(timer);
+            unsubscribe();
+        };
     }, [open, queryClient]);
 
     const failedCount = useMemo(() => rows.filter((r) => r.kind === "failed").length, [rows]);
@@ -169,7 +186,7 @@ export function OutboxSheet({ open, onClose }: OutboxSheetProps) {
                                     </button>
                                 </div>
                             ) : (
-                                (row.kind === "failed" || row.kind === "retrying" || row.kind === "paused") && (
+                                (row.kind === "failed" || row.kind === "retrying" || row.kind === "paused" || row.stuck) && (
                                     <div className="mt-3 flex items-center justify-end gap-2">
                                         {onlineManager.isOnline() && (
                                             <button
@@ -214,7 +231,7 @@ function statusText(row: Row): string {
         case "retrying":
             return "Couldn’t reach the server — will keep trying.";
         case "syncing":
-            return "Syncing…";
+            return row.stuck ? "Still syncing — taking longer than usual." : "Syncing…";
         case "paused":
         default:
             return "Waiting for signal";

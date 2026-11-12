@@ -1,16 +1,16 @@
 "use client";
 
 import { useMutation } from "@tanstack/react-query";
-import api from "../../../lib/api";
+import { OFFLINE_KEYS } from "../../../lib/offline-mutations";
 import { toast } from "../../ui/use-toast";
 
 /** Customer job summary. The PDF is built server-side and delivered by email +
- *  WhatsApp, so no pricing is ever exposed to the tech. Needs signal (storage /
- *  messaging) — this is not queued for offline replay. */
+ *  WhatsApp, so no pricing is ever exposed to the tech. Queued via the offline
+ *  mutation default (mutationFn + Idempotency-Key live there), so a tap on patchy
+ *  signal isn't lost and a retry can't double-send. */
 export function useJobSummary() {
     const summaryMutation = useMutation<unknown, any, { jobId: string }>({
-        mutationFn: async ({ jobId }) =>
-            (await api.post(`/jobs/${jobId}/summary-pdf`, { email: true, whatsapp: true })).data,
+        mutationKey: OFFLINE_KEYS.summary,
         onSuccess: () => {
             toast({ title: "Job summary sent", description: "The customer gets it by email and WhatsApp." });
         },

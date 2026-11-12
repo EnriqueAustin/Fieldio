@@ -2,7 +2,7 @@
 
 import type { Mutation, QueryClient } from "@tanstack/react-query";
 import api from "./api";
-import { getPhotoBlob, delPhotoBlob } from "./offline-db";
+import { getPhotoBlob, delPhotoBlob, getReceiptBlob, delReceiptBlob } from "./offline-db";
 
 /**
  * Mutation keys shared between the technician field UI and the resumable
@@ -23,6 +23,11 @@ export const OFFLINE_KEYS = {
     fieldQuote: ["job", "fieldQuote"] as const,
     fieldInvoice: ["job", "fieldInvoice"] as const,
     formSubmit: ["job", "formSubmit"] as const,
+    summary: ["job", "summary"] as const,
+    onMyWay: ["job", "onMyWay"] as const,
+    vanStockUse: ["van", "stock", "use"] as const,
+    vanStockAdjust: ["van", "stock", "adjust"] as const,
+    vanRestock: ["van", "stock", "restock"] as const,
 };
 
 /** Hashed heads of every replayable key — used to tell a field mutation apart
@@ -59,6 +64,9 @@ export const OFFLINE_KEY_HEADS = new Set(Object.values(OFFLINE_KEYS).map((k) => 
 export const FIELD_OPS_SCOPE = { id: "fieldio:field-ops" } as const;
 const PHOTO_SCOPE = { id: "fieldio:upload-photo" } as const;
 const EXPENSE_SCOPE = { id: "fieldio:upload-expense" } as const;
+// Van stock draws/adjusts/restocks replay in tap order among themselves, but on
+// their own scope so a slow restock can't sit in front of a job status change.
+const VAN_STOCK_SCOPE = { id: "fieldio:van-stock" } as const;
 
 /** Per-job scope helper (see note above) for when a hook knows its jobId. */
 export function jobScope(jobId: string) {
@@ -112,6 +120,16 @@ function patchWeekEventStatus(qc: QueryClient, jobId: string, status: string) {
             ev.id === jobId
                 ? { ...ev, extendedProps: { ...ev.extendedProps, status } }
                 : ev
+        );
+    });
+}
+
+/** Bump one van-inventory item's quantity optimistically (delta or absolute). */
+function patchVanItemQty(qc: QueryClient, vanId: string, itemId: string, delta: number) {
+    qc.setQueriesData({ queryKey: ["van-inventory", vanId] }, (old: any) => {
+        if (!Array.isArray(old)) return old;
+        return old.map((i) =>
+            i.id === itemId ? { ...i, quantity: Math.max(0, (i.quantity ?? 0) + delta) } : i
         );
     });
 }
@@ -279,13 +297,14 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
             formData.append("amount", String(amount));
             formData.append("category", category);
             formData.append("date", new Date().toISOString());
-            // Receipt bytes live in IndexedDB so the upload survives reload/reconnect.
+            // Receipt bytes live in their own IndexedDB store so the upload
+            // survives reload/reconnect and is never swept into the photo gallery.
             if (receiptBlobId) {
-                const queued = await getPhotoBlob(receiptBlobId);
+                const queued = await getReceiptBlob(receiptBlobId);
                 if (queued) formData.append("receipt", queued.blob, queued.fileName);
             }
             await api.post(`/operations/jobs/${jobId}/expenses`, formData, { headers: idempotencyHeaders(clientMutationId) });
-            if (receiptBlobId) await delPhotoBlob(receiptBlobId);
+            if (receiptBlobId) await delReceiptBlob(receiptBlobId);
         },
         onMutate: async (variables: { jobId: string; description: string; amount: number; category: string; receiptBlobId?: string; clientMutationId?: string }) => {
             stampId(variables);
@@ -371,6 +390,89 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
         },
         onSettled: () => invalidateFieldQueries(qc),
     });
+
+    // Customer job summary (PDF by email + WhatsApp). Needs signal, but queuing it
+    // means a tap on patchy signal isn't lost and never double-sends on retry.
+    qc.setMutationDefaults(OFFLINE_KEYS.summary, {
+        scope: FIELD_OPS_SCOPE,
+        mutationFn: async ({ jobId, clientMutationId }: { jobId: string; clientMutationId?: string }) =>
+            (await api.post(
+                `/jobs/${jobId}/summary-pdf`,
+                { email: true, whatsapp: true },
+                { headers: idempotencyHeaders(clientMutationId) },
+            )).data,
+        onMutate: async (variables: { jobId: string; clientMutationId?: string }) => {
+            stampId(variables);
+        },
+    });
+
+    // "On my way" — notifies the customer. Idempotency-Key stops a double-tap (or a
+    // replay) from texting the customer twice.
+    qc.setMutationDefaults(OFFLINE_KEYS.onMyWay, {
+        scope: FIELD_OPS_SCOPE,
+        mutationFn: async ({ jobId, clientMutationId }: { jobId: string; clientMutationId?: string }) => {
+            await api.post(`/schedule/jobs/${jobId}/on-my-way`, {}, { headers: idempotencyHeaders(clientMutationId) });
+        },
+        onMutate: async (variables: { jobId: string; clientMutationId?: string }) => {
+            stampId(variables);
+        },
+        onSettled: () => invalidateFieldQueries(qc),
+    });
+
+    // Van stock: draw on a job. Server decrements atomically; the Idempotency-Key
+    // makes a replay a no-op so a queued draw can't deduct twice.
+    qc.setMutationDefaults(OFFLINE_KEYS.vanStockUse, {
+        scope: VAN_STOCK_SCOPE,
+        mutationFn: async ({ vanId, itemId, jobId, quantity, clientMutationId }: { vanId: string; itemId: string; jobId: string; quantity: number; clientMutationId?: string }) => {
+            await api.post(
+                `/vans/${vanId}/inventory/${itemId}/use`,
+                { jobId, quantity },
+                { headers: idempotencyHeaders(clientMutationId) },
+            );
+        },
+        onMutate: async (variables: { vanId: string; itemId: string; jobId: string; quantity: number; clientMutationId?: string }) => {
+            stampId(variables);
+            await qc.cancelQueries({ queryKey: ["van-inventory", variables.vanId] });
+            patchVanItemQty(qc, variables.vanId, variables.itemId, -variables.quantity);
+        },
+        onSettled: (_d, _e, variables: any) =>
+            qc.invalidateQueries({ queryKey: ["van-inventory", variables?.vanId] }),
+    });
+
+    // Van stock: +/- stepper. Delta-based so two crew members don't clobber each
+    // other; idempotent on replay.
+    qc.setMutationDefaults(OFFLINE_KEYS.vanStockAdjust, {
+        scope: VAN_STOCK_SCOPE,
+        mutationFn: async ({ vanId, itemId, delta, clientMutationId }: { vanId: string; itemId: string; delta: number; clientMutationId?: string }) => {
+            await api.post(
+                `/vans/${vanId}/inventory/${itemId}/adjust`,
+                { delta },
+                { headers: idempotencyHeaders(clientMutationId) },
+            );
+        },
+        onMutate: async (variables: { vanId: string; itemId: string; delta: number; clientMutationId?: string }) => {
+            stampId(variables);
+            await qc.cancelQueries({ queryKey: ["van-inventory", variables.vanId] });
+            patchVanItemQty(qc, variables.vanId, variables.itemId, variables.delta);
+        },
+        onSettled: (_d, _e, variables: any) =>
+            qc.invalidateQueries({ queryKey: ["van-inventory", variables?.vanId] }),
+    });
+
+    // Van stock: request restock. De-duped server-side; idempotent on replay.
+    qc.setMutationDefaults(OFFLINE_KEYS.vanRestock, {
+        scope: VAN_STOCK_SCOPE,
+        mutationFn: async ({ vanId, itemId, clientMutationId }: { vanId: string; itemId: string; clientMutationId?: string }) => {
+            await api.post(
+                `/vans/${vanId}/inventory/${itemId}/request-restock`,
+                {},
+                { headers: idempotencyHeaders(clientMutationId) },
+            );
+        },
+        onMutate: async (variables: { vanId: string; itemId: string; clientMutationId?: string }) => {
+            stampId(variables);
+        },
+    });
 }
 
 /** True when this cache mutation is one of our replayable field actions. */
@@ -422,6 +524,16 @@ export function mutationLabel(mutation: Mutation<any, any, any, any>): { action:
             return { action: "Form submission", jobId: v.jobId };
         case k.photo.join("|"):
             return { action: "Photo upload", jobId: v.jobId };
+        case k.summary.join("|"):
+            return { action: "Job summary sent", jobId: v.jobId };
+        case k.onMyWay.join("|"):
+            return { action: "On my way (customer notified)", jobId: v.jobId };
+        case k.vanStockUse.join("|"):
+            return { action: `Van stock used${v.quantity ? ` ×${v.quantity}` : ""}`, jobId: v.jobId };
+        case k.vanStockAdjust.join("|"):
+            return { action: `Van stock ${v.delta > 0 ? "added" : "removed"}${v.delta ? ` (${Math.abs(v.delta)})` : ""}` };
+        case k.vanRestock.join("|"):
+            return { action: "Restock requested" };
         default:
             return { action: "Change", jobId: v.jobId };
     }

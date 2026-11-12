@@ -3,7 +3,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { OFFLINE_KEYS } from "../../../lib/offline-mutations";
-import { putPhotoBlob } from "../../../lib/offline-db";
+import { putReceiptBlob } from "../../../lib/offline-db";
 import { toast } from "../../ui/use-toast";
 
 /** Job-expense drafting + offline-queued submit (mirrors the photo pattern). */
@@ -23,14 +23,25 @@ export function useExpenses() {
     const queueExpense = async (jobId: string, description: string, amount: number, category: string, receipt: File | null) => {
         let receiptBlobId: string | undefined;
         if (receipt) {
+            // Keep the `receipt-` prefix so the legacy photo-store guard still
+            // recognises it, but store it in the dedicated receipt store.
             receiptBlobId = `receipt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-            await putPhotoBlob(receiptBlobId, {
-                jobId,
-                caption: "",
-                blob: receipt,
-                fileName: receipt.name || `${receiptBlobId}.jpg`,
-                createdAt: Date.now(),
-            });
+            try {
+                await putReceiptBlob(receiptBlobId, {
+                    jobId,
+                    caption: "",
+                    blob: receipt,
+                    fileName: receipt.name || `${receiptBlobId}.jpg`,
+                    createdAt: Date.now(),
+                });
+            } catch {
+                receiptBlobId = undefined;
+                toast({
+                    title: "Receipt not saved",
+                    description: "Storage is full — the expense will be sent without the receipt image.",
+                    variant: "destructive",
+                });
+            }
         }
         expenseMutation.mutate({ jobId, description, amount, category, receiptBlobId });
         setNewExpense({ description: "", amount: "", category: "PARTS_PURCHASE" });

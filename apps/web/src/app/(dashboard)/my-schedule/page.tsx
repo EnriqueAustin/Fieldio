@@ -186,17 +186,17 @@ export default function MySchedulePage() {
         queryClient.invalidateQueries({ queryKey: ["my-open-jobs"] });
     };
 
-    // "On my way" notifies the customer (SMS) — inherently an online action.
-    const onMyWayMutation = useMutation({
-        mutationFn: async (jobId: string) => {
-            await api.post(`/schedule/jobs/${jobId}/on-my-way`);
-        },
+    // "On my way" notifies the customer. Routed through the offline mutation
+    // default (mutationFn + Idempotency-Key there) so a tap on patchy signal
+    // isn't lost and a double-tap / replay can't text the customer twice.
+    const onMyWayMutation = useMutation<unknown, any, { jobId: string }>({
+        mutationKey: OFFLINE_KEYS.onMyWay,
         onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ["my-week"] });
             queryClient.invalidateQueries({ queryKey: ["my-open-jobs"] });
         },
     });
-    const onMyWay = (jobId: string) => onMyWayMutation.mutate(jobId);
+    const onMyWay = (jobId: string) => onMyWayMutation.mutate({ jobId });
 
     const onDatesSet = (arg: { start: Date; end: Date }) => {
         setRange({ start: arg.start.toISOString(), end: arg.end.toISOString() });

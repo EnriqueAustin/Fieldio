@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import api from "../../../../lib/api";
+import { OFFLINE_KEYS } from "../../../../lib/offline-mutations";
 import { Card, CardContent } from "../../../../components/ui/card";
 import {
     AlertTriangle,
@@ -46,7 +47,6 @@ interface VanInfo {
 }
 
 export default function MyVanStockPage() {
-    const qc = useQueryClient();
     const [query, setQuery] = useState("");
     const [requested, setRequested] = useState<Record<string, boolean>>({});
     // "Use on job" sheet state.
@@ -54,7 +54,11 @@ export default function MyVanStockPage() {
     const [useQty, setUseQty] = useState(1);
     const [useJobId, setUseJobId] = useState<string | null>(null);
 
-    const { data: vanData } = useQuery<VanInfo | null>({
+    const {
+        data: vanData,
+        isLoading: vanLoading,
+        isError: vanError,
+    } = useQuery<VanInfo | null>({
         queryKey: ["my-van"],
         queryFn: () => api.get("/vans/my-van").then((r) => r.data.data.van),
     });
@@ -81,30 +85,15 @@ export default function MyVanStockPage() {
     const lowCount = items.filter((i) => i.quantity <= i.minLevel).length;
     const totalUnits = items.reduce((s, i) => s + i.quantity, 0);
 
-    const quantityMutation = useMutation({
-        mutationFn: ({ id, quantity }: { id: string; quantity: number }) =>
-            api.patch(`/operations/inventory/${id}`, { quantity }),
-        // Optimistic bump so the stepper feels instant with gloves on.
-        onMutate: async ({ id, quantity }) => {
-            await qc.cancelQueries({ queryKey: ["van-inventory", vanData?.id] });
-            const prev = qc.getQueryData<InventoryItem[]>(["van-inventory", vanData?.id]);
-            qc.setQueryData<InventoryItem[]>(["van-inventory", vanData?.id], (old) =>
-                (old ?? []).map((i) => (i.id === id ? { ...i, quantity } : i))
-            );
-            return { prev };
-        },
-        onError: (_e, _v, ctx) => {
-            if (ctx?.prev) qc.setQueryData(["van-inventory", vanData?.id], ctx.prev);
-        },
-        onSettled: () => qc.invalidateQueries({ queryKey: ["van-inventory", vanData?.id] }),
+    // All three stock writes go through the shared offline mutation defaults
+    // (optimistic cache patch, per-action Idempotency-Key, FIFO replay) so they
+    // persist across reload, replay in order on reconnect, and never double-apply.
+    const adjustMutation = useMutation<unknown, any, { vanId: string; itemId: string; delta: number }>({
+        mutationKey: OFFLINE_KEYS.vanStockAdjust,
     });
 
-    const restockMutation = useMutation({
-        mutationFn: (itemId: string) =>
-            api.post(`/vans/${vanData!.id}/inventory/${itemId}/request-restock`),
-        onSuccess: (_data, itemId) => {
-            setRequested((r) => ({ ...r, [itemId]: true }));
-        },
+    const restockMutation = useMutation<unknown, any, { vanId: string; itemId: string }>({
+        mutationKey: OFFLINE_KEYS.vanRestock,
     });
 
     // Tech's own active jobs, fetched only while the "Use on job" sheet is open.
@@ -119,18 +108,16 @@ export default function MyVanStockPage() {
         enabled: !!usingItem,
     });
 
-    const useStockMutation = useMutation({
-        mutationFn: ({ itemId, jobId, quantity }: { itemId: string; jobId: string; quantity: number }) =>
-            api.post(`/vans/${vanData!.id}/inventory/${itemId}/use`, { jobId, quantity }),
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ["van-inventory", vanData?.id] });
-            closeUseSheet();
-        },
+    const useStockMutation = useMutation<unknown, any, { vanId: string; itemId: string; jobId: string; quantity: number }>({
+        mutationKey: OFFLINE_KEYS.vanStockUse,
     });
 
-    const updateQuantity = (id: string, newQty: number) => {
-        if (newQty < 0) return;
-        quantityMutation.mutate({ id, quantity: newQty });
+    // Stepper: a signed delta is race-safe (two crew members each tapping -1 both
+    // apply). The optimistic patch lives in the mutation default.
+    const adjustQuantity = (item: InventoryItem, delta: number) => {
+        if (!vanData) return;
+        if (item.quantity + delta < 0) return;
+        adjustMutation.mutate({ vanId: vanData.id, itemId: item.id, delta });
     };
 
     const openUseSheet = (item: InventoryItem) => {
@@ -144,6 +131,10 @@ export default function MyVanStockPage() {
     };
 
     if (!vanData) {
+        // vanData === null  → the server said this user is on no van.
+        // vanData undefined → not loaded: offline with no cached van, or a fetch
+        //   error. Don't mislabel that as "not assigned to a van".
+        const offlineNoCache = vanData === undefined && (vanError || vanLoading);
         return (
             <div className="space-y-6">
                 <div>
@@ -153,10 +144,21 @@ export default function MyVanStockPage() {
                 <Card>
                     <CardContent className="flex flex-col items-center justify-center py-16 text-center">
                         <Truck className="h-10 w-10 text-slate-300" />
-                        <p className="mt-3 text-sm font-medium">Not assigned to a van</p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                            Ask your dispatcher or admin to assign you to a van.
-                        </p>
+                        {offlineNoCache ? (
+                            <>
+                                <p className="mt-3 text-sm font-medium">Van details not available offline</p>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                    Reconnect to load your van and its stock.
+                                </p>
+                            </>
+                        ) : (
+                            <>
+                                <p className="mt-3 text-sm font-medium">Not assigned to a van</p>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                    Ask your dispatcher or admin to assign you to a van.
+                                </p>
+                            </>
+                        )}
                     </CardContent>
                 </Card>
             </div>
@@ -168,7 +170,7 @@ export default function MyVanStockPage() {
         <div className="inline-flex items-center rounded-xl border border-border bg-white">
             <button
                 aria-label={`Decrease ${item.name}`}
-                onClick={() => updateQuantity(item.id, item.quantity - 1)}
+                onClick={() => adjustQuantity(item, -1)}
                 disabled={item.quantity <= 0}
                 className="flex h-11 w-11 items-center justify-center rounded-l-xl hover:bg-slate-50 disabled:opacity-40 active:scale-95"
             >
@@ -179,7 +181,7 @@ export default function MyVanStockPage() {
             </span>
             <button
                 aria-label={`Increase ${item.name}`}
-                onClick={() => updateQuantity(item.id, item.quantity + 1)}
+                onClick={() => adjustQuantity(item, 1)}
                 className="flex h-11 w-11 items-center justify-center rounded-r-xl hover:bg-slate-50 active:scale-95"
             >
                 <Plus className="h-4 w-4" />
@@ -201,8 +203,13 @@ export default function MyVanStockPage() {
         const done = requested[item.id];
         return (
             <button
-                onClick={() => !done && restockMutation.mutate(item.id)}
-                disabled={done || restockMutation.isPending}
+                onClick={() => {
+                    if (done) return;
+                    restockMutation.mutate({ vanId: vanData.id, itemId: item.id });
+                    // Optimistic: the request queues offline, so confirm straight away.
+                    setRequested((r) => ({ ...r, [item.id]: true }));
+                }}
+                disabled={done}
                 className={`inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border px-4 text-sm font-medium transition active:scale-95 disabled:active:scale-100 ${
                     done
                         ? "border-emerald-200 bg-emerald-50 text-emerald-700"
@@ -485,25 +492,25 @@ export default function MyVanStockPage() {
                         </div>
 
                         <button
-                            onClick={() =>
-                                useJobId &&
+                            onClick={() => {
+                                if (!useJobId) return;
                                 useStockMutation.mutate({
+                                    vanId: vanData.id,
                                     itemId: usingItem.id,
                                     jobId: useJobId,
                                     quantity: useQty,
-                                })
-                            }
-                            disabled={!useJobId || useStockMutation.isPending}
+                                });
+                                // Optimistic patch happens in the mutation default; the
+                                // draw queues offline, so close the sheet immediately.
+                                // Any sync failure surfaces in the offline outbox.
+                                closeUseSheet();
+                            }}
+                            disabled={!useJobId}
                             className="mt-6 flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white transition hover:bg-blue-700 active:scale-95 disabled:opacity-40 disabled:active:scale-100"
                         >
                             <ClipboardList className="h-4 w-4" />
-                            {useStockMutation.isPending ? "Logging…" : `Use ${useQty} on job`}
+                            {`Use ${useQty} on job`}
                         </button>
-                        {useStockMutation.isError && (
-                            <p className="mt-2 text-center text-xs text-rose-600">
-                                Couldn’t log usage. Please try again.
-                            </p>
-                        )}
                     </div>
                 </div>
             )}

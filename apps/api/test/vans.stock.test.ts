@@ -180,7 +180,7 @@ describe('POST /vans/:id/inventory/:itemId/use', () => {
         expect(alerts[0].currentQty).toBe(2);
     });
 
-    it('rejects using more than what is on the van', async () => {
+    it('rejects using more than what is on the van (409, atomic guard)', async () => {
         seedVanWithStock({ item: { quantity: 1 } });
         seedJob();
 
@@ -189,8 +189,35 @@ describe('POST /vans/:id/inventory/:itemId/use', () => {
             .set('Authorization', authHeader({ role: 'TECHNICIAN', userId: TECH }))
             .send({ jobId: JOB, quantity: 5 });
 
-        expect(res.status).toBe(400);
+        expect(res.status).toBe(409);
         expect(res.body.message).toMatch(/not enough/i);
+
+        // The guarded transaction must not have touched the count.
+        const item = await fakePrisma.inventoryItem.findFirst({ where: { id: 'item_1' } });
+        expect(item.quantity).toBe(1);
+    });
+
+    it('two crew members drawing at once both apply (no lost update)', async () => {
+        seedVanWithStock({ item: { quantity: 10 } });
+        seedJob();
+
+        // Concurrent decrements via atomic { decrement }. An absolute
+        // read-modify-write would have lost one of these; both must land.
+        const [a, b] = await Promise.all([
+            request(app)
+                .post('/vans/van_1/inventory/item_1/use')
+                .set('Authorization', authHeader({ role: 'TECHNICIAN', userId: TECH }))
+                .send({ jobId: JOB, quantity: 3 }),
+            request(app)
+                .post('/vans/van_1/inventory/item_1/use')
+                .set('Authorization', authHeader({ role: 'TECHNICIAN', userId: TECH }))
+                .send({ jobId: JOB, quantity: 4 }),
+        ]);
+
+        expect(a.status).toBe(201);
+        expect(b.status).toBe(201);
+        const item = await fakePrisma.inventoryItem.findFirst({ where: { id: 'item_1' } });
+        expect(item.quantity).toBe(3); // 10 - 3 - 4
     });
 
     it('rejects logging usage against a job not assigned to the technician', async () => {
@@ -276,5 +303,97 @@ describe('GET /vans/:id/stock-usage', () => {
             .set('Authorization', authHeader({ role: 'OFFICE', companyId: 'other_co' }));
 
         expect(res.status).toBe(404);
+    });
+});
+
+describe('GET /vans/:id (cost leak)', () => {
+    // The fake does not resolve relations, so embed the inventory on the van row.
+    function seedVanWithEmbeddedInventory() {
+        fakePrisma.van.seed([
+            {
+                id: 'van_1',
+                companyId: COMPANY,
+                name: 'Van 1',
+                active: true,
+                inventory: [
+                    { id: 'item_1', name: 'Copper Pipe 15mm', sku: 'CP-15', quantity: 10, minLevel: 3, unitCost: 42.5, location: 'VAN' },
+                ],
+            },
+        ]);
+    }
+
+    it('strips unitCost from the inventory for a technician', async () => {
+        seedVanWithEmbeddedInventory();
+
+        const res = await request(app)
+            .get('/vans/van_1')
+            .set('Authorization', authHeader({ role: 'TECHNICIAN', userId: TECH }));
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.van.inventory[0]).not.toHaveProperty('unitCost');
+        expect(JSON.stringify(res.body)).not.toMatch(/unitCost/i);
+    });
+
+    it('keeps unitCost for office staff', async () => {
+        seedVanWithEmbeddedInventory();
+
+        const res = await request(app)
+            .get('/vans/van_1')
+            .set('Authorization', authHeader({ role: 'OFFICE' }));
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.van.inventory[0].unitCost).toBe(42.5);
+    });
+});
+
+describe('POST /vans/:id/inventory/:itemId/adjust (delta stepper)', () => {
+    it('applies a negative delta atomically', async () => {
+        seedVanWithStock({ item: { quantity: 10 } });
+
+        const res = await request(app)
+            .post('/vans/van_1/inventory/item_1/adjust')
+            .set('Authorization', authHeader({ role: 'TECHNICIAN', userId: TECH }))
+            .send({ delta: -2 });
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.item.quantity).toBe(8);
+        expect(res.body.data.item).not.toHaveProperty('unitCost');
+    });
+
+    it('refuses to drive the count below zero (409)', async () => {
+        seedVanWithStock({ item: { quantity: 1 } });
+
+        const res = await request(app)
+            .post('/vans/van_1/inventory/item_1/adjust')
+            .set('Authorization', authHeader({ role: 'TECHNICIAN', userId: TECH }))
+            .send({ delta: -5 });
+
+        expect(res.status).toBe(409);
+        const item = await fakePrisma.inventoryItem.findFirst({ where: { id: 'item_1' } });
+        expect(item.quantity).toBe(1);
+    });
+
+    it('rejects a technician who is not a member of the van', async () => {
+        seedVanWithStock({ member: false });
+
+        const res = await request(app)
+            .post('/vans/van_1/inventory/item_1/adjust')
+            .set('Authorization', authHeader({ role: 'TECHNICIAN', userId: TECH }))
+            .send({ delta: 1 });
+
+        expect(res.status).toBe(403);
+    });
+});
+
+describe('GET /vans/:id/service-logs (cost leak)', () => {
+    it('forbids a technician (service logs carry cost)', async () => {
+        seedVanWithStock();
+
+        const res = await request(app)
+            .get('/vans/van_1/service-logs')
+            .set('Authorization', authHeader({ role: 'TECHNICIAN', userId: TECH }));
+
+        // restrictTo rejects before the handler, so no vanServiceLog table is needed.
+        expect(res.status).toBe(403);
     });
 });
