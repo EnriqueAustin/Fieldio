@@ -62,7 +62,8 @@ export const jobsController = {
     toggleChecklist: async (req: Request, res: Response) => {
         const { isCompleted } = toggleChecklistSchema.parse(req.body);
         const item = await jobsService.toggleChecklist(
-            req.params.id, req.params.checkId, req.user!.companyId, isCompleted
+            req.params.id, req.params.checkId, req.user!.companyId, isCompleted,
+            req.user!.userId, req.user!.role
         );
         res.status(StatusCodes.OK).json({ status: 'success', data: { item } });
     },
@@ -70,7 +71,7 @@ export const jobsController = {
     addNote: async (req: Request, res: Response) => {
         const { message } = z.object({ message: z.string().min(1) }).parse(req.body);
         const note = await jobsService.addNote(
-            req.params.id, req.user!.companyId, req.user!.userId, message
+            req.params.id, req.user!.companyId, req.user!.userId, message, req.user!.role
         );
         res.status(StatusCodes.CREATED).json({ status: 'success', data: { note } });
     },
@@ -79,9 +80,25 @@ export const jobsController = {
         const { signerName, signatureDataUrl, signatureUrl } = req.body;
         const signature = await jobsService.addSignature(
             req.params.id, req.user!.companyId, req.user!.userId,
-            signerName, signatureDataUrl, signatureUrl
+            signerName, signatureDataUrl, signatureUrl, req.user!.role
         );
         res.status(StatusCodes.CREATED).json({ status: 'success', data: { signature } });
+    },
+
+    cancel: async (req: Request, res: Response) => {
+        const { reason } = z.object({ reason: z.string().min(3).max(500) }).parse(req.body);
+        const job = await jobsService.cancel(
+            req.params.id, req.user!.companyId, req.user!.userId, reason
+        );
+        res.status(StatusCodes.OK).json({ status: 'success', data: { job } });
+    },
+
+    reopen: async (req: Request, res: Response) => {
+        const { reason } = z.object({ reason: z.string().min(1) }).parse(req.body);
+        const job = await jobsService.reopen(
+            req.params.id, req.user!.companyId, req.user!.userId, reason
+        );
+        res.status(StatusCodes.OK).json({ status: 'success', data: { job } });
     },
 
     addLineItem: async (req: Request, res: Response) => {

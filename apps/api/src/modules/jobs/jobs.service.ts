@@ -101,6 +101,31 @@ const quickCreateSchema = z.object({
 
 const JOB_NOTE_ACTION = 'JOB_NOTE_ADDED';
 
+/**
+ * The assigned-or-van-mate gate reused across every technician-facing job
+ * mutation (status, notes, signatures, checklist toggle, line items). A tech may
+ * only act on a job assigned directly to them or to a van they crew. Office roles
+ * never reach this check. Throws 403 otherwise.
+ */
+async function assertTechAssigned(
+    job: { techId: string | null; vanId: string | null },
+    companyId: string,
+    userId: string,
+    message: string,
+) {
+    const isAssigned = job.techId === userId;
+    let isVanMate = false;
+    if (!isAssigned && job.vanId) {
+        const membership = await prisma.vanMember.findFirst({
+            where: { userId, van: { id: job.vanId, companyId } },
+        });
+        isVanMate = !!membership;
+    }
+    if (!isAssigned && !isVanMate) {
+        throw new AppError(message, StatusCodes.FORBIDDEN);
+    }
+}
+
 // Forward lifecycle order for the field status transitions this endpoint accepts.
 // CANCELED is terminal and reachable from any state, so it sits outside the chain.
 const STATUS_FORWARD_ORDER = ['REQUESTED', 'ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'COMPLETED'] as const;
@@ -740,10 +765,22 @@ export const jobsService = {
         });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
 
+        // A technician may only drive the status of a job that is theirs or their
+        // van's — the same gate as line items / checklist. Office roles unaffected.
+        if (actorRole === 'TECHNICIAN') {
+            await assertTechAssigned(job, companyId, userId, 'You can only update jobs assigned to you or your van');
+        }
+
         // Out-of-order guard: a replayed offline tap that would move the job
         // backwards (e.g. ON_SITE landing after COMPLETED was recorded) is a no-op.
         // We never reopen a finished job or restart its clock — return the job as-is.
         if (isBackwardsTransition(job.status, status)) {
+            // A tech's stale replay is silently absorbed (offline-first). But the
+            // office must not be told a backwards move "worked" — reopening a
+            // finished job is a distinct action with its own endpoint.
+            if (actorRole && actorRole !== 'TECHNICIAN') {
+                throw new AppError('Cannot move a job backwards. Use reopen.', StatusCodes.CONFLICT);
+            }
             const current = await prisma.job.findFirst({
                 where: { id, companyId, deletedAt: null },
                 include: {
@@ -824,14 +861,18 @@ export const jobsService = {
         // they never log hours by hand. TRAVEL runs while EN_ROUTE, WRENCH while
         // ON_SITE, and the clock stops on completion. The clock uses the effective
         // tap time so a replayed transition bills the hours when they happened.
-        if (updatedJob.techId) {
+        // Credit the person who actually drove the status. On a van job with no
+        // solo techId, the crew mate who taps gets the hours; otherwise the
+        // assigned tech. An office correction (no tech actor) still bills techId.
+        const clockUserId = (actorRole === 'TECHNICIAN' && userId) ? userId : updatedJob.techId;
+        if (clockUserId) {
             // The clock simply mirrors the status: travelling while EN_ROUTE,
             // on site while ON_SITE, off otherwise.
             const clockType =
                 status === 'EN_ROUTE' ? 'TRAVEL' : status === 'ON_SITE' ? 'WRENCH' : null;
 
             const openForTech = await prisma.timeEntry.findMany({
-                where: { companyId, userId: updatedJob.techId, endTime: null },
+                where: { companyId, userId: clockUserId, endTime: null },
             });
 
             // Re-sending the status the job is already in (an office correction,
@@ -845,12 +886,12 @@ export const jobsService = {
             // this to the current job used to leave two clocks going at once:
             // arriving at job B while job A was still marked on site billed both,
             // doubling the hours.
-            await closeOpenEntries(companyId, updatedJob.techId, effective, alreadyRunning?.id);
+            await closeOpenEntries(companyId, clockUserId, effective, alreadyRunning?.id);
 
             if (clockType && !alreadyRunning) {
                 await prisma.timeEntry.create({
                     data: {
-                        companyId, jobId: id, userId: updatedJob.techId,
+                        companyId, jobId: id, userId: clockUserId,
                         type: clockType, startTime: effective,
                         description: `Auto-clocked on ${status}`,
                     },
@@ -915,9 +956,21 @@ export const jobsService = {
         return updatedJob;
     },
 
-    toggleChecklist: async (jobId: string, checklistId: string, companyId: string, isCompleted: boolean) => {
-        const count = await prisma.job.count({ where: { id: jobId, companyId, deletedAt: null } });
-        if (count === 0) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+    toggleChecklist: async (jobId: string, checklistId: string, companyId: string, isCompleted: boolean, userId?: string, userRole?: string) => {
+        const job = await prisma.job.findFirst({
+            where: { id: jobId, companyId, deletedAt: null },
+            select: { id: true, techId: true, vanId: true },
+        });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        if (userRole === 'TECHNICIAN' && userId) {
+            await assertTechAssigned(job, companyId, userId, 'You can only update checklist items on jobs assigned to you or your van');
+        }
+
+        // Scope the item to this job before touching it. Updating by id alone let a
+        // checklist row from another company's job be flipped (cross-tenant write).
+        const existing = await prisma.jobChecklist.findFirst({ where: { id: checklistId, jobId } });
+        if (!existing) throw new AppError('Checklist item not found', StatusCodes.NOT_FOUND);
 
         const item = await prisma.jobChecklist.update({
             where: { id: checklistId },
@@ -928,13 +981,17 @@ export const jobsService = {
         return item;
     },
 
-    addNote: async (jobId: string, companyId: string, userId: string, message: string) => {
+    addNote: async (jobId: string, companyId: string, userId: string, message: string, userRole?: string) => {
         const parsed = addNoteSchema.parse({ message });
         const job = await prisma.job.findFirst({
             where: { id: jobId, companyId, deletedAt: null },
-            select: { id: true },
+            select: { id: true, techId: true, vanId: true },
         });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        if (userRole === 'TECHNICIAN') {
+            await assertTechAssigned(job, companyId, userId, 'You can only add notes to jobs assigned to you or your van');
+        }
 
         const note = await prisma.auditLog.create({
             data: {
@@ -971,6 +1028,7 @@ export const jobsService = {
         signerName: string,
         signatureDataUrl?: string,
         signatureUrl?: string,
+        userRole?: string,
     ) => {
         const parsed = addSignatureSchema.parse({ signerName, signatureDataUrl, signatureUrl });
         if (!parsed.signatureDataUrl && !parsed.signatureUrl) {
@@ -979,9 +1037,13 @@ export const jobsService = {
 
         const job = await prisma.job.findFirst({
             where: { id: jobId, companyId, deletedAt: null },
-            select: { id: true },
+            select: { id: true, techId: true, vanId: true },
         });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        if (userRole === 'TECHNICIAN') {
+            await assertTechAssigned(job, companyId, userId, 'You can only sign off jobs assigned to you or your van');
+        }
 
         const signature = await prisma.jobSignature.create({
             data: {
@@ -1243,6 +1305,109 @@ export const jobsService = {
                 })),
             };
         });
+    },
+
+    /**
+     * Office cancel. Terminal: sets CANCELED, stops any clock still running on the
+     * job, and records a timeline + audit trail. Refuses a job that is already
+     * canceled, or a completed job that carries a live (non-VOID) invoice — that
+     * money is on the books and must be credited/voided from finance, not erased
+     * by cancelling the job behind it.
+     */
+    cancel: async (id: string, companyId: string, userId: string, reason: string) => {
+        const job = await prisma.job.findFirst({ where: { id, companyId, deletedAt: null } });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        if (job.status === 'CANCELED') {
+            throw new AppError('Job is already canceled', StatusCodes.CONFLICT);
+        }
+        if (job.status === 'COMPLETED') {
+            const invoice = await prisma.invoice.findFirst({ where: { jobId: id, companyId } });
+            if (invoice && invoice.status !== 'VOID') {
+                throw new AppError('Cannot cancel a completed, invoiced job — void or credit the invoice first', StatusCodes.CONFLICT);
+            }
+        }
+
+        const now = new Date();
+        // Hours stay derived from status: stop whatever clock the job left running
+        // rather than asking anyone to log the stop by hand. Scoped to this job so
+        // an unrelated clock on another job is untouched.
+        const openEntries = await prisma.timeEntry.findMany({ where: { companyId, jobId: id, endTime: null } });
+        for (const entry of openEntries) {
+            const end = now > entry.startTime ? now : entry.startTime;
+            await prisma.timeEntry.update({
+                where: { id: entry.id },
+                data: { endTime: end, duration: Math.floor((end.getTime() - entry.startTime.getTime()) / 1000) },
+            });
+        }
+
+        const updated = await prisma.job.update({
+            where: { id },
+            data: { status: 'CANCELED' },
+            include: { customer: true, property: true, tech: { select: PUBLIC_USER_SELECT }, van: true },
+        });
+
+        await prisma.jobTimelineEvent.create({
+            data: { companyId, jobId: id, type: 'CANCELED', message: reason, actorId: userId },
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                companyId, userId,
+                action: 'JOB_CANCELED',
+                entityId: id,
+                entityType: 'JOB',
+                metadata: { reason, previousStatus: job.status },
+            },
+        });
+
+        socketService.emitToCompany(companyId, 'job:updated', updated);
+        return updated;
+    },
+
+    /**
+     * Office reopen. Brings a CANCELED job — or a COMPLETED one with no live
+     * invoice — back into play: ASSIGNED when it still has a tech/van, else
+     * REQUESTED. Refuses anything else (an in-flight job, or a completed job whose
+     * invoice is live).
+     */
+    reopen: async (id: string, companyId: string, userId: string, reason: string) => {
+        const job = await prisma.job.findFirst({ where: { id, companyId, deletedAt: null } });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        let allowed = job.status === 'CANCELED';
+        if (!allowed && job.status === 'COMPLETED') {
+            const invoice = await prisma.invoice.findFirst({ where: { jobId: id, companyId } });
+            allowed = !invoice || invoice.status === 'VOID';
+        }
+        if (!allowed) {
+            throw new AppError('Only a canceled job, or a completed job with no live invoice, can be reopened', StatusCodes.CONFLICT);
+        }
+
+        const nextStatus = (job.techId || job.vanId) ? 'ASSIGNED' : 'REQUESTED';
+
+        const updated = await prisma.job.update({
+            where: { id },
+            data: { status: nextStatus },
+            include: { customer: true, property: true, tech: { select: PUBLIC_USER_SELECT }, van: true },
+        });
+
+        await prisma.jobTimelineEvent.create({
+            data: { companyId, jobId: id, type: 'REOPENED', message: reason, actorId: userId },
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                companyId, userId,
+                action: 'JOB_REOPENED',
+                entityId: id,
+                entityType: 'JOB',
+                metadata: { reason, previousStatus: job.status, newStatus: nextStatus },
+            },
+        });
+
+        socketService.emitToCompany(companyId, 'job:updated', updated);
+        return updated;
     },
 
     softDelete: async (id: string, companyId: string, userId: string) => {

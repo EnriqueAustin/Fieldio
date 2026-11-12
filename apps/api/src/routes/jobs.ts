@@ -20,6 +20,9 @@ jobRouter.post('/quick', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync
 jobRouter.get('/:id', catchAsync(jobsController.getOne));
 jobRouter.get('/:id/site-history', catchAsync(jobsController.getSiteHistory));
 jobRouter.patch('/:id', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(jobsController.update));
+// Office lifecycle corrections: cancel (and reopen) a job with a reason + audit.
+jobRouter.post('/:id/cancel', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(jobsController.cancel));
+jobRouter.post('/:id/reopen', restrictTo('ADMIN', 'OFFICE'), catchAsync(jobsController.reopen));
 jobRouter.delete('/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(jobsController.softDelete));
 // Field writes carry an Idempotency-Key so a replayed offline action runs once.
 jobRouter.patch('/:id/status', idempotency, catchAsync(jobsController.updateStatus));
@@ -33,7 +36,7 @@ jobRouter.delete('/:id/checklist/:checkId', restrictTo('ADMIN', 'OFFICE', 'DISPA
 
 // The summary PDF carries unit prices. A technician may trigger the customer send
 // for their own (or their van's) job, but never gets the PDF link back.
-jobRouter.post('/:id/summary-pdf', catchAsync(async (req: Request, res: Response) => {
+jobRouter.post('/:id/summary-pdf', idempotency, catchAsync(async (req: Request, res: Response) => {
     const isTech = req.user!.role === 'TECHNICIAN';
     if (isTech) {
         const job = await prisma.job.findFirst({

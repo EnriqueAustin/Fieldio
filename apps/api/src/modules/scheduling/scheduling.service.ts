@@ -66,6 +66,7 @@ export const schedulingService = {
         const jobs = await prisma.job.findMany({
             where: {
                 companyId,
+                deletedAt: null,
                 ...(branchId ? { branchId } : {}),
                 scheduledStart: {
                     gte: new Date(start),
@@ -160,35 +161,72 @@ export const schedulingService = {
     },
 
     updateSchedule: async (jobId: string, companyId: string, input: z.infer<typeof updateJobScheduleSchema>) => {
-        const job = await prisma.job.findFirst({ where: { id: jobId, companyId } });
+        const job = await prisma.job.findFirst({ where: { id: jobId, companyId, deletedAt: null } });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
 
-        // Conflict detection if reschedule with a new time + tech
-        if (input.scheduledStart && input.scheduledEnd && (input.techId || job.techId)) {
-            const techId = input.techId ?? job.techId!;
-            const conflict = await prisma.job.findFirst({
-                where: {
-                    companyId,
-                    id: { not: job.id },
-                    deletedAt: null,
-                    techId,
-                    status: { in: ['ASSIGNED', 'EN_ROUTE', 'ON_SITE'] },
-                    AND: [
-                        { scheduledStart: { lt: new Date(input.scheduledEnd) } },
-                        { scheduledEnd: { gt: new Date(input.scheduledStart) } },
-                    ],
-                },
-                select: { id: true, title: true, scheduledStart: true, scheduledEnd: true },
-            });
-            if (conflict) throw new AppError(`Tech is already booked: "${conflict.title}"`, StatusCodes.CONFLICT);
+        // A finished or cancelled job is off the board — a calendar drag must not
+        // resurrect it. Reopening is an explicit office action with its own route.
+        if (job.status === 'COMPLETED' || job.status === 'CANCELED') {
+            throw new AppError(`Cannot reschedule a ${job.status.toLowerCase()} job`, StatusCodes.CONFLICT);
+        }
+
+        // Who/what the job will be assigned to after this change.
+        const nextTechId = input.techId !== undefined ? input.techId : job.techId;
+        const nextVanId = input.vanId !== undefined ? input.vanId : job.vanId;
+
+        // Conflict detection on both the tech and the van when a time window is set.
+        if (input.scheduledStart && input.scheduledEnd) {
+            const start = new Date(input.scheduledStart);
+            const end = new Date(input.scheduledEnd);
+            const overlap = {
+                companyId,
+                id: { not: job.id },
+                deletedAt: null,
+                status: { in: ['ASSIGNED', 'EN_ROUTE', 'ON_SITE'] as ('ASSIGNED' | 'EN_ROUTE' | 'ON_SITE')[] },
+                AND: [
+                    { scheduledStart: { lt: end } },
+                    { scheduledEnd: { gt: start } },
+                ],
+            };
+            if (nextTechId) {
+                const conflict = await prisma.job.findFirst({
+                    where: { ...overlap, techId: nextTechId },
+                    select: { id: true, title: true },
+                });
+                if (conflict) throw new AppError(`Tech is already booked: "${conflict.title}"`, StatusCodes.CONFLICT);
+            }
+            if (nextVanId) {
+                const conflict = await prisma.job.findFirst({
+                    where: { ...overlap, vanId: nextVanId },
+                    select: { id: true, title: true },
+                });
+                if (conflict) throw new AppError(`Van is already booked: "${conflict.title}"`, StatusCodes.CONFLICT);
+            }
+        }
+
+        // Whitelist the writable fields — never let an arbitrary `...input` key
+        // (e.g. status, companyId) through. A reschedule only touches the time
+        // window and the assignment.
+        const data: Record<string, unknown> = {};
+        if (input.scheduledStart !== undefined) {
+            data.scheduledStart = input.scheduledStart ? new Date(input.scheduledStart) : null;
+        }
+        if (input.scheduledEnd !== undefined) {
+            data.scheduledEnd = input.scheduledEnd ? new Date(input.scheduledEnd) : null;
+        }
+        if (input.techId !== undefined) data.techId = input.techId;
+        if (input.vanId !== undefined) data.vanId = input.vanId;
+
+        // Status is only ever nudged REQUESTED → ASSIGNED, when the drag assigns a
+        // tech/van to a still-unassigned job. An EN_ROUTE / ON_SITE job keeps its
+        // live status (COMPLETED / CANCELED were refused above).
+        if (job.status === 'REQUESTED' && (nextTechId || nextVanId)) {
+            data.status = 'ASSIGNED';
         }
 
         const updatedJob = await prisma.job.update({
             where: { id: jobId },
-            data: {
-                ...input,
-                status: input.techId ? 'ASSIGNED' : (job.techId ? 'ASSIGNED' : 'REQUESTED')
-            },
+            data,
             include: { tech: { select: PUBLIC_USER_SELECT }, customer: true }
         });
 
