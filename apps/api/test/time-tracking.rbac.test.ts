@@ -28,6 +28,9 @@ const TECH = 'user_test'; // matches authHeader default userId
 
 // Entries carry the whole related User on purpose: the endpoint must name the
 // person without ever passing the credential and pay-rate columns through.
+// startTime is "now" so the entries land inside the default (this-week) window
+// the office timesheet now queries over.
+const NOW = new Date();
 function seed() {
     fakePrisma.timeEntry.seed([
         {
@@ -36,6 +39,7 @@ function seed() {
             userId: TECH,
             jobId: 'job_1',
             type: 'WRENCH',
+            startTime: NOW,
             duration: 3600,
             user: {
                 id: TECH,
@@ -54,6 +58,7 @@ function seed() {
             userId: 'other_tech',
             jobId: 'job_2',
             type: 'WRENCH',
+            startTime: NOW,
             duration: 1800,
             user: {
                 id: 'other_tech',

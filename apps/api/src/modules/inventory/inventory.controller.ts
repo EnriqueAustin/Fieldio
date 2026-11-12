@@ -4,13 +4,6 @@ import { inventoryService } from './inventory.service';
 import { AppError } from '../../middleware/error';
 import { z } from 'zod';
 
-const createInventorySchema = z.object({
-    name: z.string().min(2),
-    sku: z.string().min(2),
-    quantity: z.number().int().min(0),
-    minQuantity: z.number().int().min(0),
-});
-
 const updateQuantitySchema = z.object({
     quantity: z.number().int().min(0),
 });
@@ -26,9 +19,14 @@ function hideCostForTech<T extends { unitCost?: unknown }>(item: T, role?: strin
 
 export const inventoryController = {
     create: async (req: Request, res: Response) => {
-        const data = createInventorySchema.parse(req.body);
-        const item = await inventoryService.create(req.user!.companyId, data);
-        res.status(StatusCodes.CREATED).json({ status: 'success', data: { item } });
+        // The service owns validation (name required, sku optional/auto, minLevel
+        // with a minQuantity alias) — the old controller schema demanded sku +
+        // minQuantity, which 400'd every create from the web form.
+        const item = await inventoryService.create(req.user!.companyId, req.body);
+        res.status(StatusCodes.CREATED).json({
+            status: 'success',
+            data: { item: hideCostForTech(item, req.user!.role) },
+        });
     },
 
     getAll: async (req: Request, res: Response) => {
@@ -58,6 +56,9 @@ export const inventoryController = {
             throw new AppError('You do not have permission to perform this action', StatusCodes.FORBIDDEN);
         }
         const item = await inventoryService.updateMeta(req.params.id, req.user!.companyId, req.body);
-        res.status(StatusCodes.OK).json({ status: 'success', data: { item } });
+        res.status(StatusCodes.OK).json({
+            status: 'success',
+            data: { item: hideCostForTech(item, req.user!.role) },
+        });
     }
 };

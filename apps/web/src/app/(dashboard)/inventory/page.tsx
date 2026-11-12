@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "../../../lib/api";
 import { Button } from "../../../components/ui/button";
-import { Plus, AlertTriangle, Package, Search, Minus, Warehouse, Truck } from "lucide-react";
+import { Plus, AlertTriangle, Package, Search, Minus, Warehouse, Truck, Pencil } from "lucide-react";
 import {
     Dialog,
     DialogContent,
@@ -32,12 +32,14 @@ interface InventoryItem {
     quantity: number;
     minLevel: number;
     unitCost: string | null;
+    reorderQty?: number;
     location: "WAREHOUSE" | "VAN";
     van?: { id: string; name: string } | null;
 }
 
 const createItemSchema = z.object({
     name: z.string().min(2),
+    sku: z.string().optional(),
     quantity: z.string().transform((v) => parseInt(v)),
     minLevel: z
         .string()
@@ -45,9 +47,17 @@ const createItemSchema = z.object({
         .optional(),
 });
 
+// API errors arrive as { response: { data: { message } } } — surface it instead
+// of swallowing it in the console.
+function errMessage(e: any): string {
+    return e?.response?.data?.message || e?.message || "Something went wrong. Please try again.";
+}
+
 export default function InventoryPage() {
     const qc = useQueryClient();
     const [isDialogOpen, setIsDialogOpen] = useState(false);
+    const [createError, setCreateError] = useState("");
+    const [editItem, setEditItem] = useState<InventoryItem | null>(null);
     const [query, setQuery] = useState("");
     const [filter, setFilter] = useState<"ALL" | "LOW" | "WAREHOUSE" | "VAN">("ALL");
     const [vanFilter, setVanFilter] = useState<string>("ALL");
@@ -66,10 +76,20 @@ export default function InventoryPage() {
     const vanOptions: VanOption[] = vansData ?? [];
 
     const onSubmit = async (data: any) => {
-        await api.post("/operations/inventory", { ...data, minLevel: data.minLevel || 5 });
-        void qc.invalidateQueries({ queryKey: ["inventory"] });
-        setIsDialogOpen(false);
-        reset();
+        setCreateError("");
+        try {
+            await api.post("/operations/inventory", {
+                name: data.name,
+                sku: data.sku || undefined,
+                quantity: Number.isNaN(data.quantity) ? 0 : data.quantity,
+                minLevel: data.minLevel || 5,
+            });
+            void qc.invalidateQueries({ queryKey: ["inventory"] });
+            setIsDialogOpen(false);
+            reset();
+        } catch (e) {
+            setCreateError(errMessage(e));
+        }
     };
 
     const updateQuantity = async (id: string, newQty: number) => {
@@ -99,7 +119,7 @@ export default function InventoryPage() {
     }, [items, filter, vanFilter, query]);
 
     const lowStockCount = items.filter((i) => i.quantity <= i.minLevel).length;
-    const totalValue = items.reduce((acc, i) => acc + i.quantity, 0);
+    const totalUnits = items.reduce((acc, i) => acc + i.quantity, 0);
 
     return (
         <div className="space-y-6">
@@ -110,7 +130,10 @@ export default function InventoryPage() {
                         Track parts on trucks and in the warehouse.
                     </p>
                 </div>
-                <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+                <Dialog
+                    open={isDialogOpen}
+                    onOpenChange={(o) => { setIsDialogOpen(o); if (!o) setCreateError(""); }}
+                >
                     <DialogTrigger asChild>
                         <Button className="gap-2 bg-slate-900 hover:bg-slate-800">
                             <Plus className="h-4 w-4" /> Add item
@@ -125,6 +148,10 @@ export default function InventoryPage() {
                                 <Label>Item name</Label>
                                 <Input {...register("name")} placeholder='e.g. Copper Pipe 1/2"' />
                             </div>
+                            <div className="space-y-1.5">
+                                <Label>SKU (optional)</Label>
+                                <Input {...register("sku")} placeholder="Auto-generated if left blank" />
+                            </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-1.5">
                                     <Label>Quantity</Label>
@@ -135,6 +162,7 @@ export default function InventoryPage() {
                                     <Input type="number" {...register("minLevel")} defaultValue="5" />
                                 </div>
                             </div>
+                            {createError && <p className="text-sm text-destructive">{createError}</p>}
                             <DialogFooter>
                                 <Button type="submit">Create</Button>
                             </DialogFooter>
@@ -153,7 +181,7 @@ export default function InventoryPage() {
                         <span className="text-2xl font-semibold">{items.length}</span>
                     </div>
                     <p className="mt-3 text-sm font-medium">Total SKUs</p>
-                    <p className="text-xs text-muted-foreground">{totalValue} units in stock</p>
+                    <p className="text-xs text-muted-foreground">{totalUnits} units in stock</p>
                 </div>
                 <div className="surface-card p-5">
                     <div className="flex items-center justify-between">
@@ -245,12 +273,15 @@ export default function InventoryPage() {
                             <th className="px-6 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                                 Status
                             </th>
+                            <th className="px-6 py-3 text-right text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                                &nbsp;
+                            </th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-border/60">
                         {filtered.length === 0 ? (
                             <tr>
-                                <td colSpan={5}>
+                                <td colSpan={6}>
                                     <div className="flex flex-col items-center text-center py-16">
                                         <div className="h-12 w-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
                                             <Package className="h-5 w-5" />
@@ -318,6 +349,15 @@ export default function InventoryPage() {
                                                 </span>
                                             )}
                                         </td>
+                                        <td className="px-6 py-3.5 text-right">
+                                            <button
+                                                onClick={() => setEditItem(item)}
+                                                aria-label="Edit item"
+                                                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-slate-100 hover:text-foreground"
+                                            >
+                                                <Pencil className="h-3.5 w-3.5" />
+                                            </button>
+                                        </td>
                                     </tr>
                                 );
                             })
@@ -325,6 +365,84 @@ export default function InventoryPage() {
                     </tbody>
                 </table>
             </div>
+
+            {editItem && (
+                <EditItemDialog
+                    item={editItem}
+                    onClose={() => setEditItem(null)}
+                    onSaved={() => { setEditItem(null); void qc.invalidateQueries({ queryKey: ["inventory"] }); }}
+                />
+            )}
         </div>
+    );
+}
+
+function EditItemDialog({
+    item, onClose, onSaved,
+}: { item: InventoryItem; onClose: () => void; onSaved: () => void }) {
+    const [name, setName] = useState(item.name);
+    const [sku, setSku] = useState(item.sku ?? "");
+    const [minLevel, setMinLevel] = useState(String(item.minLevel));
+    const [unitCost, setUnitCost] = useState(item.unitCost ?? "");
+    const [reorderQty, setReorderQty] = useState(String(item.reorderQty ?? 0));
+    const [error, setError] = useState("");
+    const [saving, setSaving] = useState(false);
+
+    const save = async () => {
+        setError("");
+        setSaving(true);
+        try {
+            await api.patch(`/operations/inventory/${item.id}`, {
+                name,
+                sku: sku || undefined,
+                minLevel: Number(minLevel),
+                unitCost: unitCost === "" ? null : Number(unitCost),
+                reorderQty: Number(reorderQty),
+            });
+            onSaved();
+        } catch (e) {
+            setError(errMessage(e));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    return (
+        <Dialog open onOpenChange={(o) => !o && onClose()}>
+            <DialogContent>
+                <DialogHeader>
+                    <DialogTitle>Edit item</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                    <div className="space-y-1.5">
+                        <Label>Item name</Label>
+                        <Input value={name} onChange={(e) => setName(e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                        <Label>SKU</Label>
+                        <Input value={sku} onChange={(e) => setSku(e.target.value)} />
+                    </div>
+                    <div className="grid grid-cols-3 gap-4">
+                        <div className="space-y-1.5">
+                            <Label>Low-stock at</Label>
+                            <Input type="number" value={minLevel} onChange={(e) => setMinLevel(e.target.value)} />
+                        </div>
+                        <div className="space-y-1.5">
+                            <Label>Unit cost</Label>
+                            <Input type="number" step="0.01" value={unitCost} onChange={(e) => setUnitCost(e.target.value)} />
+                        </div>
+                        <div className="space-y-1.5">
+                            <Label>Reorder qty</Label>
+                            <Input type="number" value={reorderQty} onChange={(e) => setReorderQty(e.target.value)} />
+                        </div>
+                    </div>
+                    {error && <p className="text-sm text-destructive">{error}</p>}
+                </div>
+                <DialogFooter>
+                    <Button variant="outline" onClick={onClose}>Cancel</Button>
+                    <Button onClick={save} disabled={saving || name.trim().length < 2}>Save</Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
     );
 }

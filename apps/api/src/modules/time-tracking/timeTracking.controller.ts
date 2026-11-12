@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { timeTrackingService } from './timeTracking.service';
+import { timeTrackingService, buildTimesheetCsv } from './timeTracking.service';
+import { formatDateTimeInTimeZone } from '../../utils/timezone';
 import { z } from 'zod';
 
 const startTimeEntrySchema = z.object({
@@ -10,16 +11,31 @@ const startTimeEntrySchema = z.object({
     description: z.string().optional(),
 });
 
+// An edit always carries a reason — a corrected payroll record must say why.
 const updateTimeEntrySchema = z.object({
     jobId: z.string().uuid().optional(),
     type: z.enum(['TRAVEL', 'WRENCH', 'ADMIN', 'BREAK']).optional(),
     startTime: z.string().datetime().optional(),
     endTime: z.string().datetime().optional(),
     description: z.string().optional(),
+    reason: z.string().trim().min(1, 'A reason is required'),
+});
+
+// "Add missed entry" — office records labour the status clock never captured.
+const manualTimeEntrySchema = z.object({
+    userId: z.string().uuid(),
+    jobId: z.string().uuid().optional(),
+    startTime: z.string().datetime(),
+    endTime: z.string().datetime(),
+    note: z.string().trim().min(1, 'A reason/note is required'),
 });
 
 const stopTimeEntrySchema = z.object({
     endTime: z.string().datetime().optional(),
+});
+
+const deleteTimeEntrySchema = z.object({
+    reason: z.string().trim().min(1).optional(),
 });
 
 /**
@@ -29,6 +45,15 @@ const stopTimeEntrySchema = z.object({
  */
 const scopeFor = (req: Request) =>
     req.user!.role === 'TECHNICIAN' ? req.user!.userId : undefined;
+
+// Roles allowed to read other people's hours. Everyone else (TECHNICIAN, and
+// office-floor roles like SALES/CSR) only ever sees their own timesheet.
+const CAN_READ_OTHERS = ['ADMIN', 'OFFICE', 'DISPATCHER', 'ACCOUNTANT'];
+
+// The userId to list for. Privileged roles may filter by anyone (or leave it
+// open for the whole team); everyone else is pinned to themselves.
+const listScopeFor = (req: Request): string | undefined =>
+    CAN_READ_OTHERS.includes(req.user!.role) ? (req.query.userId as string | undefined) : req.user!.userId;
 
 export const timeTrackingController = {
     mySummary: async (req: Request, res: Response) => {
@@ -50,9 +75,22 @@ export const timeTrackingController = {
     },
 
     update: async (req: Request, res: Response) => {
-        const data = updateTimeEntrySchema.parse(req.body);
-        const entry = await timeTrackingService.updateEntry(req.params.id, req.user!.companyId, scopeFor(req), data);
+        const { reason, ...data } = updateTimeEntrySchema.parse(req.body);
+        const entry = await timeTrackingService.updateEntry(
+            req.params.id,
+            req.user!.companyId,
+            scopeFor(req),
+            req.user!.userId,
+            data,
+            reason,
+        );
         res.status(StatusCodes.OK).json({ status: 'success', data: { entry } });
+    },
+
+    manual: async (req: Request, res: Response) => {
+        const data = manualTimeEntrySchema.parse(req.body);
+        const entry = await timeTrackingService.manualEntry(req.user!.companyId, req.user!.userId, data);
+        res.status(StatusCodes.CREATED).json({ status: 'success', data: { entry } });
     },
 
     getOne: async (req: Request, res: Response) => {
@@ -65,21 +103,39 @@ export const timeTrackingController = {
     },
 
     getAll: async (req: Request, res: Response) => {
-        const page = Number(req.query.page) || 1;
-        const limit = Number(req.query.limit) || 20;
-        const jobId = req.query.jobId as string;
-        // A technician's timesheet is their own. Anyone else may filter by user.
-        const userId =
-            req.user!.role === 'TECHNICIAN'
-                ? req.user!.userId
-                : (req.query.userId as string);
-
-        const result = await timeTrackingService.getAll(req.user!.companyId, userId, jobId, page, limit);
+        const result = await timeTrackingService.getAll(req.user!.companyId, {
+            userId: listScopeFor(req),
+            jobId: req.query.jobId as string | undefined,
+            from: req.query.from as string | undefined,
+            to: req.query.to as string | undefined,
+            page: Number(req.query.page) || 1,
+            limit: Number(req.query.limit) || 50,
+        });
         res.status(StatusCodes.OK).json({ status: 'success', data: result });
     },
 
+    exportCsv: async (req: Request, res: Response) => {
+        const { rows, tz } = await timeTrackingService.exportRange(req.user!.companyId, {
+            userId: listScopeFor(req),
+            jobId: req.query.jobId as string | undefined,
+            from: req.query.from as string | undefined,
+            to: req.query.to as string | undefined,
+        });
+        const csv = buildTimesheetCsv(rows, (d) => formatDateTimeInTimeZone(d, tz));
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename="labour-hours.csv"');
+        res.status(StatusCodes.OK).send(csv);
+    },
+
     delete: async (req: Request, res: Response) => {
-        await timeTrackingService.deleteEntry(req.params.id, req.user!.companyId, scopeFor(req));
+        const { reason } = deleteTimeEntrySchema.parse(req.body ?? {});
+        await timeTrackingService.deleteEntry(
+            req.params.id,
+            req.user!.companyId,
+            scopeFor(req),
+            req.user!.userId,
+            reason,
+        );
         res.status(StatusCodes.OK).json({ status: 'success' });
     }
 };

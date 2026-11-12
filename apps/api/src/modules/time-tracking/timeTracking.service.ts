@@ -1,7 +1,13 @@
 import { prisma } from '@fieldio/database';
 import { AppError } from '../../middleware/error';
 import { StatusCodes } from 'http-status-codes';
-import { getCompanyTimezone, startOfDayInTimeZone, startOfWeekInTimeZone } from '../../utils/timezone';
+import {
+    getCompanyTimezone,
+    startOfDayInTimeZone,
+    startOfWeekInTimeZone,
+    endOfDayInTimeZone,
+    endOfWeekInTimeZone,
+} from '../../utils/timezone';
 
 
 /**
@@ -12,6 +18,84 @@ const TIMESHEET_INCLUDE = {
     user: { select: { id: true, email: true, firstName: true, lastName: true } },
     job: { select: { id: true, title: true, status: true, customer: { select: { name: true } } } },
 } as const;
+
+type EntryWithRelations = {
+    id: string;
+    userId: string;
+    jobId?: string | null;
+    type: string;
+    startTime: Date;
+    endTime?: Date | null;
+    duration?: number | null;
+    description?: string | null;
+    user?: { id: string; email: string; firstName?: string | null; lastName?: string | null } | null;
+    job?: { id: string; title: string } | null;
+};
+
+const personName = (u?: { firstName?: string | null; lastName?: string | null; email?: string } | null) => {
+    if (!u) return 'Unknown';
+    const name = [u.firstName, u.lastName].filter(Boolean).join(' ').trim();
+    return name || u.email || 'Unknown';
+};
+
+// Seconds worked by an entry; an entry still running counts up to now.
+const entrySeconds = (e: EntryWithRelations): number =>
+    e.duration ?? Math.max(0, Math.floor((Date.now() - new Date(e.startTime).getTime()) / 1000));
+
+// A compact before/after image for the audit trail — never the raw row.
+const snapshot = (e: EntryWithRelations) => ({
+    id: e.id,
+    userId: e.userId,
+    jobId: e.jobId ?? null,
+    type: e.type,
+    startTime: e.startTime,
+    endTime: e.endTime ?? null,
+    duration: e.duration ?? null,
+    description: e.description ?? null,
+});
+
+// Every correction is recorded: who, when (createdAt), before, after, reason.
+async function writeAudit(
+    companyId: string,
+    userId: string,
+    action: string,
+    entityId: string,
+    metadata: { before: unknown; after: unknown; reason: string | null },
+) {
+    await prisma.auditLog.create({
+        data: { companyId, userId, action, entityId, entityType: 'TIME_ENTRY', metadata: metadata as any },
+    });
+}
+
+/**
+ * Nobody can be in two places at once: a new or corrected entry must not overlap
+ * any of that technician's other entries. An open entry (no endTime) is treated
+ * as running up to now.
+ */
+async function assertNoOverlap(companyId: string, userId: string, start: Date, end: Date, excludeId?: string) {
+    const existing = await prisma.timeEntry.findMany({ where: { companyId, userId } });
+    const s = start.getTime();
+    const e = end.getTime();
+    for (const row of existing) {
+        if (excludeId && row.id === excludeId) continue;
+        const rs = new Date(row.startTime).getTime();
+        const re = row.endTime ? new Date(row.endTime).getTime() : Date.now();
+        if (s < re && e > rs) {
+            throw new AppError('This overlaps an existing time entry for this technician', StatusCodes.CONFLICT);
+        }
+    }
+}
+
+// Resolve the reporting window. Default: this week, Monday–Sunday, in the
+// company's timezone (not the container's UTC). A bare YYYY-MM-DD is read as a
+// local day in that zone.
+async function resolveRange(companyId: string, from?: string, to?: string) {
+    const tz = await getCompanyTimezone(companyId);
+    const now = new Date();
+    const start = from ? startOfDayInTimeZone(new Date(from), tz) : startOfWeekInTimeZone(now, tz);
+    const end = to ? endOfDayInTimeZone(new Date(to), tz) : endOfWeekInTimeZone(now, tz);
+    return { tz, start, end };
+}
 
 /**
  * Nobody can be in two places at once, so a technician has at most one open
@@ -115,28 +199,110 @@ export const timeTrackingService = {
         });
     },
 
-    updateEntry: async (id: string, companyId: string, scopeToUserId: string | undefined, data: any) => {
+    /**
+     * Office correction of an existing entry (start, end, job reassignment).
+     * Validates the new window, blocks overlaps, and records a before/after
+     * audit row with the mandatory reason.
+     */
+    updateEntry: async (
+        id: string,
+        companyId: string,
+        scopeToUserId: string | undefined,
+        actorUserId: string,
+        data: { type?: string; jobId?: string; startTime?: string; endTime?: string; description?: string },
+        reason: string,
+    ) => {
         const entry = await prisma.timeEntry.findFirst({
             where: { id, companyId, ...(scopeToUserId ? { userId: scopeToUserId } : {}) }
         });
-
         if (!entry) throw new AppError('Time entry not found', StatusCodes.NOT_FOUND);
 
-        let duration = entry.duration;
-        let endTime = data.endTime || entry.endTime;
-        let startTime = data.startTime || entry.startTime;
+        const before = snapshot(entry as EntryWithRelations);
 
-        if (endTime && startTime) {
-            duration = Math.floor((new Date(endTime).getTime() - new Date(startTime).getTime()) / 1000);
+        const newStart = data.startTime ? new Date(data.startTime) : entry.startTime;
+        const newEnd =
+            data.endTime !== undefined ? (data.endTime ? new Date(data.endTime) : null) : entry.endTime;
+
+        if (newEnd && newEnd.getTime() <= new Date(newStart).getTime()) {
+            throw new AppError('End time must be after start time', StatusCodes.BAD_REQUEST);
         }
 
-        return await prisma.timeEntry.update({
-            where: { id },
-            data: {
-                ...data,
-                duration,
-            }
+        if (data.jobId) {
+            const job = await prisma.job.findFirst({ where: { id: data.jobId, companyId } });
+            if (!job) throw new AppError('Job not found in this company', StatusCodes.NOT_FOUND);
+        }
+
+        if (newEnd) {
+            await assertNoOverlap(companyId, entry.userId, new Date(newStart), newEnd, id);
+        }
+
+        const updateData: any = {};
+        if (data.type !== undefined) updateData.type = data.type;
+        if (data.jobId !== undefined) updateData.jobId = data.jobId;
+        if (data.startTime !== undefined) updateData.startTime = new Date(data.startTime);
+        if (data.endTime !== undefined) updateData.endTime = data.endTime ? new Date(data.endTime) : null;
+        if (data.description !== undefined) updateData.description = data.description;
+        updateData.duration = newEnd
+            ? Math.floor((newEnd.getTime() - new Date(newStart).getTime()) / 1000)
+            : null;
+
+        const updated = await prisma.timeEntry.update({ where: { id }, data: updateData });
+
+        await writeAudit(companyId, actorUserId, 'TIME_ENTRY_UPDATED', id, {
+            before,
+            after: snapshot(updated as EntryWithRelations),
+            reason,
         });
+
+        return updated;
+    },
+
+    /**
+     * "Add missed entry" — the office recording labour the status clock never
+     * captured. Office-only; validates the window, membership and overlap, and
+     * leaves an audit row.
+     */
+    manualEntry: async (
+        companyId: string,
+        actorUserId: string,
+        data: { userId: string; jobId?: string; startTime: string; endTime: string; note: string },
+    ) => {
+        const start = new Date(data.startTime);
+        const end = new Date(data.endTime);
+        if (!(end.getTime() > start.getTime())) {
+            throw new AppError('End time must be after start time', StatusCodes.BAD_REQUEST);
+        }
+
+        const user = await prisma.user.findFirst({ where: { id: data.userId, companyId } });
+        if (!user) throw new AppError('Technician not found in this company', StatusCodes.NOT_FOUND);
+
+        if (data.jobId) {
+            const job = await prisma.job.findFirst({ where: { id: data.jobId, companyId } });
+            if (!job) throw new AppError('Job not found in this company', StatusCodes.NOT_FOUND);
+        }
+
+        await assertNoOverlap(companyId, data.userId, start, end);
+
+        const entry = await prisma.timeEntry.create({
+            data: {
+                companyId,
+                userId: data.userId,
+                jobId: data.jobId ?? null,
+                type: 'WRENCH',
+                startTime: start,
+                endTime: end,
+                duration: Math.floor((end.getTime() - start.getTime()) / 1000),
+                description: data.note,
+            },
+        });
+
+        await writeAudit(companyId, actorUserId, 'TIME_ENTRY_MANUAL_ADD', entry.id, {
+            before: null,
+            after: snapshot(entry as EntryWithRelations),
+            reason: data.note,
+        });
+
+        return entry;
     },
 
     getOne: async (id: string, companyId: string, scopeToUserId?: string) => {
@@ -148,32 +314,81 @@ export const timeTrackingService = {
         return entry;
     },
 
-    getAll: async (companyId: string, userId?: string, jobId?: string, page: number = 1, limit: number = 20) => {
-        const skip = (page - 1) * limit;
-        const where: any = { companyId };
-        if (userId) where.userId = userId;
-        if (jobId) where.jobId = jobId;
+    /**
+     * Timesheet for a date range (default: this week) with an optional tech and
+     * job filter, per-technician totals for the whole range, and a paginated
+     * slice of the entries. Totals cover every matching entry, not just the page.
+     */
+    getAll: async (
+        companyId: string,
+        opts: { userId?: string; jobId?: string; from?: string; to?: string; page?: number; limit?: number } = {},
+    ) => {
+        const { start, end } = await resolveRange(companyId, opts.from, opts.to);
+        const page = Math.max(1, opts.page ?? 1);
+        const limit = Math.min(500, Math.max(1, opts.limit ?? 50));
 
-        const [entries, total] = await Promise.all([
-            prisma.timeEntry.findMany({
-                where,
-                skip,
-                take: limit,
-                orderBy: { startTime: 'desc' },
-                include: TIMESHEET_INCLUDE
-            }),
-            prisma.timeEntry.count({ where })
-        ]);
+        const where: any = { companyId, startTime: { gte: start, lte: end } };
+        if (opts.userId) where.userId = opts.userId;
+        if (opts.jobId) where.jobId = opts.jobId;
+
+        const all = (await prisma.timeEntry.findMany({
+            where,
+            orderBy: { startTime: 'desc' },
+            include: TIMESHEET_INCLUDE,
+        })) as unknown as EntryWithRelations[];
+
+        // Per-technician totals across the whole range.
+        const byTech = new Map<
+            string,
+            { userId: string; name: string; email: string | null; totalSeconds: number; entryCount: number }
+        >();
+        for (const e of all) {
+            const row = byTech.get(e.userId) ?? {
+                userId: e.userId,
+                name: personName(e.user),
+                email: e.user?.email ?? null,
+                totalSeconds: 0,
+                entryCount: 0,
+            };
+            row.totalSeconds += entrySeconds(e);
+            row.entryCount += 1;
+            byTech.set(e.userId, row);
+        }
+
+        const total = all.length;
+        const entries = all.slice((page - 1) * limit, (page - 1) * limit + limit);
 
         return {
             entries,
+            totals: [...byTech.values()].sort((a, b) => b.totalSeconds - a.totalSeconds),
             meta: {
                 total,
                 page,
                 limit,
-                totalPages: Math.ceil(total / limit)
-            }
+                totalPages: Math.ceil(total / limit) || 1,
+                from: start,
+                to: end,
+            },
         };
+    },
+
+    /** All entries in the range, unpaged, for CSV export. */
+    exportRange: async (
+        companyId: string,
+        opts: { userId?: string; jobId?: string; from?: string; to?: string } = {},
+    ) => {
+        const { tz, start, end } = await resolveRange(companyId, opts.from, opts.to);
+        const where: any = { companyId, startTime: { gte: start, lte: end } };
+        if (opts.userId) where.userId = opts.userId;
+        if (opts.jobId) where.jobId = opts.jobId;
+
+        const rows = (await prisma.timeEntry.findMany({
+            where,
+            orderBy: { startTime: 'desc' },
+            include: TIMESHEET_INCLUDE,
+        })) as unknown as EntryWithRelations[];
+
+        return { rows, tz, start, end };
     },
 
     /**
@@ -260,12 +475,56 @@ export const timeTrackingService = {
         };
     },
 
-    deleteEntry: async (id: string, companyId: string, scopeToUserId?: string) => {
+    /**
+     * TimeEntry has no soft-delete column, so this is a hard delete — but the
+     * full before-image is written to the audit log first, so a misclick on a
+     * payroll record is always recoverable from the trail.
+     */
+    deleteEntry: async (
+        id: string,
+        companyId: string,
+        scopeToUserId: string | undefined,
+        actorUserId: string,
+        reason?: string,
+    ) => {
         const entry = await prisma.timeEntry.findFirst({ where: { id, companyId, ...(scopeToUserId ? { userId: scopeToUserId } : {}) } });
         if (!entry) throw new AppError('Time entry not found', StatusCodes.NOT_FOUND);
+
+        await writeAudit(companyId, actorUserId, 'TIME_ENTRY_DELETED', id, {
+            before: snapshot(entry as EntryWithRelations),
+            after: null,
+            reason: reason ?? null,
+        });
 
         return await prisma.timeEntry.delete({
             where: { id }
         });
     }
 };
+
+/** Build a CSV of filtered timesheet entries for the office to download. */
+export function buildTimesheetCsv(
+    rows: EntryWithRelations[],
+    formatDateTime: (d: Date | string) => string,
+): string {
+    const header = ['Technician', 'Email', 'Type', 'Start', 'End', 'Duration (h)', 'Job', 'Note'];
+    const esc = (v: unknown) => {
+        const s = v == null ? '' : String(v);
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = rows.map((e) =>
+        [
+            personName(e.user),
+            e.user?.email ?? '',
+            e.type,
+            formatDateTime(e.startTime),
+            e.endTime ? formatDateTime(e.endTime) : '',
+            (entrySeconds(e) / 3600).toFixed(2),
+            e.job?.title ?? '',
+            e.description ?? '',
+        ]
+            .map(esc)
+            .join(','),
+    );
+    return [header.join(','), ...lines].join('\n');
+}
