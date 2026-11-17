@@ -6,6 +6,9 @@ type DispatchPoint = {
     lat: number;
     lng: number;
     tone: "tech" | "job";
+    // For job points: the id of the tech point this job is assigned to, so the
+    // connecting line is drawn from the right technician (not always techPoints[0]).
+    techPointId?: string;
 };
 
 function normalizePoint(
@@ -65,7 +68,8 @@ export function DispatchMap({
                 <rect x="0" y="0" width="100" height="100" rx="6" fill="url(#dispatch-grid)" />
 
                 {jobPoints.map((point) => {
-                    const source = techPoints[0];
+                    const source =
+                        techPoints.find((t) => t.id === point.techPointId) ?? null;
                     const p = normalizePoint(point, bounds);
                     const from = source ? normalizePoint(source, bounds) : null;
                     return (

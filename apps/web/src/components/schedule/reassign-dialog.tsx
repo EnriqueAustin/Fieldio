@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { format } from "date-fns";
 import api from "../../lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "../ui/dialog";
 import { Button } from "../ui/button";
@@ -37,6 +38,13 @@ interface ReassignDialogProps {
 const techLabel = (t: Tech) =>
     [t.firstName, t.lastName].filter(Boolean).join(" ") || t.email.split("@")[0];
 
+// Convert any ISO/UTC string, FullCalendar offset string, or Date into the
+// LOCAL `yyyy-MM-ddTHH:mm` value a datetime-local input expects. Slicing the
+// raw ISO string would feed the UTC wall-clock into a local field, shifting the
+// time by the SAST offset on both display and save.
+const toLocalInput = (value?: string | null) =>
+    value ? format(new Date(value), "yyyy-MM-dd'T'HH:mm") : "";
+
 export function ReassignDialog({
     open,
     onClose,
@@ -56,12 +64,13 @@ export function ReassignDialog({
     );
     const [techId, setTechId] = useState(currentTechId ?? "");
     const [vanId, setVanId] = useState(currentVanId ?? "");
-    const [scheduledStart, setScheduledStart] = useState(
-        currentStart ? currentStart.slice(0, 16) : ""
-    );
-    const [scheduledEnd, setScheduledEnd] = useState(
-        currentEnd ? currentEnd.slice(0, 16) : ""
-    );
+    const [scheduledStart, setScheduledStart] = useState(toLocalInput(currentStart));
+    const [scheduledEnd, setScheduledEnd] = useState(toLocalInput(currentEnd));
+
+    const invalidRange =
+        Boolean(scheduledStart) &&
+        Boolean(scheduledEnd) &&
+        new Date(scheduledEnd) <= new Date(scheduledStart);
 
     const mutation = useMutation({
         mutationFn: async () => {
@@ -200,6 +209,10 @@ export function ReassignDialog({
                             />
                         </div>
                     </div>
+
+                    {invalidRange && (
+                        <p className="text-sm text-rose-600">End time must be after the start time.</p>
+                    )}
                 </div>
 
                 <DialogFooter>
@@ -210,6 +223,7 @@ export function ReassignDialog({
                         onClick={() => mutation.mutate()}
                         disabled={
                             mutation.isPending ||
+                            invalidRange ||
                             (assignmentType === "tech" && !techId) ||
                             (assignmentType === "van" && !vanId)
                         }

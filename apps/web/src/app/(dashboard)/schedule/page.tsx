@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
-import { format, isSameDay, startOfWeek, endOfWeek } from "date-fns";
+import { format, startOfDay, endOfDay } from "date-fns";
 import { CalendarClock, Maximize2, Minimize2, MapPinned, RefreshCcw, Route, Satellite, ShieldCheck, TimerReset } from "lucide-react";
 import api from "../../../lib/api";
 import { Button } from "../../../components/ui/button";
@@ -19,8 +19,8 @@ import { UnscheduledJobsPanel } from "../../../components/schedule/unscheduled-j
 import { TechSuggestModal } from "../../../components/schedule/tech-suggest-modal";
 import { ReassignDialog } from "../../../components/schedule/reassign-dialog";
 import { toast } from "../../../components/ui/use-toast";
-import { useQueryClient } from "@tanstack/react-query";
-import { io, Socket } from "socket.io-client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { socket } from "../../../lib/socket";
 import { useAuthStore } from "../../../store/auth";
 import { useRouter } from "next/navigation";
 
@@ -29,12 +29,16 @@ type CalendarEvent = {
     title: string;
     start: string;
     end: string;
+    backgroundColor?: string;
+    editable?: boolean;
     extendedProps: {
         customerId?: string;
         techId?: string | null;
         vanId?: string | null;
         status: string;
         address?: string;
+        techName?: string | null;
+        vanName?: string | null;
     };
 };
 
@@ -43,6 +47,8 @@ type Technician = {
     email: string;
     role: string;
     status: string;
+    firstName?: string | null;
+    lastName?: string | null;
 };
 
 type VanTeam = {
@@ -100,6 +106,8 @@ type Property = {
     geoLng?: number | null;
 };
 
+type UnscheduledJob = { id: string };
+
 const frequencyOptions = ["WEEKLY", "BIWEEKLY", "MONTHLY", "QUARTERLY", "SEMIANNUAL", "ANNUAL"] as const;
 
 const emptyForm = {
@@ -111,17 +119,20 @@ const emptyForm = {
     startDate: "",
 };
 
+const displayName = (u: { firstName?: string | null; lastName?: string | null; email: string }) =>
+    [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email.split("@")[0];
+
 export default function SchedulePage() {
     const router = useRouter();
     const queryClient = useQueryClient();
     const { accessToken } = useAuthStore();
     const calendarRef = useRef<FullCalendar | null>(null);
-    const socketRef = useRef<Socket | null>(null);
     const fullscreenRef = useRef<HTMLDivElement | null>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [suggestJobId, setSuggestJobId] = useState<string | null>(null);
     const [reassignJob, setReassignJob] = useState<CalendarEvent | null>(null);
     const [events, setEvents] = useState<CalendarEvent[]>([]);
+    const [todayEvents, setTodayEvents] = useState<CalendarEvent[]>([]);
     const [techs, setTechs] = useState<Technician[]>([]);
     const [pings, setPings] = useState<LivePing[]>([]);
     const [vanTeams, setVanTeams] = useState<VanTeam[]>([]);
@@ -130,79 +141,156 @@ export default function SchedulePage() {
     const [properties, setProperties] = useState<Property[]>([]);
     const [rangeLabel, setRangeLabel] = useState("");
     const [isLoading, setIsLoading] = useState(true);
+    const [bootstrapError, setBootstrapError] = useState(false);
     const [isSavingPlan, setIsSavingPlan] = useState(false);
     const [planForm, setPlanForm] = useState(emptyForm);
 
-    const refreshCalendar = async (start: Date, end: Date) => {
+    // Mirror pings into a ref so the socket handler can check membership without
+    // re-subscribing on every ping.
+    const pingsRef = useRef<LivePing[]>([]);
+    useEffect(() => {
+        pingsRef.current = pings;
+    }, [pings]);
+
+    // Unassigned KPI reads the same query the panel uses, so the tile and the
+    // list never disagree (and van-assigned jobs aren't miscounted).
+    const { data: unscheduledJobs = [] } = useQuery<UnscheduledJob[]>({
+        queryKey: ["unscheduled-jobs"],
+        queryFn: () => api.get("/schedule/unscheduled").then((r) => r.data.data.jobs),
+        refetchInterval: 30_000,
+    });
+
+    const refreshCalendar = useCallback(async (start: Date, end: Date) => {
         const response = await api.get("/schedule/events", {
-            params: {
-                start: start.toISOString(),
-                end: end.toISOString(),
-            },
+            params: { start: start.toISOString(), end: end.toISOString() },
         });
         setEvents(response.data.data.events);
         setRangeLabel(`${format(start, "d MMM")} - ${format(end, "d MMM")}`);
-    };
+    }, []);
 
-    const refreshOperations = async () => {
-        const [usersRes, trackingRes, plansRes, customersRes, propertiesRes, vansRes] = await Promise.all([
-            api.get("/users"),
-            api.get("/tracking/latest"),
-            api.get("/recurring"),
-            api.get("/customers", { params: { page: 1, limit: 100 } }),
-            api.get("/operations/properties"),
-            api.get("/vans").catch(() => ({ data: { data: { vans: [] } } })),
-        ]);
+    // Today's events feed the roster and the "jobs today" hint. They are fetched
+    // independently of the visible calendar range so navigating weeks doesn't make
+    // everyone look "Available".
+    const fetchTodayEvents = useCallback(async () => {
+        const response = await api.get("/schedule/events", {
+            params: {
+                start: startOfDay(new Date()).toISOString(),
+                end: endOfDay(new Date()).toISOString(),
+            },
+        });
+        setTodayEvents(response.data.data.events);
+    }, []);
 
-        setTechs(usersRes.data.data.users.filter((user: Technician) => user.role === "TECHNICIAN"));
-        setPings(trackingRes.data.data.pings);
-        setVanTeams((vansRes.data.data.vans ?? []).filter((v: any) => v.active));
-        setPlans(plansRes.data.data.plans);
-        setCustomers(customersRes.data.data.items.map((item: any) => ({ id: item.id, name: item.name })));
-        setProperties(propertiesRes.data.data.properties);
-    };
+    const fetchUsers = useCallback(async () => {
+        const res = await api.get("/users");
+        setTechs(res.data.data.users.filter((user: Technician) => user.role === "TECHNICIAN"));
+    }, []);
+
+    const fetchTracking = useCallback(async () => {
+        const res = await api.get("/tracking/latest");
+        setPings(res.data.data.pings);
+    }, []);
+
+    const fetchVans = useCallback(async () => {
+        const res = await api.get("/vans").catch(() => ({ data: { data: { vans: [] } } }));
+        setVanTeams((res.data.data.vans ?? []).filter((v: any) => v.active));
+    }, []);
+
+    const fetchCustomers = useCallback(async () => {
+        const res = await api.get("/customers", { params: { page: 1, limit: 100 } });
+        setCustomers(res.data.data.items.map((item: any) => ({ id: item.id, name: item.name })));
+    }, []);
+
+    const fetchProperties = useCallback(async () => {
+        const res = await api.get("/operations/properties");
+        setProperties(res.data.data.properties);
+    }, []);
+
+    const fetchRecurring = useCallback(async () => {
+        const res = await api.get("/recurring");
+        setPlans(res.data.data.plans);
+    }, []);
+
+    // "Refresh live data" button: only the fast-moving operational data.
+    const refreshLiveData = useCallback(async () => {
+        await Promise.all([fetchUsers(), fetchTracking(), fetchVans()]);
+    }, [fetchUsers, fetchTracking, fetchVans]);
+
+    const bootstrap = useCallback(async () => {
+        setIsLoading(true);
+        setBootstrapError(false);
+        try {
+            // The roster can't render without the user list — treat it as critical.
+            await fetchUsers();
+            // Everything else is best-effort so one failing endpoint can't blank the page.
+            const results = await Promise.allSettled([
+                fetchTracking(),
+                fetchRecurring(),
+                fetchVans(),
+                fetchCustomers(),
+                fetchProperties(),
+                fetchTodayEvents(),
+            ]);
+            results.forEach((r) => {
+                if (r.status === "rejected") console.error("Dispatch data load failed:", r.reason);
+            });
+        } catch (err) {
+            console.error("Dispatch bootstrap failed:", err);
+            setBootstrapError(true);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [fetchUsers, fetchTracking, fetchRecurring, fetchVans, fetchCustomers, fetchProperties, fetchTodayEvents]);
 
     useEffect(() => {
-        const bootstrap = async () => {
-            setIsLoading(true);
-            try {
-                const start = startOfWeek(new Date(), { weekStartsOn: 1 });
-                const end = endOfWeek(new Date(), { weekStartsOn: 1 });
-                await Promise.all([refreshCalendar(start, end), refreshOperations()]);
-            } finally {
-                setIsLoading(false);
-            }
-        };
-
         void bootstrap();
-    }, []);
+    }, [bootstrap]);
 
     useEffect(() => {
         if (!accessToken) return;
+        // Shared socket (autoConnect false): connect if nobody has yet.
+        if (!socket.connected) socket.connect();
 
-        const socketUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-        socketRef.current = io(socketUrl, {
-            auth: { token: accessToken },
-            path: "/socket.io",
-            withCredentials: true,
-        });
-
-        const syncCalendar = () => {
+        const onScheduleChange = () => {
             const apiRef = calendarRef.current?.getApi();
-            if (!apiRef) return;
-            void refreshCalendar(apiRef.view.activeStart, apiRef.view.activeEnd);
+            if (apiRef) void refreshCalendar(apiRef.view.activeStart, apiRef.view.activeEnd);
+            void fetchTodayEvents();
+            void queryClient.invalidateQueries({ queryKey: ["unscheduled-jobs"] });
         };
 
-        socketRef.current.on("job:created", syncCalendar);
-        socketRef.current.on("schedule:updated", syncCalendar);
-        socketRef.current.on("tech:location", () => {
-            void refreshOperations();
-        });
+        const onTechLocation = (payload: {
+            userId: string;
+            lat: number;
+            lng: number;
+            accuracy?: number;
+            at: string;
+        }) => {
+            const known = pingsRef.current.some((p) => p.userId === payload.userId);
+            if (!known) {
+                // First ping from this tech this session — pull the full record once.
+                void fetchTracking();
+                return;
+            }
+            setPings((prev) =>
+                prev.map((p) =>
+                    p.userId === payload.userId
+                        ? { ...p, lat: payload.lat, lng: payload.lng, createdAt: payload.at, isStale: false }
+                        : p
+                )
+            );
+        };
+
+        socket.on("job:created", onScheduleChange);
+        socket.on("schedule:updated", onScheduleChange);
+        socket.on("tech:location", onTechLocation);
 
         return () => {
-            socketRef.current?.disconnect();
+            // Only remove our own listeners; the socket is shared, so don't disconnect it.
+            socket.off("job:created", onScheduleChange);
+            socket.off("schedule:updated", onScheduleChange);
+            socket.off("tech:location", onTechLocation);
         };
-    }, [accessToken]);
+    }, [accessToken, queryClient, refreshCalendar, fetchTodayEvents, fetchTracking]);
 
     // Expanded "wall-board" view for the dispatcher. Prefer the native Fullscreen
     // API (hides browser chrome), but fall back to a CSS overlay that fills the
@@ -228,17 +316,22 @@ export default function SchedulePage() {
         const onFsChange = () => {
             if (!document.fullscreenElement) setIsFullscreen(false);
         };
-        // Esc also exits the CSS-overlay fallback (no native fullscreen to listen to).
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") setIsFullscreen(false);
-        };
         document.addEventListener("fullscreenchange", onFsChange);
-        document.addEventListener("keydown", onKey);
-        return () => {
-            document.removeEventListener("fullscreenchange", onFsChange);
-            document.removeEventListener("keydown", onKey);
-        };
+        return () => document.removeEventListener("fullscreenchange", onFsChange);
     }, []);
+
+    useEffect(() => {
+        // Esc also exits the CSS-overlay fallback — but only when the user isn't
+        // just closing a dialog (which handles its own Escape).
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key !== "Escape") return;
+            if (suggestJobId || reassignJob) return;
+            if (document.querySelector('[role="dialog"]')) return;
+            setIsFullscreen(false);
+        };
+        document.addEventListener("keydown", onKey);
+        return () => document.removeEventListener("keydown", onKey);
+    }, [suggestJobId, reassignJob]);
 
     // Recompute the calendar's size whenever the view expands/collapses.
     useEffect(() => {
@@ -251,47 +344,72 @@ export default function SchedulePage() {
         [planForm.customerId, properties]
     );
 
-    const unassignedJobs = events.filter((event) => !event.extendedProps.techId);
     const activeTechs = pings.filter((ping) => ping.activeJob && !ping.isStale);
     const duePlans = plans.filter((plan) => plan.isDue && plan.active);
-    const todayJobs = events.filter((event) => isSameDay(new Date(event.start), new Date()));
+
+    // Map each tech to the van team ids they belong to, so a van-assigned job
+    // counts toward every member's load.
+    const vanIdsByTech = useMemo(() => {
+        const map = new Map<string, Set<string>>();
+        vanTeams.forEach((van) => {
+            van.members.forEach((m) => {
+                if (!map.has(m.user.id)) map.set(m.user.id, new Set());
+                map.get(m.user.id)!.add(van.id);
+            });
+        });
+        return map;
+    }, [vanTeams]);
 
     type Availability = "FREE" | "EN_ROUTE" | "ON_SITE" | "BUSY" | "OFFLINE";
     const techRoster: { tech: Technician; availability: Availability; current?: string }[] = useMemo(() => {
         return techs.map((tech) => {
             const ping = pings.find((p) => p.userId === tech.id);
             const activeStatus = ping?.activeJob?.status;
-            const todayCount = events.filter(
-                (e) => e.extendedProps.techId === tech.id && isSameDay(new Date(e.start), new Date())
-            ).length;
+            const vanIds = vanIdsByTech.get(tech.id);
+            const todayCount = todayEvents.filter((e) => {
+                if (e.extendedProps.techId === tech.id) return true;
+                if (e.extendedProps.vanId && vanIds?.has(e.extendedProps.vanId)) return true;
+                return false;
+            }).length;
+            const todayLabel = `${todayCount} job${todayCount !== 1 ? "s" : ""} today`;
+
             let availability: Availability = "FREE";
             let current: string | undefined;
-            if (!ping || ping.isStale) {
-                availability = "OFFLINE";
-            } else if (activeStatus === "EN_ROUTE") {
-                availability = "EN_ROUTE";
-                current = ping.activeJob?.customerName;
-            } else if (activeStatus === "ON_SITE") {
-                availability = "ON_SITE";
-                current = ping.activeJob?.customerName;
+            if (ping && !ping.isStale) {
+                if (activeStatus === "EN_ROUTE") {
+                    availability = "EN_ROUTE";
+                    current = ping.activeJob?.customerName;
+                } else if (activeStatus === "ON_SITE") {
+                    availability = "ON_SITE";
+                    current = ping.activeJob?.customerName;
+                } else if (todayCount > 0) {
+                    availability = "BUSY";
+                    current = todayLabel;
+                }
             } else if (todayCount > 0) {
+                // Scheduled work but no fresh GPS ping — "Scheduled", not "Offline".
                 availability = "BUSY";
-                current = `${todayCount} job${todayCount !== 1 ? "s" : ""} today`;
+                current = todayLabel;
+            } else {
+                availability = "OFFLINE";
             }
             return { tech, availability, current };
         });
-    }, [techs, pings, events]);
+    }, [techs, pings, todayEvents, vanIdsByTech]);
 
     const freeCount = techRoster.filter((r) => r.availability === "FREE").length;
     const onSiteCount = techRoster.filter((r) => r.availability === "ON_SITE").length;
 
-    const techPoints = activeTechs.map((ping) => ({
-        id: ping.id,
-        label: ping.user.email.split("@")[0],
-        lat: ping.lat,
-        lng: ping.lng,
-        tone: "tech" as const,
-    }));
+    const techPoints = activeTechs.map((ping) => {
+        const tech = techs.find((t) => t.id === ping.userId);
+        return {
+            id: ping.id,
+            label: tech ? displayName(tech) : ping.user.email.split("@")[0],
+            lat: ping.lat,
+            lng: ping.lng,
+            tone: "tech" as const,
+        };
+    });
 
     const jobPoints = activeTechs
         .filter((ping) => ping.activeJob?.destination)
@@ -301,6 +419,7 @@ export default function SchedulePage() {
             lat: ping.activeJob!.destination!.lat,
             lng: ping.activeJob!.destination!.lng,
             tone: "job" as const,
+            techPointId: ping.id,
         }));
 
     const onDatesSet = async (arg: { start: Date; end: Date }) => {
@@ -327,9 +446,9 @@ export default function SchedulePage() {
 
     const onExternalDrop = async (info: any) => {
         const jobId = info.event.id;
+        const title = info.event.title;
         const start = info.event.start as Date;
-        const end =
-            info.event.end ?? new Date(start.getTime() + 60 * 60 * 1000);
+        const end = info.event.end ?? new Date(start.getTime() + 60 * 60 * 1000);
         try {
             await api.patch(`/schedule/jobs/${jobId}`, {
                 scheduledStart: start.toISOString(),
@@ -340,11 +459,15 @@ export default function SchedulePage() {
             if (apiRef) {
                 await refreshCalendar(apiRef.view.activeStart, apiRef.view.activeEnd);
             }
+            void fetchTodayEvents();
+            // Drop the event FullCalendar synthesised from the drag so it doesn't sit
+            // beside the authoritative one we just refetched.
+            info.event.remove();
             // Scheduling the time is only half the job — open the assign dialog
             // prefilled with the dropped slot so the dispatcher picks a tech in one flow.
             setReassignJob({
                 id: jobId,
-                title: info.event.title,
+                title,
                 start: start.toISOString(),
                 end: end.toISOString(),
                 extendedProps: { techId: null, vanId: null, status: "REQUESTED" },
@@ -390,10 +513,16 @@ export default function SchedulePage() {
                 startDate: new Date(planForm.startDate).toISOString(),
             });
             setPlanForm(emptyForm);
-            await refreshOperations();
+            await fetchRecurring();
         } finally {
             setIsSavingPlan(false);
         }
+    };
+
+    const refreshCalendarView = () => {
+        const apiRef = calendarRef.current?.getApi();
+        if (apiRef) void refreshCalendar(apiRef.view.activeStart, apiRef.view.activeEnd);
+        void fetchTodayEvents();
     };
 
     return (
@@ -422,7 +551,7 @@ export default function SchedulePage() {
                         {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
                         {isFullscreen ? "Exit fullscreen" : "Fullscreen"}
                     </Button>
-                    <Button variant="outline" className="gap-2" onClick={() => void refreshOperations()}>
+                    <Button variant="outline" className="gap-2" onClick={() => void refreshLiveData()}>
                         <RefreshCcw className="h-4 w-4" />
                         Refresh live data
                     </Button>
@@ -433,11 +562,24 @@ export default function SchedulePage() {
                 </div>
             </div>
 
+            {bootstrapError && (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                    <span>Could not load dispatch data. Check your connection and try again.</span>
+                    <Button variant="outline" size="sm" onClick={() => void bootstrap()}>
+                        Retry
+                    </Button>
+                </div>
+            )}
+
+            {isLoading && (
+                <div className="text-sm text-muted-foreground">Loading dispatch data…</div>
+            )}
+
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <OpsCard icon={Route} label="Unassigned jobs" value={String(unassignedJobs.length)} hint="Needs dispatcher action" />
+                <OpsCard icon={Route} label="Unassigned jobs" value={String(unscheduledJobs.length)} hint="Needs dispatcher action" />
                 <OpsCard icon={Satellite} label="Live technicians" value={String(activeTechs.length)} hint="Fresh pings in last 15 min" />
                 <OpsCard icon={TimerReset} label="Recurring due" value={String(duePlans.length)} hint="Plans ready to generate" />
-                <OpsCard icon={ShieldCheck} label="Week range" value={rangeLabel || "Current week"} hint={`${todayJobs.length} jobs scheduled today`} />
+                <OpsCard icon={ShieldCheck} label="Week range" value={rangeLabel || "Current week"} hint={`${todayEvents.length} jobs scheduled today`} />
             </div>
 
             <div className="grid gap-6 xl:grid-cols-[280px_minmax(0,1.4fr)_minmax(320px,0.95fr)]">
@@ -457,6 +599,7 @@ export default function SchedulePage() {
                                 ref={calendarRef}
                                 plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
                                 initialView="timeGridWeek"
+                                firstDay={1}
                                 headerToolbar={{
                                     left: "prev,next today",
                                     center: "title",
@@ -471,6 +614,19 @@ export default function SchedulePage() {
                                 eventResize={onEventDrop}
                                 eventReceive={onExternalDrop}
                                 eventClick={onEventClick}
+                                eventContent={(arg) => {
+                                    const sub =
+                                        arg.event.extendedProps.techName ||
+                                        arg.event.extendedProps.vanName ||
+                                        "Unassigned";
+                                    return (
+                                        <div className="overflow-hidden px-1 py-0.5 text-[11px] leading-tight">
+                                            {arg.timeText && <div className="font-semibold">{arg.timeText}</div>}
+                                            <div className="truncate font-medium">{arg.event.title}</div>
+                                            <div className="truncate opacity-80">{sub}</div>
+                                        </div>
+                                    );
+                                }}
                                 height="100%"
                                 slotMinTime="06:00:00"
                                 slotMaxTime="20:00:00"
@@ -533,7 +689,7 @@ export default function SchedulePage() {
                                         <div key={tech.id} className="flex items-center gap-3 rounded-lg border border-border/70 px-3 py-2">
                                             <span className={`h-2 w-2 rounded-full ${tone} shrink-0`} />
                                             <div className="flex-1 min-w-0">
-                                                <p className="text-sm font-medium truncate">{tech.email.split("@")[0]}</p>
+                                                <p className="text-sm font-medium truncate">{displayName(tech)}</p>
                                                 {current && (
                                                     <p className="text-xs text-muted-foreground truncate">{current}</p>
                                                 )}
@@ -738,11 +894,11 @@ export default function SchedulePage() {
                 </div>
             </div>
 
-            {isLoading ? (
-                <div className="text-sm text-muted-foreground">Loading dispatch data...</div>
-            ) : null}
-
-            <TechSuggestModal jobId={suggestJobId} onClose={() => setSuggestJobId(null)} />
+            <TechSuggestModal
+                jobId={suggestJobId}
+                onClose={() => setSuggestJobId(null)}
+                onAssigned={refreshCalendarView}
+            />
             <ReassignDialog
                 // Remount per job + slot so the dialog's fields prefill from the
                 // current selection instead of keeping the first job's state.
@@ -754,12 +910,9 @@ export default function SchedulePage() {
                 currentVanId={reassignJob?.extendedProps.vanId ?? null}
                 currentStart={reassignJob?.start ?? null}
                 currentEnd={reassignJob?.end ?? null}
-                techs={techs.map((t) => ({ id: t.id, email: t.email }))}
+                techs={techs.map((t) => ({ id: t.id, email: t.email, firstName: t.firstName, lastName: t.lastName }))}
                 vans={vanTeams.map((v) => ({ id: v.id, name: v.name }))}
-                onReassigned={() => {
-                    const apiRef = calendarRef.current?.getApi();
-                    if (apiRef) void refreshCalendar(apiRef.view.activeStart, apiRef.view.activeEnd);
-                }}
+                onReassigned={refreshCalendarView}
             />
         </div>
     );

@@ -164,6 +164,8 @@ describe('reschedule', () => {
         fakePrisma.job.seed([
             { id: 'job_req', companyId: COMPANY, techId: null, vanId: null, status: 'REQUESTED', title: 'New' },
         ]);
+        // The assignee must be a real, active technician in the company.
+        fakePrisma.user.seed([{ id: OWNER, companyId: COMPANY, role: 'TECHNICIAN', status: 'ACTIVE' }]);
         const res = await request(app)
             .patch('/schedule/jobs/job_req')
             .set('Authorization', asDispatcher())

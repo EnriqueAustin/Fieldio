@@ -10,22 +10,55 @@ import { config } from '../../config/env';
 import { PUBLIC_USER_SELECT } from '../../utils/publicSelects';
 
 const createJobSchema = z.object({
-    customerId: z.string(),
-    propertyId: z.string(),
-    title: z.string(),
+    customerId: z.string().min(1),
+    propertyId: z.string().min(1),
+    title: z.string().min(1),
     description: z.string().optional(),
-    scheduledStart: z.string().or(z.date()),
-    scheduledEnd: z.string().or(z.date()),
-    techId: z.string().optional(),
-    vanId: z.string().optional().nullable(),
+    scheduledStart: z.string().datetime().or(z.date()),
+    scheduledEnd: z.string().datetime().or(z.date()),
+    techId: z.string().min(1).optional().nullable(),
+    vanId: z.string().min(1).optional().nullable(),
 });
 
 const updateJobScheduleSchema = z.object({
-    scheduledStart: z.string().or(z.date()).optional(),
-    scheduledEnd: z.string().or(z.date()).optional(),
+    // Dates must be valid ISO datetimes — a bad string is a 400, not a 500 when
+    // `new Date()` later yields `Invalid Date`.
+    scheduledStart: z.string().datetime().or(z.date()).optional().nullable(),
+    scheduledEnd: z.string().datetime().or(z.date()).optional().nullable(),
     techId: z.string().optional().nullable(),
     vanId: z.string().optional().nullable(),
 });
+
+/** Company-scoped assignee checks shared by create + reschedule. */
+async function assertAssigneesInCompany(
+    companyId: string,
+    assignees: { techId?: string | null; vanId?: string | null },
+) {
+    if (assignees.techId) {
+        const tech = await prisma.user.findFirst({
+            where: { id: assignees.techId, companyId, role: 'TECHNICIAN', status: 'ACTIVE' },
+            select: { id: true },
+        });
+        if (!tech) throw new AppError('Technician not found', StatusCodes.NOT_FOUND);
+    }
+    if (assignees.vanId) {
+        const van = await prisma.van.findFirst({
+            where: { id: assignees.vanId, companyId, active: true },
+            select: { id: true },
+        });
+        if (!van) throw new AppError('Van not found', StatusCodes.NOT_FOUND);
+    }
+}
+
+// Dispatch-board status → colour, consumed by the web calendar.
+const STATUS_COLORS: Record<string, string> = {
+    REQUESTED: '#9ca3af',
+    ASSIGNED: '#3b82f6',
+    EN_ROUTE: '#8b5cf6',
+    ON_SITE: '#f59e0b',
+    COMPLETED: '#10b981',
+    CANCELED: '#cbd5e1',
+};
 
 export const schedulingService = {
     /** Jobs waiting for dispatcher action — sidebar list. */
@@ -34,10 +67,12 @@ export const schedulingService = {
             where: {
                 companyId,
                 deletedAt: null,
+                // Only live, dispatchable work — never COMPLETED/CANCELED, and
+                // EN_ROUTE/ON_SITE jobs are already being worked, not waiting.
+                status: { in: ['REQUESTED', 'ASSIGNED'] },
                 OR: [
                     { techId: null, vanId: null },
                     { scheduledStart: null },
-                    { status: 'REQUESTED' },
                 ],
             },
             include: {
@@ -47,7 +82,12 @@ export const schedulingService = {
             orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
             take: 100,
         });
-        return jobs.map((j) => ({
+        // "Needs dispatcher action" = missing a time or missing an assignee.
+        // Enforced here as well so a scheduled, assigned job never lists even if
+        // its status lags at REQUESTED (and so the rule holds without the OR).
+        return jobs
+            .filter((j) => !j.scheduledStart || (!j.techId && !j.vanId))
+            .map((j) => ({
             id: j.id,
             title: j.title,
             priority: j.priority,
@@ -76,36 +116,80 @@ export const schedulingService = {
             include: {
                 customer: { select: { name: true } },
                 property: { select: { addressLine1: true, city: true } },
-                tech: { select: { id: true, email: true, avatarUrl: true } },
+                tech: { select: { id: true, email: true, firstName: true, lastName: true, avatarUrl: true } },
                 van: { select: { id: true, name: true } },
             }
         });
 
         // Transform to FullCalendar Events
-        return jobs.map(job => ({
-            id: job.id,
-            title: `${job.title} - ${job.customer.name}`,
-            start: job.scheduledStart,
-            end: job.scheduledEnd,
-            resourceId: job.vanId || job.techId || 'unassigned',
-            extendedProps: {
-                customerId: job.customerId,
-                techId: job.techId,
-                vanId: job.vanId,
-                vanName: (job as any).van?.name,
-                status: job.status,
-                address: `${job.property.addressLine1}, ${job.property.city}`
-            },
-            backgroundColor: job.techId || job.vanId ? '#3b82f6' : '#9ca3af',
-        }));
+        return jobs.map(job => {
+            const tech = (job as any).tech;
+            const techName = tech
+                ? [tech.firstName, tech.lastName].filter(Boolean).join(' ') ||
+                  (tech.email ? tech.email.split('@')[0] : null)
+                : null;
+            const terminal = job.status === 'COMPLETED' || job.status === 'CANCELED';
+            return {
+                id: job.id,
+                title: `${job.title} - ${job.customer.name}`,
+                start: job.scheduledStart,
+                end: job.scheduledEnd,
+                resourceId: job.vanId || job.techId || 'unassigned',
+                // Finished / cancelled jobs can't be dragged on the board.
+                editable: !terminal,
+                extendedProps: {
+                    customerId: job.customerId,
+                    techId: job.techId,
+                    techName,
+                    vanId: job.vanId,
+                    vanName: (job as any).van?.name,
+                    status: job.status,
+                    address: `${job.property.addressLine1}, ${job.property.city}`
+                },
+                backgroundColor: STATUS_COLORS[job.status] ?? '#9ca3af',
+            };
+        });
     },
 
-    createJob: async (companyId: string, input: z.infer<typeof createJobSchema>) => {
+    createJob: async (companyId: string, rawInput: unknown) => {
+        const input = createJobSchema.parse(rawInput);
+
+        const start = new Date(input.scheduledStart);
+        const end = new Date(input.scheduledEnd);
+        if (!(end.getTime() > start.getTime())) {
+            throw new AppError('End must be after start', StatusCodes.BAD_REQUEST);
+        }
+
+        // The customer must be ours...
+        const customer = await prisma.customer.findFirst({
+            where: { id: input.customerId, companyId, deletedAt: null },
+            select: { id: true },
+        });
+        if (!customer) throw new AppError('Customer not found', StatusCodes.NOT_FOUND);
+
+        // ...and the property must be ours and belong to that customer.
+        const property = await prisma.property.findFirst({
+            where: { id: input.propertyId, companyId, customerId: input.customerId },
+            select: { id: true },
+        });
+        if (!property) throw new AppError('Property not found', StatusCodes.NOT_FOUND);
+
+        await assertAssigneesInCompany(companyId, { techId: input.techId, vanId: input.vanId });
+
+        // Whitelist every column — companyId is forced from the caller's token and
+        // can never be set by the body (no tenant move).
         const job = await prisma.job.create({
             data: {
+                customerId: input.customerId,
+                propertyId: input.propertyId,
+                title: input.title,
+                description: input.description ?? null,
+                scheduledStart: start,
+                scheduledEnd: end,
+                techId: input.techId ?? null,
+                vanId: input.vanId ?? null,
+                status: input.techId || input.vanId ? 'ASSIGNED' : 'REQUESTED',
                 companyId,
-                ...input,
-                status: input.techId ? 'ASSIGNED' : 'REQUESTED'
             },
             include: { customer: true, tech: { select: PUBLIC_USER_SELECT } }
         });
@@ -160,7 +244,9 @@ export const schedulingService = {
         }));
     },
 
-    updateSchedule: async (jobId: string, companyId: string, input: z.infer<typeof updateJobScheduleSchema>) => {
+    updateSchedule: async (jobId: string, companyId: string, rawInput: unknown) => {
+        const input = updateJobScheduleSchema.parse(rawInput);
+
         const job = await prisma.job.findFirst({ where: { id: jobId, companyId, deletedAt: null } });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
 
@@ -174,18 +260,48 @@ export const schedulingService = {
         const nextTechId = input.techId !== undefined ? input.techId : job.techId;
         const nextVanId = input.vanId !== undefined ? input.vanId : job.vanId;
 
-        // Conflict detection on both the tech and the van when a time window is set.
-        if (input.scheduledStart && input.scheduledEnd) {
-            const start = new Date(input.scheduledStart);
-            const end = new Date(input.scheduledEnd);
+        // A new assignee must belong to this company (an active tech / active van)
+        // — checked before conflict detection so a foreign id is a clean 404.
+        await assertAssigneesInCompany(companyId, {
+            techId: input.techId !== undefined ? input.techId : undefined,
+            vanId: input.vanId !== undefined ? input.vanId : undefined,
+        });
+
+        // Unassigning (no tech and no van left): a live job can't be stripped of
+        // its crew; an ASSIGNED job falls back to REQUESTED below.
+        const willBeUnassigned = !nextTechId && !nextVanId;
+        if (willBeUnassigned && (job.status === 'EN_ROUTE' || job.status === 'ON_SITE')) {
+            throw new AppError(
+                'Cannot unassign a job that is en route or on site',
+                StatusCodes.CONFLICT,
+            );
+        }
+
+        // Effective window = incoming times, else the job's existing times. Used
+        // for both the end>start guard and conflict detection, so assigning a tech
+        // with only `{ techId }` is still checked against the job's own slot.
+        const effStart = input.scheduledStart !== undefined
+            ? (input.scheduledStart ? new Date(input.scheduledStart) : null)
+            : job.scheduledStart;
+        const effEnd = input.scheduledEnd !== undefined
+            ? (input.scheduledEnd ? new Date(input.scheduledEnd) : null)
+            : job.scheduledEnd;
+
+        if (effStart && effEnd && !(effEnd.getTime() > effStart.getTime())) {
+            throw new AppError('End must be after start', StatusCodes.BAD_REQUEST);
+        }
+
+        // Conflict detection on both the tech and the van whenever an effective
+        // window exists and there is someone/something to double-book.
+        if (effStart && effEnd) {
             const overlap = {
                 companyId,
                 id: { not: job.id },
                 deletedAt: null,
                 status: { in: ['ASSIGNED', 'EN_ROUTE', 'ON_SITE'] as ('ASSIGNED' | 'EN_ROUTE' | 'ON_SITE')[] },
                 AND: [
-                    { scheduledStart: { lt: end } },
-                    { scheduledEnd: { gt: start } },
+                    { scheduledStart: { lt: effEnd } },
+                    { scheduledEnd: { gt: effStart } },
                 ],
             };
             if (nextTechId) {
@@ -217,11 +333,14 @@ export const schedulingService = {
         if (input.techId !== undefined) data.techId = input.techId;
         if (input.vanId !== undefined) data.vanId = input.vanId;
 
-        // Status is only ever nudged REQUESTED → ASSIGNED, when the drag assigns a
-        // tech/van to a still-unassigned job. An EN_ROUTE / ON_SITE job keeps its
-        // live status (COMPLETED / CANCELED were refused above).
+        // Status nudges: REQUESTED → ASSIGNED when a tech/van is dropped on an
+        // unassigned job; ASSIGNED → REQUESTED when the last assignee is removed.
+        // An EN_ROUTE / ON_SITE job keeps its live status (terminal jobs were
+        // refused above, and a live unassign was refused above too).
         if (job.status === 'REQUESTED' && (nextTechId || nextVanId)) {
             data.status = 'ASSIGNED';
+        } else if (job.status === 'ASSIGNED' && willBeUnassigned) {
+            data.status = 'REQUESTED';
         }
 
         const updatedJob = await prisma.job.update({
@@ -236,7 +355,7 @@ export const schedulingService = {
 
     /** Suggest the best techs for a job: skill match + free time slot. */
     suggestTechs: async (jobId: string, companyId: string) => {
-        const job = await prisma.job.findFirst({ where: { id: jobId, companyId } });
+        const job = await prisma.job.findFirst({ where: { id: jobId, companyId, deletedAt: null } });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
 
         const required = job.requiredSkills ?? [];
@@ -244,41 +363,56 @@ export const schedulingService = {
             where: { companyId, role: 'TECHNICIAN', status: 'ACTIVE' },
             select: { id: true, firstName: true, lastName: true, skills: true, email: true, avatarUrl: true },
         });
+        const techIds = techs.map((t) => t.id);
 
-        // Count conflicts in scheduled window
-        const candidates = await Promise.all(
-            techs.map(async (t) => {
-                const skillCoverage = required.length === 0
-                    ? 1
-                    : required.filter((s) => t.skills.includes(s)).length / required.length;
-                let conflicts = 0;
-                if (job.scheduledStart && job.scheduledEnd) {
-                    conflicts = await prisma.job.count({
-                        where: {
-                            companyId,
-                            id: { not: job.id },
-                            deletedAt: null,
-                            techId: t.id,
-                            status: { in: ['ASSIGNED', 'EN_ROUTE', 'ON_SITE'] },
-                            AND: [
-                                { scheduledStart: { lt: job.scheduledEnd } },
-                                { scheduledEnd: { gt: job.scheduledStart } },
-                            ],
-                        },
-                    });
-                }
-                const score = skillCoverage * 100 - conflicts * 50;
-                return {
-                    techId: t.id,
-                    name: [t.firstName, t.lastName].filter(Boolean).join(' ') || t.email,
-                    avatarUrl: t.avatarUrl,
-                    skills: t.skills,
-                    skillCoverage,
-                    conflicts,
-                    score,
-                };
-            })
-        );
+        // One query for every candidate's overlapping jobs (was an N+1 count per
+        // tech), tallied in memory. A tech is also busy when a van they actively
+        // crew is booked in the window, so van bookings count too.
+        let overlappingJobs: Array<{ techId: string | null; vanId: string | null }> = [];
+        const vansByTech = new Map<string, Set<string>>();
+        if (job.scheduledStart && job.scheduledEnd && techIds.length > 0) {
+            overlappingJobs = await prisma.job.findMany({
+                where: {
+                    companyId,
+                    id: { not: job.id },
+                    deletedAt: null,
+                    status: { in: ['ASSIGNED', 'EN_ROUTE', 'ON_SITE'] },
+                    AND: [
+                        { scheduledStart: { lt: job.scheduledEnd } },
+                        { scheduledEnd: { gt: job.scheduledStart } },
+                    ],
+                },
+                select: { techId: true, vanId: true },
+            });
+            const vanMembers = await prisma.vanMember.findMany({
+                where: { userId: { in: techIds }, van: { companyId, active: true } },
+                select: { userId: true, vanId: true },
+            });
+            for (const vm of vanMembers) {
+                if (!vansByTech.has(vm.userId)) vansByTech.set(vm.userId, new Set());
+                vansByTech.get(vm.userId)!.add(vm.vanId);
+            }
+        }
+
+        const candidates = techs.map((t) => {
+            const skillCoverage = required.length === 0
+                ? 1
+                : required.filter((s) => t.skills.includes(s)).length / required.length;
+            const techVans = vansByTech.get(t.id);
+            const conflicts = overlappingJobs.filter(
+                (o) => o.techId === t.id || (o.vanId && techVans?.has(o.vanId)),
+            ).length;
+            const score = skillCoverage * 100 - conflicts * 50;
+            return {
+                techId: t.id,
+                name: [t.firstName, t.lastName].filter(Boolean).join(' ') || t.email,
+                avatarUrl: t.avatarUrl,
+                skills: t.skills,
+                skillCoverage,
+                conflicts,
+                score,
+            };
+        });
         candidates.sort((a, b) => b.score - a.score);
         return { requiredSkills: required, candidates };
     },

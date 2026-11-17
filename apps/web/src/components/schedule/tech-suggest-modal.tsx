@@ -2,7 +2,9 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../../lib/api";
-import { X, Check, AlertTriangle } from "lucide-react";
+import { Check, AlertTriangle } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
+import { toast } from "../ui/use-toast";
 
 interface Candidate {
     techId: string;
@@ -17,9 +19,11 @@ interface Candidate {
 export function TechSuggestModal({
     jobId,
     onClose,
+    onAssigned,
 }: {
     jobId: string | null;
     onClose: () => void;
+    onAssigned?: () => void;
 }) {
     const qc = useQueryClient();
     const { data, isLoading } = useQuery({
@@ -34,31 +38,33 @@ export function TechSuggestModal({
             api.patch(`/schedule/jobs/${jobId}`, { techId }),
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ["unscheduled-jobs"] });
-            qc.invalidateQueries({ queryKey: ["schedule-events"] });
+            toast({ title: "Technician assigned" });
+            onAssigned?.();
             onClose();
+        },
+        onError: (err: any) => {
+            toast({
+                title: err?.response?.data?.message || "Could not assign technician",
+                variant: "destructive",
+            });
         },
     });
 
     if (!jobId) return null;
 
     return (
-        <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-xl p-6 w-full max-w-xl space-y-4 max-h-[80vh] overflow-y-auto">
-                <div className="flex justify-between items-start">
-                    <div>
-                        <h2 className="text-lg font-semibold">Suggested technicians</h2>
-                        {data?.requiredSkills.length ? (
-                            <p className="text-xs text-muted-foreground mt-1">
-                                Required: {data.requiredSkills.join(", ")}
-                            </p>
-                        ) : (
-                            <p className="text-xs text-muted-foreground mt-1">No specific skills required.</p>
-                        )}
-                    </div>
-                    <button onClick={onClose} className="text-muted-foreground hover:text-slate-900">
-                        <X className="h-5 w-5" />
-                    </button>
-                </div>
+        <Dialog open={!!jobId} onOpenChange={(v) => !v && onClose()}>
+            <DialogContent className="max-w-xl max-h-[80vh] overflow-y-auto">
+                <DialogHeader>
+                    <DialogTitle>Suggested technicians</DialogTitle>
+                    {data?.requiredSkills.length ? (
+                        <p className="text-xs text-muted-foreground">
+                            Required: {data.requiredSkills.join(", ")}
+                        </p>
+                    ) : (
+                        <p className="text-xs text-muted-foreground">No specific skills required.</p>
+                    )}
+                </DialogHeader>
 
                 {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
 
@@ -66,7 +72,7 @@ export function TechSuggestModal({
                     {data?.candidates.map((c, idx) => {
                         const great = c.skillCoverage === 1 && c.conflicts === 0;
                         return (
-                            <div key={c.techId} className={`rounded-lg border p-3 flex items-center justify-between gap-3 ${great ? "border-emerald-300 bg-emerald-50" : ""}`}>
+                            <div key={c.techId} className={`rounded-lg border p-3 flex items-center justify-between gap-3 ${great ? "border-emerald-300 bg-emerald-50" : "border-border"}`}>
                                 <div className="flex-1 min-w-0">
                                     <div className="font-medium text-sm flex items-center gap-2">
                                         {idx === 0 && great && <span className="text-emerald-600 text-xs uppercase font-bold">Best match</span>}
@@ -86,7 +92,7 @@ export function TechSuggestModal({
                                     {c.skills.length > 0 && (
                                         <div className="flex flex-wrap gap-1 mt-1.5">
                                             {c.skills.map((s) => (
-                                                <span key={s} className="text-[10px] bg-slate-200 rounded px-1.5 py-0.5">{s}</span>
+                                                <span key={s} className="text-[10px] bg-muted text-muted-foreground rounded px-1.5 py-0.5">{s}</span>
                                             ))}
                                         </div>
                                     )}
@@ -94,7 +100,7 @@ export function TechSuggestModal({
                                 <button
                                     disabled={assign.isPending}
                                     onClick={() => assign.mutate(c.techId)}
-                                    className="bg-slate-900 text-white rounded-lg px-3 py-2 text-sm hover:bg-slate-800 inline-flex items-center gap-1"
+                                    className="bg-primary text-primary-foreground rounded-lg px-3 py-2 text-sm hover:opacity-90 disabled:opacity-50 inline-flex items-center gap-1"
                                 >
                                     <Check className="h-4 w-4" /> Assign
                                 </button>
@@ -105,7 +111,7 @@ export function TechSuggestModal({
                         <div className="text-sm text-muted-foreground italic">No technicians available.</div>
                     )}
                 </div>
-            </div>
-        </div>
+            </DialogContent>
+        </Dialog>
     );
 }

@@ -34,15 +34,18 @@ export const trackingController = {
             });
             // Fire-and-forget geofence evaluation
             evaluateGeofence({ companyId, userId, lat: body.lat, lng: body.lng }).catch(() => undefined);
-        }
 
-        socketService.emitToCompany(companyId, 'tech:location', {
-            userId,
-            lat: body.lat,
-            lng: body.lng,
-            accuracy: body.accuracy,
-            at: new Date().toISOString(),
-        });
+            // Broadcast only when we actually persisted — the dispatch map reacts
+            // to this, so it must be throttled the same ~30s as the write (not a
+            // flood on every device ping).
+            socketService.emitToCompany(companyId, 'tech:location', {
+                userId,
+                lat: body.lat,
+                lng: body.lng,
+                accuracy: body.accuracy,
+                at: new Date().toISOString(),
+            });
+        }
 
         res.status(StatusCodes.NO_CONTENT).send();
     },
