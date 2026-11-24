@@ -233,10 +233,14 @@ export function createFakePrisma() {
         jobLineItem: table('jobLineItem'),
         priceBookItem: table('priceBookItem'),
         customer: table('customer'),
+        customerNote: table('customerNote'),
+        leadSource: table('leadSource', [['companyId', 'name']]),
         company: table('company'),
         customerPortalToken: table('customerPortalToken'),
         property: table('property'),
         invoice: table('invoice'),
+        creditNote: table('creditNote', [['companyId', 'number']]),
+        customerStatement: table('customerStatement'),
         payment: table('payment'),
         expense: table('expense'),
         notification: table('notification'),
@@ -275,6 +279,7 @@ export function createFakePrisma() {
         smsThread: table('smsThread'),
         smsMessage: table('smsMessage'),
         notificationLog: table('notificationLog'),
+        jobTemplate: table('jobTemplate'),
         // Raw SQL is not modelled; analytics uses it only for a top-techs
         // leaderboard, so an empty result set is a safe stand-in.
         $queryRaw: async () => [],

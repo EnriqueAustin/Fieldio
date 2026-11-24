@@ -4,9 +4,11 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import api from "../../../lib/api";
-import { Plus, Search, Users, Mail, Phone, Building, ArrowUpRight, Upload } from "lucide-react";
+import { Plus, Search, Users, Mail, Phone, Building, ArrowUpRight, Upload, Download } from "lucide-react";
 import { Avatar, AvatarFallback } from "../../../components/ui/avatar";
 import { cn } from "../../../lib/utils";
+import { downloadCsv, csvSlug, type CsvColumn } from "../../../lib/csv";
+import { toast } from "../../../components/ui/use-toast";
 
 interface Customer {
     id: string;
@@ -45,6 +47,47 @@ export default function CustomersPage() {
         setPage(1);
     };
 
+    // Export every customer matching the current search — not just the visible
+    // page. Loops the paginated endpoint with a high limit, capped.
+    const [exporting, setExporting] = useState(false);
+    const [exportCount, setExportCount] = useState(0);
+
+    const exportAll = async () => {
+        const EXPORT_LIMIT = 200;
+        const EXPORT_CAP = 10000;
+        setExporting(true);
+        setExportCount(0);
+        try {
+            const all: Customer[] = [];
+            let p = 1;
+            let pages = 1;
+            do {
+                const res = await api
+                    .get(`/customers?search=${encodeURIComponent(submittedSearch)}&page=${p}&limit=${EXPORT_LIMIT}`)
+                    .then((r) => r.data.data);
+                all.push(...((res?.items ?? []) as Customer[]));
+                pages = res?.totalPages ?? 1;
+                setExportCount(all.length);
+                p++;
+            } while (p <= pages && all.length < EXPORT_CAP);
+
+            const cols: CsvColumn<Customer>[] = [
+                { header: "Name", value: (c) => c.name },
+                { header: "Email", value: (c) => c.email ?? "" },
+                { header: "Phone", value: (c) => c.phone ?? "" },
+                { header: "Status", value: (c) => c.status },
+                { header: "Sites", value: (c) => c._count.properties },
+                { header: "Jobs", value: (c) => c._count.jobs },
+            ];
+            const parts = ["customers", submittedSearch ? csvSlug(submittedSearch) : ""].filter(Boolean);
+            downloadCsv(`${parts.join("-")}.csv`, cols, all);
+        } catch {
+            toast({ title: "Failed to export customers", variant: "destructive" });
+        } finally {
+            setExporting(false);
+        }
+    };
+
     return (
         <div className="space-y-6">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -57,6 +100,15 @@ export default function CustomersPage() {
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
+                    <button
+                        onClick={exportAll}
+                        disabled={exporting || total === 0}
+                        title="Exports every customer matching the current search, across all pages"
+                        className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 transition disabled:opacity-50"
+                    >
+                        <Download className="h-4 w-4" />
+                        {exporting ? `Exporting… ${exportCount}` : "Export all matches"}
+                    </button>
                     <Link
                         href="/customers/import"
                         className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 transition"

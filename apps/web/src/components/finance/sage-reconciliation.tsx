@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "../../lib/api";
 import { downloadFile } from "../../lib/download";
+import { downloadCsv, csvMoney, csvDate, csvSlug, type CsvColumn } from "../../lib/csv";
 import { toast } from "../ui/use-toast";
 import { Button } from "../ui/button";
 import { StatusPill } from "../ui/status-pill";
@@ -84,6 +85,24 @@ export function SageReconciliation({ from, to }: { from: string; to: string }) {
         setSelected({});
     };
 
+    // Read-only client download of the bucket currently on screen. This is a
+    // plain snapshot for the accountant — it does NOT stamp invoices or touch
+    // export state, unlike the server re-export below.
+    const exportCsv = () => {
+        if (rows.length === 0) return;
+        const cols: CsvColumn<ReconInvoice>[] = [
+            { header: "Invoice", value: (r) => r.invoiceNumber ?? r.id.slice(0, 8) },
+            { header: "Customer", value: (r) => r.customerName ?? "" },
+            { header: "Status", value: (r) => r.status },
+            { header: "Total", value: (r) => csvMoney(r.total) },
+            { header: "Exported", value: (r) => csvDate(r.exportedAt) },
+            { header: "Reconciled", value: (r) => csvDate(r.reconciledAt) },
+        ];
+        const label = BUCKETS.find((b) => b.key === bucket)?.label ?? bucket;
+        const rangeSuffix = from || to ? `_${from || "start"}_to_${to || "today"}` : "";
+        downloadCsv(`sage-reconciliation-${csvSlug(label)}${rangeSuffix}.csv`, cols, rows);
+    };
+
     const reExport = async () => {
         setExporting(true);
         try {
@@ -139,6 +158,17 @@ export function SageReconciliation({ from, to }: { from: string; to: string }) {
                         {selectedIds.length > 0 ? ` · ${selectedIds.length} selected` : ""}
                     </span>
                     <div className="flex items-center gap-2">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={rows.length === 0}
+                            onClick={exportCsv}
+                            title="Downloads the invoices shown in this bucket. Does not change export state."
+                            className="gap-1.5"
+                        >
+                            <Download className="h-3.5 w-3.5" />
+                            Export CSV
+                        </Button>
                         <Button
                             variant="outline"
                             size="sm"

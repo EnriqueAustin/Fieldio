@@ -58,6 +58,24 @@ branchesRouter.delete('/:id', restrictTo('ADMIN'), catchAsync(async (req: Reques
         where: { id: req.params.id, companyId: req.user!.companyId },
     });
     if (!existing) throw new AppError('Branch not found', StatusCodes.NOT_FOUND);
+
+    // Guard: don't orphan jobs or staff. Both counts are scoped by companyId so a
+    // tenant can't probe another's attachments. Reassign first, then deactivate.
+    const [jobCount, userCount] = await Promise.all([
+        prisma.job.count({ where: { companyId: req.user!.companyId, branchId: req.params.id } }),
+        prisma.user.count({ where: { companyId: req.user!.companyId, branchId: req.params.id } }),
+    ]);
+    if (jobCount > 0 || userCount > 0) {
+        const parts = [
+            jobCount > 0 ? `${jobCount} job${jobCount === 1 ? '' : 's'}` : null,
+            userCount > 0 ? `${userCount} team member${userCount === 1 ? '' : 's'}` : null,
+        ].filter(Boolean).join(' and ');
+        throw new AppError(
+            `Cannot deactivate this branch: ${parts} still assigned to it. Reassign them first.`,
+            StatusCodes.CONFLICT,
+        );
+    }
+
     await prisma.branch.update({ where: { id: req.params.id }, data: { active: false } });
     res.status(StatusCodes.OK).json({ status: 'success' });
 }));

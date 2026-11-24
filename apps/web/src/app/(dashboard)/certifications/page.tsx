@@ -24,6 +24,7 @@ import {
     Shield,
 } from "lucide-react";
 import { cn } from "../../../lib/utils";
+import { UserPicker } from "../../../components/pickers/user-picker";
 
 interface Certification {
     id: string;
@@ -104,8 +105,8 @@ export default function CertificationsPage() {
                         <DialogHeader><DialogTitle>Add Certification</DialogTitle></DialogHeader>
                         <div className="space-y-4">
                             <div className="space-y-1.5">
-                                <Label>Technician User ID</Label>
-                                <Input value={form.userId} onChange={(e) => setForm({ ...form, userId: e.target.value })} placeholder="User ID of the technician" />
+                                <Label>Technician</Label>
+                                <UserPicker value={form.userId} onChange={(userId) => setForm({ ...form, userId })} roles={["TECHNICIAN"]} placeholder="Select a technician" />
                             </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-1.5">
@@ -132,7 +133,7 @@ export default function CertificationsPage() {
                                 </div>
                             </div>
                         </div>
-                        <DialogFooter><Button onClick={createCert}>Add</Button></DialogFooter>
+                        <DialogFooter><Button onClick={createCert} disabled={!form.userId || !form.name}>Add</Button></DialogFooter>
                     </DialogContent>
                 </Dialog>
             </div>

@@ -5,8 +5,10 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tansta
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import api from "../../../lib/api";
-import { Receipt, Search, AlertCircle, Plus, Loader2, Check, Banknote, FilePlus2, Briefcase } from "lucide-react";
+import { Receipt, Search, AlertCircle, Plus, Loader2, Check, Banknote, FilePlus2, Briefcase, Download } from "lucide-react";
 import { StatusPill } from "../../../components/ui/status-pill";
+import { downloadCsv, csvMoney, csvDate, csvSlug, type CsvColumn } from "../../../lib/csv";
+import { toast } from "../../../components/ui/use-toast";
 import { Button } from "../../../components/ui/button";
 import { EftBatchDialog } from "../../../components/finance/eft-batch-dialog";
 import { BulkGenerateInvoicesDialog } from "../../../components/finance/bulk-generate-invoices-dialog";
@@ -85,6 +87,50 @@ export default function InvoicesPage() {
     const total: number = data?.total ?? 0;
     const totalPages: number = data?.totalPages ?? 1;
 
+    // Export every invoice matching the current status/search filters — not just
+    // the visible page. Loops the paginated endpoint with a high limit, capped.
+    const [exporting, setExporting] = useState(false);
+    const [exportCount, setExportCount] = useState(0);
+
+    const exportAll = async () => {
+        const EXPORT_LIMIT = 200;
+        const EXPORT_CAP = 10000;
+        setExporting(true);
+        setExportCount(0);
+        try {
+            const all: Invoice[] = [];
+            let p = 1;
+            let pages = 1;
+            do {
+                const params = new URLSearchParams({ page: String(p), limit: String(EXPORT_LIMIT) });
+                if (tab !== "ALL") params.set("status", tab);
+                if (debouncedSearch) params.set("search", debouncedSearch);
+                const res = await api.get(`/finance/invoices?${params.toString()}`).then((r) => r.data.data);
+                all.push(...((res?.items ?? []) as Invoice[]));
+                pages = res?.totalPages ?? 1;
+                setExportCount(all.length);
+                p++;
+            } while (p <= pages && all.length < EXPORT_CAP);
+
+            const cols: CsvColumn<Invoice>[] = [
+                { header: "Invoice Number", value: (i) => i.invoiceNumber ?? i.id.slice(0, 8) },
+                { header: "Status", value: (i) => i.status },
+                { header: "Customer", value: (i) => i.job?.customer?.name ?? "" },
+                { header: "Job", value: (i) => i.job?.title ?? "" },
+                { header: "Created", value: (i) => csvDate(i.createdAt) },
+                { header: "Due Date", value: (i) => csvDate(i.dueDate) },
+                { header: "Total", value: (i) => csvMoney(i.total) },
+                { header: "Balance", value: (i) => csvMoney(i.balance) },
+            ];
+            const parts = ["invoices", tab !== "ALL" ? csvSlug(tab) : "", debouncedSearch ? csvSlug(debouncedSearch) : ""].filter(Boolean);
+            downloadCsv(`${parts.join("-")}.csv`, cols, all);
+        } catch {
+            toast({ title: "Failed to export invoices", variant: "destructive" });
+        } finally {
+            setExporting(false);
+        }
+    };
+
     // Footer sums over the current page. VOID invoices are cancelled paper and
     // must never count toward billed revenue.
     const totalBilled = invoices
@@ -100,6 +146,15 @@ export default function InvoicesPage() {
                     <p className="page-subtitle">All customer invoices across your business.</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                    <button
+                        onClick={exportAll}
+                        disabled={exporting || total === 0}
+                        title="Exports every invoice matching the current filters, across all pages"
+                        className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 transition disabled:opacity-50"
+                    >
+                        <Download className="h-4 w-4" />
+                        {exporting ? `Exporting… ${exportCount}` : "Export all matches"}
+                    </button>
                     <Link
                         href="/invoices/overdue"
                         className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50 transition"

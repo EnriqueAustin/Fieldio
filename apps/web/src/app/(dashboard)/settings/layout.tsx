@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Building2, Users, BookOpen, KeyRound } from "lucide-react";
+import { Building2, Users, BookOpen, KeyRound, Clock, MapPin, Bell } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import { useAuthStore } from "../../../store/auth";
 
@@ -11,15 +11,18 @@ import { useAuthStore } from "../../../store/auth";
 const ADMIN_ONLY = [
     "/settings/company",
     "/settings/users",
+    "/settings/branches",
+    "/settings/business-hours",
+    "/settings/notifications",
     "/settings/price-book",
 ];
 
-// Business Hours and Notifications are intentionally absent: those pages are not
-// wired up yet (they carry a "coming soon" notice), so we don't route to them
-// from the settings nav. The routes still exist for direct access.
 const tabs = [
     { href: "/settings/company", label: "Company", icon: Building2 },
     { href: "/settings/users", label: "Team", icon: Users },
+    { href: "/settings/branches", label: "Branches", icon: MapPin },
+    { href: "/settings/business-hours", label: "Business Hours", icon: Clock },
+    { href: "/settings/notifications", label: "Notifications", icon: Bell },
     { href: "/settings/price-book", label: "Price Book", icon: BookOpen },
     { href: "/settings/account", label: "My Account", icon: KeyRound },
 ];

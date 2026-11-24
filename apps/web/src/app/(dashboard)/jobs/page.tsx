@@ -8,8 +8,10 @@ import api from "../../../lib/api";
 import { format } from "date-fns";
 import { Avatar, AvatarFallback } from "../../../components/ui/avatar";
 import { StatusPill } from "../../../components/ui/status-pill";
-import { Briefcase, Plus, Search, Calendar as CalIcon, Zap, ChevronLeft, ChevronRight } from "lucide-react";
+import { Briefcase, Plus, Search, Calendar as CalIcon, Zap, ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { cn } from "../../../lib/utils";
+import { downloadCsv, csvDate, csvSlug, type CsvColumn } from "../../../lib/csv";
+import { toast } from "../../../components/ui/use-toast";
 
 interface Job {
     id: string;
@@ -30,7 +32,7 @@ interface JobsResponse {
     totalPages: number;
 }
 
-const FILTERS = ["ALL", "REQUESTED", "ASSIGNED", "EN_ROUTE", "ON_SITE", "COMPLETED"] as const;
+const FILTERS = ["ALL", "REQUESTED", "ASSIGNED", "EN_ROUTE", "ON_SITE", "PAUSED", "COMPLETED"] as const;
 type FilterValue = (typeof FILTERS)[number];
 const LIMIT = 25;
 
@@ -101,6 +103,64 @@ export default function JobsPage() {
     const rangeStart = total === 0 ? 0 : (page - 1) * LIMIT + 1;
     const rangeEnd = Math.min(page * LIMIT, total);
 
+    // Export every job matching the current status/branch filters — not just the
+    // visible page. Loops the paginated endpoint with a high limit, capped.
+    const [exporting, setExporting] = useState(false);
+    const [exportCount, setExportCount] = useState(0);
+
+    const exportAll = async () => {
+        const EXPORT_LIMIT = 200;
+        const EXPORT_CAP = 10000;
+        setExporting(true);
+        setExportCount(0);
+        try {
+            const all: Job[] = [];
+            let p = 1;
+            let pages = 1;
+            do {
+                const res = await api
+                    .get("/jobs", {
+                        params: {
+                            page: p,
+                            limit: EXPORT_LIMIT,
+                            ...(filter !== "ALL" ? { status: filter } : {}),
+                            ...(branchId ? { branchId } : {}),
+                        },
+                    })
+                    .then((r) => r.data.data as JobsResponse);
+                all.push(...res.items);
+                pages = res.totalPages ?? 1;
+                setExportCount(all.length);
+                p++;
+            } while (p <= pages && all.length < EXPORT_CAP);
+
+            // Apply the same client-side search the table uses, so the file reflects
+            // what the user has narrowed the view to.
+            const q = query.trim().toLowerCase();
+            const rows = q
+                ? all.filter((j) =>
+                      `${j.title} ${j.customer?.name ?? ""} ${j.tech?.email ?? ""}`.toLowerCase().includes(q)
+                  )
+                : all;
+
+            const cols: CsvColumn<Job>[] = [
+                { header: "Job ID", value: (j) => j.id },
+                { header: "Title", value: (j) => j.title },
+                { header: "Customer", value: (j) => j.customer?.name ?? "" },
+                { header: "Status", value: (j) => j.status },
+                { header: "Priority", value: (j) => j.priority },
+                { header: "Scheduled", value: (j) => csvDate(j.scheduledStart) },
+                { header: "Technician", value: (j) => j.tech?.email ?? "" },
+            ];
+            const parts = ["jobs", filter !== "ALL" ? csvSlug(filter) : "", q ? csvSlug(q) : ""].filter(Boolean);
+            downloadCsv(`${parts.join("-")}.csv`, cols, rows);
+        } catch {
+            toast({ title: "Failed to export jobs", variant: "destructive" });
+        } finally {
+            setExporting(false);
+        }
+    };
+
     return (
         <div className="space-y-6">
             {/* Header */}
@@ -110,6 +170,15 @@ export default function JobsPage() {
                     <p className="page-subtitle">Manage all service requests and operations.</p>
                 </div>
                 <div className="flex items-center gap-2">
+                    <button
+                        onClick={exportAll}
+                        disabled={exporting || total === 0}
+                        title="Exports every job matching the current filters, across all pages"
+                        className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-4 py-2 text-sm font-medium transition hover:bg-slate-50 disabled:opacity-50"
+                    >
+                        <Download className="h-4 w-4" />
+                        {exporting ? `Exporting… ${exportCount}` : "Export all matches"}
+                    </button>
                     <Link
                         href="/jobs/quick"
                         className="inline-flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100 transition"

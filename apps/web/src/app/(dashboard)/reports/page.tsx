@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import api from "../../../lib/api";
 import { downloadFile } from "../../../lib/download";
+import { downloadCsv, csvMoney, csvDate, type CsvColumn } from "../../../lib/csv";
 import { toast } from "../../../components/ui/use-toast";
 import { BarChart3, Clock, DollarSign, Download, FileCheck2, TrendingUp, Users } from "lucide-react";
 import { SageReconciliation } from "../../../components/finance/sage-reconciliation";
@@ -102,6 +103,54 @@ export default function ReportsPage() {
 
     const fmt = (n: number) => `R ${n.toFixed(2)}`;
 
+    // Filename suffix reflecting the selected range, e.g. "_2026-01-01_to_2026-01-31".
+    const rangeSuffix = from || to ? `_${from || "start"}_to_${to || "today"}` : "";
+
+    // Export the active tab's visible data client-side. Money is a plain decimal
+    // and dates are ISO, so a spreadsheet / Sage imports them cleanly. The
+    // reconciliation tab owns its own export controls (per-bucket) in its component.
+    const canExportTab =
+        (tab === "costing" && !!costingData?.jobs.length) ||
+        (tab === "timesheet" && !!timesheetData?.technicians.length) ||
+        (tab === "earnings" && !!earningsData?.technicians.length);
+
+    const exportTab = () => {
+        if (tab === "costing" && costingData?.jobs.length) {
+            const cols: CsvColumn<JobCostRow>[] = [
+                { header: "Job", value: (j) => j.title },
+                { header: "Customer", value: (j) => j.customer },
+                { header: "Technician", value: (j) => j.tech ?? "" },
+                { header: "Hours", value: (j) => j.durationHours },
+                { header: "Costs", value: (j) => csvMoney(j.costs.total) },
+                { header: "Invoice", value: (j) => csvMoney(j.invoiceTotal) },
+                { header: "Profit", value: (j) => csvMoney(j.profit) },
+                { header: "Margin %", value: (j) => j.margin },
+            ];
+            downloadCsv(`job-costing${rangeSuffix}.csv`, cols, costingData.jobs);
+        } else if (tab === "timesheet" && timesheetData?.technicians.length) {
+            // Flatten the per-technician groups into one row per entry.
+            const rows = timesheetData.technicians.flatMap((t) =>
+                t.entries.map((e) => ({ tech: t.tech.name, ...e }))
+            );
+            const cols: CsvColumn<(typeof rows)[number]>[] = [
+                { header: "Technician", value: (r) => r.tech },
+                { header: "Date", value: (r) => csvDate(r.date) },
+                { header: "Job", value: (r) => r.title },
+                { header: "Customer", value: (r) => r.customer },
+                { header: "Hours", value: (r) => r.hours },
+            ];
+            downloadCsv(`timesheet${rangeSuffix}.csv`, cols, rows);
+        } else if (tab === "earnings" && earningsData?.technicians.length) {
+            const cols: CsvColumn<EarningsTech>[] = [
+                { header: "Technician", value: (t) => t.tech.name },
+                { header: "Jobs", value: (t) => t.jobCount },
+                { header: "Revenue", value: (t) => csvMoney(t.totalRevenue) },
+                { header: "Labor value", value: (t) => csvMoney(t.totalLaborValue) },
+            ];
+            downloadCsv(`tech-earnings${rangeSuffix}.csv`, cols, earningsData.technicians);
+        }
+    };
+
     return (
         <div className="space-y-6">
             <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
@@ -142,18 +191,30 @@ export default function ReportsPage() {
                 </div>
             </div>
 
-            <div className="flex gap-1 border-b border-border">
-                {([
-                    { key: "costing" as Tab, label: "Job Costing", icon: BarChart3 },
-                    { key: "timesheet" as Tab, label: "Timesheet", icon: Clock },
-                    { key: "earnings" as Tab, label: "Tech Earnings", icon: Users },
-                    { key: "reconciliation" as Tab, label: "Sage Reconciliation", icon: FileCheck2 },
-                ]).map(t => (
-                    <button key={t.key} onClick={() => setTab(t.key)}
-                        className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition ${tab === t.key ? "border-slate-900 text-slate-900" : "border-transparent text-muted-foreground hover:text-slate-700"}`}>
-                        <t.icon className="h-4 w-4" />{t.label}
+            <div className="flex items-center justify-between gap-2 border-b border-border">
+                <div className="flex gap-1">
+                    {([
+                        { key: "costing" as Tab, label: "Job Costing", icon: BarChart3 },
+                        { key: "timesheet" as Tab, label: "Timesheet", icon: Clock },
+                        { key: "earnings" as Tab, label: "Tech Earnings", icon: Users },
+                        { key: "reconciliation" as Tab, label: "Sage Reconciliation", icon: FileCheck2 },
+                    ]).map(t => (
+                        <button key={t.key} onClick={() => setTab(t.key)}
+                            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition ${tab === t.key ? "border-slate-900 text-slate-900" : "border-transparent text-muted-foreground hover:text-slate-700"}`}>
+                            <t.icon className="h-4 w-4" />{t.label}
+                        </button>
+                    ))}
+                </div>
+                {tab !== "reconciliation" && (
+                    <button
+                        onClick={exportTab}
+                        disabled={!canExportTab}
+                        className="mb-1 inline-flex items-center gap-2 rounded-lg border border-border bg-white px-3 py-1.5 text-sm font-medium transition hover:bg-slate-50 disabled:opacity-50"
+                    >
+                        <Download className="h-4 w-4" />
+                        Export CSV
                     </button>
-                ))}
+                )}
             </div>
 
             {tab === "costing" && costingData && (

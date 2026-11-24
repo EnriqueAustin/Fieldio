@@ -24,6 +24,7 @@ import {
     AlertTriangle,
 } from "lucide-react";
 import { cn } from "../../../lib/utils";
+import { JobPicker } from "../../../components/pickers/job-picker";
 
 interface Permit {
     id: string;
@@ -105,8 +106,8 @@ export default function PermitsPage() {
                         <DialogHeader><DialogTitle>Create Permit</DialogTitle></DialogHeader>
                         <div className="space-y-4">
                             <div className="space-y-1.5">
-                                <Label>Job ID</Label>
-                                <Input value={form.jobId} onChange={(e) => setForm({ ...form, jobId: e.target.value })} placeholder="Paste job ID" />
+                                <Label>Job</Label>
+                                <JobPicker value={form.jobId} onChange={(jobId) => setForm({ ...form, jobId })} placeholder="Search for a job" />
                             </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-1.5">
@@ -130,7 +131,7 @@ export default function PermitsPage() {
                                 <Input value={form.authority} onChange={(e) => setForm({ ...form, authority: e.target.value })} />
                             </div>
                         </div>
-                        <DialogFooter><Button onClick={createPermit}>Create Permit</Button></DialogFooter>
+                        <DialogFooter><Button onClick={createPermit} disabled={!form.jobId}>Create Permit</Button></DialogFooter>
                     </DialogContent>
                 </Dialog>
             </div>

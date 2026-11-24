@@ -167,6 +167,9 @@ function OfficeTimesheet() {
         onSuccess: () => qc.invalidateQueries({ queryKey: ['time-entries'] }),
     });
 
+    // Server-side export: `/time-tracking/export` returns every entry in the
+    // range (unpaged), whereas the table above is a paginated slice. Keeping this
+    // on the server avoids silently exporting only the visible page.
     const exportCsv = async () => {
         const res = await api.get('/time-tracking/export', { params, responseType: 'blob' });
         const url = URL.createObjectURL(res.data as Blob);

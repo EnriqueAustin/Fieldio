@@ -8,9 +8,24 @@ export const statementsRouter = Router();
 statementsRouter.use(requireUser);
 
 // Statements carry balances: never readable by technicians.
-statementsRouter.get('/', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES', 'ACCOUNTANT'), catchAsync(async (req: Request, res: Response) => {
+const officeRead = restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES', 'ACCOUNTANT');
+
+statementsRouter.get('/', officeRead, catchAsync(async (req: Request, res: Response) => {
     const statements = await statementsService.list(req.user!.companyId, req.query.customerId as string | undefined);
     res.status(StatusCodes.OK).json({ status: 'success', data: { statements } });
+}));
+
+// Month-end worklist: customers with an outstanding balance. Registered before
+// the `/:id` param route so it is not captured as a statement id.
+statementsRouter.get('/outstanding-customers', officeRead, catchAsync(async (req: Request, res: Response) => {
+    const customers = await statementsService.customersWithBalance(req.user!.companyId);
+    res.status(StatusCodes.OK).json({ status: 'success', data: { customers } });
+}));
+
+// Full statement with recomputed line detail, for the printable HTML view.
+statementsRouter.get('/:id', officeRead, catchAsync(async (req: Request, res: Response) => {
+    const statement = await statementsService.detail(req.user!.companyId, req.params.id);
+    res.status(StatusCodes.OK).json({ status: 'success', data: statement });
 }));
 
 statementsRouter.post('/build', restrictTo('ADMIN', 'OFFICE', 'ACCOUNTANT'), catchAsync(async (req: Request, res: Response) => {
