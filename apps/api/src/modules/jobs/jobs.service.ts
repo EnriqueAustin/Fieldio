@@ -8,6 +8,10 @@ import { PUBLIC_USER_SELECT } from '../../utils/publicSelects';
 import { closeOpenEntries } from '../time-tracking/timeTracking.service';
 import { formatInTimeZone, getCompanyTimezone, startOfDayInTimeZone } from '../../utils/timezone';
 import { getMissingRequiredForm } from '../digital-forms/digital-forms.service';
+import { config } from '../../config/env';
+// scheduling.service imports jobsService too; the cycle is safe because neither
+// side touches the other at module load, only inside function calls.
+import { assertNoScheduleConflict } from '../scheduling/scheduling.service';
 
 const createJobSchema = z.object({
     projectId: z.string().uuid().optional().nullable(),
@@ -39,10 +43,6 @@ const updateJobSchema = z.object({
     vanId: z.string().uuid().nullable().optional(),
     scheduledStart: z.string().datetime().nullable().optional(),
     scheduledEnd: z.string().datetime().nullable().optional(),
-});
-
-const updateStatusSchema = z.object({
-    status: z.enum(['REQUESTED', 'ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'COMPLETED', 'CANCELED']),
 });
 
 const addNoteSchema = z.object({
@@ -126,9 +126,121 @@ async function assertTechAssigned(
     }
 }
 
+/**
+ * Company-scoped checks for the optional van / project a job is linked to. Same
+ * shape as scheduling.service's assertAssigneesInCompany: a foreign or retired
+ * van, or another tenant's project, is a 404 rather than a silent cross-link.
+ */
+async function assertJobLinksInCompany(
+    companyId: string,
+    links: { vanId?: string | null; projectId?: string | null },
+) {
+    if (links.vanId) {
+        const van = await prisma.van.findFirst({
+            where: { id: links.vanId, companyId, active: true },
+            select: { id: true },
+        });
+        if (!van) throw new AppError('Van not found', StatusCodes.NOT_FOUND);
+    }
+    if (links.projectId) {
+        const project = await prisma.project.findFirst({
+            where: { id: links.projectId, companyId },
+            select: { id: true },
+        });
+        if (!project) throw new AppError('Project not found', StatusCodes.NOT_FOUND);
+    }
+}
+
+// Used when a booking has a start but no end and no template duration applies.
+// CompanySettings has no default-duration field yet, so this is the company-wide fallback.
+const DEFAULT_JOB_DURATION_MIN = 60;
+
+/**
+ * A job with a start must always have an end, otherwise it renders as a
+ * zero-length slot on the board and never shows as double-booked. When the
+ * caller gave no end, the template's duration is used, else the default.
+ */
+function resolveScheduledEnd(
+    start: Date | null,
+    end: Date | null,
+    templateDurationMin?: number | null,
+): Date | null {
+    if (!start || end) return end;
+    const minutes = templateDurationMin && templateDurationMin > 0 ? templateDurationMin : DEFAULT_JOB_DURATION_MIN;
+    return new Date(start.getTime() + minutes * 60 * 1000);
+}
+
+/**
+ * Once an invoice has gone out (anything past DRAFT, other than a VOID one) the
+ * job's line items are what the customer was billed. Changing them would leave
+ * the job and the invoice disagreeing, so they are locked unless finance voids
+ * it (a credit note corrects the money but leaves the lock). A DRAFT invoice is
+ * still being prepared and stays editable.
+ */
+async function assertLineItemsEditable(jobId: string, companyId: string) {
+    const invoice = await prisma.invoice.findFirst({
+        where: { jobId, companyId },
+        select: { status: true },
+    });
+    if (invoice && invoice.status !== 'DRAFT' && invoice.status !== 'VOID') {
+        throw new AppError(
+            'This job has been invoiced, so its line items are locked. Void the invoice to change them, or raise a credit note for corrections.',
+            StatusCodes.CONFLICT,
+        );
+    }
+}
+
+/**
+ * Booking notifications shared by full create and quick create: the assigned
+ * tech is told, the customer gets the appointment confirmation, and the rest of
+ * the van crew is told their van has the job.
+ */
+async function notifyJobBooked(
+    job: { title: string; techId: string | null; vanId: string | null; customerId: string; scheduledStart: Date | null },
+    companyId: string,
+) {
+    if (job.techId) {
+        const tech = await prisma.user.findUnique({ where: { id: job.techId } });
+        if (tech) {
+            await notificationService.notifyUser(
+                tech.id, companyId, 'JOB_ASSIGNED',
+                'New job assigned', `You have been assigned to: ${job.title}`
+            );
+            const techName = [tech.firstName, tech.lastName].filter(Boolean).join(' ') || tech.email;
+            // `event` routes this through the "Booking confirmation" toggle.
+            await notificationService.notifyCustomer(job.customerId, companyId, 'APPOINTMENT_REMINDER', {
+                event: 'JOB_BOOKED',
+                when: job.scheduledStart
+                    ? formatInTimeZone(job.scheduledStart, await getCompanyTimezone(companyId))
+                    : `soon (technician: ${techName})`,
+            });
+        }
+    }
+
+    if (job.vanId) {
+        const vanMembers = await prisma.vanMember.findMany({
+            where: { vanId: job.vanId },
+            include: { user: true },
+        });
+        for (const member of vanMembers) {
+            if (member.userId !== job.techId) {
+                await notificationService.notifyUser(
+                    member.userId, companyId, 'JOB_ASSIGNED',
+                    'New van job', `Your van has been assigned to: ${job.title}`
+                );
+            }
+        }
+    }
+}
+
 // Forward lifecycle order for the field status transitions this endpoint accepts.
 // CANCELED is terminal and reachable from any state, so it sits outside the chain.
+// PAUSED sits beside ON_SITE rather than in the chain; see isBackwardsTransition.
 const STATUS_FORWARD_ORDER = ['REQUESTED', 'ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'COMPLETED'] as const;
+
+// Where a paused job may go next: back on the road (e.g. to fetch parts),
+// straight back to work on site, or finished.
+const RESUME_FROM_PAUSED = ['EN_ROUTE', 'ON_SITE', 'COMPLETED'];
 
 /**
  * A replayed offline action can arrive out of order — e.g. an "ON_SITE" tap that
@@ -139,6 +251,10 @@ const STATUS_FORWARD_ORDER = ['REQUESTED', 'ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'C
 function isBackwardsTransition(current: string, next: string): boolean {
     if (next === current) return false;
     if (next === 'CANCELED') return false; // a job can be canceled from any state
+    if (current === 'PAUSED') return !RESUME_FROM_PAUSED.includes(next);
+    // A pause landing after the job was finished or canceled is a stale replay.
+    // Pausing from before ON_SITE is not backwards, just invalid (see isInvalidPause).
+    if (next === 'PAUSED') return current === 'COMPLETED' || current === 'CANCELED';
     const c = STATUS_FORWARD_ORDER.indexOf(current as (typeof STATUS_FORWARD_ORDER)[number]);
     const n = STATUS_FORWARD_ORDER.indexOf(next as (typeof STATUS_FORWARD_ORDER)[number]);
     if (c === -1) {
@@ -148,6 +264,11 @@ function isBackwardsTransition(current: string, next: string): boolean {
     }
     if (n === -1) return false;
     return n < c;
+}
+
+/** Only work in progress on site can be paused; a pause from before arrival is refused. */
+function isInvalidPause(current: string, next: string): boolean {
+    return next === 'PAUSED' && (current === 'REQUESTED' || current === 'ASSIGNED' || current === 'EN_ROUTE');
 }
 
 /**
@@ -225,6 +346,22 @@ export const jobsService = {
             if (!tech) throw new AppError('Technician not found', StatusCodes.NOT_FOUND);
         }
 
+        await assertJobLinksInCompany(companyId, { vanId: parsed.vanId, projectId: parsed.projectId });
+
+        const scheduledStart = parsed.scheduledStart ? new Date(parsed.scheduledStart) : null;
+        const scheduledEnd = resolveScheduledEnd(
+            scheduledStart,
+            parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null,
+        );
+
+        // Same double-booking guard as the dispatch board (tech, van and crew).
+        if (scheduledStart && scheduledEnd) {
+            await assertNoScheduleConflict(companyId, null, { start: scheduledStart, end: scheduledEnd }, {
+                techId: parsed.techId ?? null,
+                vanId: parsed.vanId ?? null,
+            });
+        }
+
         const job = await prisma.$transaction(async (tx) => {
             const created = await tx.job.create({
                 data: {
@@ -238,8 +375,8 @@ export const jobsService = {
                     description: parsed.description,
                     priority: parsed.priority ?? 'MEDIUM',
                     status: (parsed.techId || parsed.vanId) ? 'ASSIGNED' : 'REQUESTED',
-                    scheduledStart: parsed.scheduledStart ? new Date(parsed.scheduledStart) : null,
-                    scheduledEnd: parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null,
+                    scheduledStart,
+                    scheduledEnd,
                 },
                 include: { customer: true, property: true, tech: { select: PUBLIC_USER_SELECT }, van: true },
             });
@@ -282,37 +419,7 @@ export const jobsService = {
         });
 
         socketService.emitToCompany(companyId, 'job:created', job);
-
-        if (job.techId) {
-            const tech = await prisma.user.findUnique({ where: { id: job.techId } });
-            if (tech) {
-                await notificationService.notifyUser(
-                    tech.id, companyId, 'JOB_ASSIGNED',
-                    'New job assigned', `You have been assigned to: ${job.title}`
-                );
-                const techName = [tech.firstName, tech.lastName].filter(Boolean).join(' ') || tech.email;
-                await notificationService.notifyCustomer(job.customerId, companyId, 'APPOINTMENT_REMINDER', {
-                    when: job.scheduledStart
-                        ? formatInTimeZone(job.scheduledStart, await getCompanyTimezone(companyId))
-                        : `soon (technician: ${techName})`,
-                });
-            }
-        }
-
-        if (job.vanId) {
-            const vanMembers = await prisma.vanMember.findMany({
-                where: { vanId: job.vanId },
-                include: { user: true },
-            });
-            for (const member of vanMembers) {
-                if (member.userId !== job.techId) {
-                    await notificationService.notifyUser(
-                        member.userId, companyId, 'JOB_ASSIGNED',
-                        'New van job', `Your van has been assigned to: ${job.title}`
-                    );
-                }
-            }
-        }
+        await notifyJobBooked(job, companyId);
 
         return job;
     },
@@ -329,18 +436,41 @@ export const jobsService = {
             if (!tech) throw new AppError('Technician not found', StatusCodes.NOT_FOUND);
         }
 
+        // Only a change of link is checked, so editing the title of a job whose
+        // van was since retired doesn't start failing.
+        await assertJobLinksInCompany(companyId, {
+            vanId: parsed.vanId !== job.vanId ? parsed.vanId : undefined,
+            projectId: parsed.projectId !== job.projectId ? parsed.projectId : undefined,
+        });
+
+        // When the schedule is touched, the stored result must not be a start with no end.
+        let scheduledStart: Date | null | undefined;
+        let scheduledEnd: Date | null | undefined;
+        if (parsed.scheduledStart !== undefined || parsed.scheduledEnd !== undefined) {
+            scheduledStart = parsed.scheduledStart !== undefined
+                ? (parsed.scheduledStart ? new Date(parsed.scheduledStart) : null)
+                : job.scheduledStart;
+            const requestedEnd = parsed.scheduledEnd !== undefined
+                ? (parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null)
+                : job.scheduledEnd;
+            const template = scheduledStart && !requestedEnd && job.templateId
+                ? await prisma.jobTemplate.findFirst({ where: { id: job.templateId, companyId }, select: { defaultDurationMin: true } })
+                : null;
+            scheduledEnd = resolveScheduledEnd(scheduledStart, requestedEnd, template?.defaultDurationMin);
+        }
+
+        const startMoved = scheduledStart !== undefined
+            && (scheduledStart?.getTime() ?? null) !== (job.scheduledStart?.getTime() ?? null);
         const wasUnassigned = !job.techId && !job.vanId;
         const updated = await prisma.job.update({
             where: { id },
             data: {
                 ...parsed,
                 projectId: parsed.projectId,
-                scheduledStart: parsed.scheduledStart !== undefined
-                    ? (parsed.scheduledStart ? new Date(parsed.scheduledStart) : null)
-                    : undefined,
-                scheduledEnd: parsed.scheduledEnd !== undefined
-                    ? (parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null)
-                    : undefined,
+                scheduledStart,
+                scheduledEnd,
+                // A moved appointment must get its 24h / 1h reminders again.
+                ...(startMoved ? { reminder24hSentAt: null, reminder1hSentAt: null } : {}),
                 status: wasUnassigned && (parsed.techId || parsed.vanId) ? 'ASSIGNED' : undefined,
             },
             include: { customer: true, property: true, tech: { select: PUBLIC_USER_SELECT }, van: true },
@@ -365,11 +495,27 @@ export const jobsService = {
             if (tech) {
                 const techName = [tech.firstName, tech.lastName].filter(Boolean).join(' ') || tech.email;
                 await notificationService.notifyCustomer(updated.customerId, companyId, 'APPOINTMENT_REMINDER', {
+                    event: 'JOB_BOOKED',
                     when: updated.scheduledStart
                         ? formatInTimeZone(updated.scheduledStart, await getCompanyTimezone(companyId))
                         : `soon (technician: ${techName})`,
                 });
             }
+        } else if (parsed.techId && job.techId && parsed.techId !== job.techId) {
+            // Tech-to-tech reassign: in-app only, same wording as the schedule board.
+            await notificationService.notifyUser(
+                parsed.techId, companyId, 'JOB_ASSIGNED',
+                'New job assigned', `You have been assigned to: ${updated.title}`
+            );
+            await notificationService.notifyUser(
+                job.techId, companyId, 'ALERT',
+                'Job reassigned', `${updated.title} is no longer on your schedule`
+            );
+        } else if (parsed.techId === null && job.techId) {
+            await notificationService.notifyUser(
+                job.techId, companyId, 'ALERT',
+                'Job reassigned', `${updated.title} is no longer on your schedule`
+            );
         }
 
         socketService.emitToCompany(companyId, 'job:updated', updated);
@@ -394,6 +540,8 @@ export const jobsService = {
                 throw new AppError('You can only add items to jobs assigned to you or your van', StatusCodes.FORBIDDEN);
             }
         }
+
+        await assertLineItemsEditable(jobId, companyId);
 
         if (parsed.priceBookItemId) {
             const pbItem = await prisma.priceBookItem.findFirst({
@@ -497,6 +645,8 @@ export const jobsService = {
 
         const item = await prisma.jobLineItem.findFirst({ where: { id: itemId, jobId } });
         if (!item) throw new AppError('Line item not found', StatusCodes.NOT_FOUND);
+
+        await assertLineItemsEditable(jobId, companyId);
 
         await prisma.jobLineItem.delete({ where: { id: itemId } });
         socketService.emitToCompany(companyId, 'job:lineitem:removed', { jobId, itemId });
@@ -759,6 +909,12 @@ export const jobsService = {
     },
 
     updateStatus: async (id: string, companyId: string, status: string, userId: string, clientAt?: string, actorRole?: string) => {
+        // Cancelling has its own flow (reason, invoice check, clock stop, audit).
+        // Technicians can't cancel at all; the office uses POST /jobs/:id/cancel.
+        if (status === 'CANCELED') {
+            throw new AppError('Use /jobs/:id/cancel to cancel a job', StatusCodes.BAD_REQUEST);
+        }
+
         const job = await prisma.job.findFirst({
             where: { id, companyId, deletedAt: null },
             include: { checklist: true, signatures: true },
@@ -789,6 +945,10 @@ export const jobsService = {
                 },
             });
             return current;
+        }
+
+        if (isInvalidPause(job.status, status)) {
+            throw new AppError('Only a job that is on site can be paused', StatusCodes.CONFLICT);
         }
 
         if (status === 'COMPLETED' && job.checklist.length > 0) {
@@ -824,6 +984,15 @@ export const jobsService = {
         // A replayed action whose real tap was long ago must not fire time-sensitive
         // "on my way"/"arrived" customer messages when it finally lands.
         const isStale = now.getTime() - effective.getTime() > 15 * 60 * 1000;
+        // The customer hears "arrived" once per visit day. Coming back on site
+        // after a pause (directly, or via EN_ROUTE for parts) the same company
+        // day is not a new arrival; returning the next day is.
+        let alreadyArrivedToday = false;
+        if (status === 'ON_SITE' && job.arrivedNotifiedAt) {
+            const tz = await getCompanyTimezone(companyId);
+            alreadyArrivedToday = startOfDayInTimeZone(new Date(job.arrivedNotifiedAt), tz).getTime()
+                === startOfDayInTimeZone(effective, tz).getTime();
+        }
 
         // Generate tracker token on first EN_ROUTE so the customer's SMS link works.
         const trackerToken = (status === 'EN_ROUTE' && !job.customerTrackingToken)
@@ -838,7 +1007,7 @@ export const jobsService = {
                 ...(status === 'ON_SITE' && !job.actualStart ? { actualStart: effective } : {}),
                 ...(status === 'COMPLETED' ? { actualEnd: effective } : {}),
                 ...(trackerToken ? { customerTrackingToken: trackerToken, onMyWaySentAt: effective } : {}),
-                ...(status === 'ON_SITE' ? { arrivedNotifiedAt: effective } : {}),
+                ...(status === 'ON_SITE' && !alreadyArrivedToday ? { arrivedNotifiedAt: effective } : {}),
             },
             include: {
                 tech: { select: { id: true, email: true, firstName: true, lastName: true } },
@@ -867,7 +1036,8 @@ export const jobsService = {
         const clockUserId = (actorRole === 'TECHNICIAN' && userId) ? userId : updatedJob.techId;
         if (clockUserId) {
             // The clock simply mirrors the status: travelling while EN_ROUTE,
-            // on site while ON_SITE, off otherwise.
+            // on site while ON_SITE, off otherwise (PAUSED stops it; resuming
+            // opens a fresh entry from the resume time).
             const clockType =
                 status === 'EN_ROUTE' ? 'TRAVEL' : status === 'ON_SITE' ? 'WRENCH' : null;
 
@@ -922,14 +1092,14 @@ export const jobsService = {
         // internal realtime updates and completion artefacts still go out.
         if (status === 'EN_ROUTE' && updatedJob.customer && !isStale) {
             const token = updatedJob.customerTrackingToken;
-            const trackingUrl = token ? `${process.env.WEB_URL || ''}/track/${token}` : '';
+            const trackingUrl = token ? `${config.WEB_URL}/track/${token}` : '';
             await notificationService.notifyCustomer(updatedJob.customerId, companyId, 'JOB_EN_ROUTE', {
                 techName,
                 trackingUrl,
             });
         }
 
-        if (status === 'ON_SITE' && updatedJob.customer && !isStale) {
+        if (status === 'ON_SITE' && updatedJob.customer && !isStale && !alreadyArrivedToday) {
             await notificationService.notifyCustomer(updatedJob.customerId, companyId, 'JOB_STARTED', {
                 techName,
             });
@@ -1078,6 +1248,37 @@ export const jobsService = {
             if (!tech) throw new AppError('Technician not found', StatusCodes.NOT_FOUND);
         }
 
+        // A picked customer must be one of ours; otherwise the job (and a new
+        // site) would be attached to another tenant's customer.
+        if (parsed.existingCustomerId) {
+            const existing = await prisma.customer.findFirst({
+                where: { id: parsed.existingCustomerId, companyId, deletedAt: null },
+                select: { id: true },
+            });
+            if (!existing) throw new AppError('Customer not found', StatusCodes.NOT_FOUND);
+        }
+
+        await assertJobLinksInCompany(companyId, { vanId: parsed.vanId, projectId: parsed.projectId });
+
+        // Read before the transaction: its duration sets the booked window.
+        const template = parsed.templateId
+            ? await prisma.jobTemplate.findFirst({ where: { id: parsed.templateId, companyId } })
+            : null;
+
+        const scheduledStart = parsed.scheduledStart ? new Date(parsed.scheduledStart) : null;
+        const scheduledEnd = resolveScheduledEnd(
+            scheduledStart,
+            parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null,
+            template?.defaultDurationMin,
+        );
+
+        if (scheduledStart && scheduledEnd) {
+            await assertNoScheduleConflict(companyId, null, { start: scheduledStart, end: scheduledEnd }, {
+                techId: parsed.techId ?? null,
+                vanId: parsed.vanId ?? null,
+            });
+        }
+
         const result = await prisma.$transaction(async (tx) => {
             let customerId = parsed.existingCustomerId;
 
@@ -1121,10 +1322,6 @@ export const jobsService = {
                 });
             }
 
-            const template = parsed.templateId
-                ? await tx.jobTemplate.findFirst({ where: { id: parsed.templateId, companyId } })
-                : null;
-
             const job = await tx.job.create({
                 data: {
                     companyId,
@@ -1139,8 +1336,8 @@ export const jobsService = {
                     priority: parsed.priority ?? template?.defaultPriority ?? 'MEDIUM',
                     requiredSkills: template?.requiredSkills ?? [],
                     status: (parsed.techId || parsed.vanId) ? 'ASSIGNED' : 'REQUESTED',
-                    scheduledStart: parsed.scheduledStart ? new Date(parsed.scheduledStart) : null,
-                    scheduledEnd: parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null,
+                    scheduledStart,
+                    scheduledEnd,
                 },
                 include: { customer: true, property: true, tech: { select: PUBLIC_USER_SELECT }, van: true },
             });
@@ -1182,16 +1379,10 @@ export const jobsService = {
         });
 
         socketService.emitToCompany(companyId, 'job:created', result);
-
-        if (result.techId) {
-            await notificationService.notifyUser(
-                result.techId, companyId, 'JOB_ASSIGNED',
-                'New job assigned', `You have been assigned to: ${result.title}`
-            );
-        }
-
-        // No customer "on the way" message here: the job was only booked. The
+        // Same booking notifications as full create (tech, customer confirmation,
+        // van crew). No "on the way" message here: the job was only booked; the
         // real EN_ROUTE transition (updateStatus) sends it with a tracking token.
+        await notifyJobBooked(result, companyId);
 
         return result;
     },
@@ -1403,6 +1594,73 @@ export const jobsService = {
                 entityId: id,
                 entityType: 'JOB',
                 metadata: { reason, previousStatus: job.status, newStatus: nextStatus },
+            },
+        });
+
+        socketService.emitToCompany(companyId, 'job:updated', updated);
+        return updated;
+    },
+
+    /**
+     * Office completion for work the field app never recorded (job confirmed by
+     * phone, tech without the app, paper job card). It only closes the job: no
+     * time entries are created (the office corrects hours on the timesheet),
+     * no customer messages go out, and the tech's signature/forms gate does not
+     * apply. Any clock still running on this job is stopped at now. A canceled
+     * or already-completed job is refused.
+     */
+    completeByOffice: async (id: string, companyId: string, userId: string, note?: string) => {
+        const job = await prisma.job.findFirst({ where: { id, companyId, deletedAt: null } });
+        if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+        if (job.status === 'CANCELED') {
+            throw new AppError('A canceled job cannot be completed. Reopen it first.', StatusCodes.CONFLICT);
+        }
+        if (job.status === 'COMPLETED') {
+            throw new AppError('Job is already completed', StatusCodes.CONFLICT);
+        }
+
+        const now = new Date();
+        // Scoped to this job, like cancel, so a clock the tech has running on
+        // another job is left alone.
+        const openEntries = await prisma.timeEntry.findMany({ where: { companyId, jobId: id, endTime: null } });
+        for (const entry of openEntries) {
+            const end = now > entry.startTime ? now : entry.startTime;
+            await prisma.timeEntry.update({
+                where: { id: entry.id },
+                data: { endTime: end, duration: Math.floor((end.getTime() - entry.startTime.getTime()) / 1000) },
+            });
+        }
+
+        const updated = await prisma.job.update({
+            where: { id },
+            data: { status: 'COMPLETED', actualEnd: now },
+            include: { customer: true, property: true, tech: { select: PUBLIC_USER_SELECT }, van: true },
+        });
+
+        const trimmedNote = note?.trim() || null;
+        await prisma.jobTimelineEvent.create({
+            data: {
+                companyId, jobId: id,
+                type: 'STATUS_CHANGE',
+                message: trimmedNote
+                    ? `Status: ${job.status} → COMPLETED (completed by office): ${trimmedNote}`
+                    : `Status: ${job.status} → COMPLETED (completed by office)`,
+                actorId: userId,
+            },
+        });
+
+        await prisma.auditLog.create({
+            data: {
+                companyId, userId,
+                action: 'JOB_COMPLETED_BY_OFFICE',
+                entityId: id,
+                entityType: 'JOB',
+                metadata: {
+                    previousStatus: job.status,
+                    note: trimmedNote,
+                    closedTimeEntryIds: openEntries.map((e) => e.id),
+                },
             },
         });
 

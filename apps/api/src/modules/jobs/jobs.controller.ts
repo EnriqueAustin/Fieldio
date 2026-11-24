@@ -4,7 +4,9 @@ import { jobsService } from './jobs.service';
 import { z } from 'zod';
 
 const updateStatusSchema = z.object({
-    status: z.enum(['REQUESTED', 'ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'COMPLETED', 'CANCELED']),
+    // CANCELED is accepted here only so the service can point the caller at
+    // /jobs/:id/cancel with a clear 400 instead of a generic enum error.
+    status: z.enum(['REQUESTED', 'ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'PAUSED', 'COMPLETED', 'CANCELED']),
     // Real tap time for offline-queued status changes; validated here and in the
     // service against a [now-24h, now+2min] window before it's trusted.
     clientAt: z.string().datetime().optional(),
@@ -97,6 +99,14 @@ export const jobsController = {
         const { reason } = z.object({ reason: z.string().min(1) }).parse(req.body);
         const job = await jobsService.reopen(
             req.params.id, req.user!.companyId, req.user!.userId, reason
+        );
+        res.status(StatusCodes.OK).json({ status: 'success', data: { job } });
+    },
+
+    completeByOffice: async (req: Request, res: Response) => {
+        const { note } = z.object({ note: z.string().max(1000).optional() }).parse(req.body ?? {});
+        const job = await jobsService.completeByOffice(
+            req.params.id, req.user!.companyId, req.user!.userId, note
         );
         res.status(StatusCodes.OK).json({ status: 'success', data: { job } });
     },

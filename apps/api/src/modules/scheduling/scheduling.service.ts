@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { prisma } from '@fieldio/database';
 import { buildGoogleMapsRouteUrl, estimateLiveEta, planRoute, ROUTE_ESTIMATE } from './route-planner';
 import { AppError } from '../../middleware/error';
@@ -8,6 +7,9 @@ import { socketService } from '../../services/socket.service';
 import { notificationService } from '../../services/notifications/notification.service';
 import { config } from '../../config/env';
 import { PUBLIC_USER_SELECT } from '../../utils/publicSelects';
+import { logger } from '../../utils/logger';
+import { formatInTimeZone, getCompanyTimezone } from '../../utils/timezone';
+import { jobsService } from '../jobs/jobs.service';
 
 const createJobSchema = z.object({
     customerId: z.string().min(1),
@@ -50,12 +52,182 @@ async function assertAssigneesInCompany(
     }
 }
 
+// Recurring-generated and booking-converted jobs can have no end. Wherever a
+// window matters (conflicts, the tech's week, the board) such a job occupies a
+// default 60-minute slot instead of vanishing or never clashing.
+const DEFAULT_SLOT_MS = 60 * 60 * 1000;
+
+export type TimeWindow = { start: Date; end: Date };
+type Scheduled = { scheduledStart: Date | null; scheduledEnd: Date | null };
+
+const effectiveEnd = (start: Date, end: Date | null | undefined) =>
+    end ?? new Date(start.getTime() + DEFAULT_SLOT_MS);
+
+const sameInstant = (a: Date | null | undefined, b: Date | null | undefined) =>
+    (a?.getTime() ?? null) === (b?.getTime() ?? null);
+
+/**
+ * Prisma pre-filter for jobs whose window overlaps [start, end): starts before
+ * the range ends and (defaulted) ends after it starts — so a multi-day job that
+ * straddles the range matches too, and a null-end job counts as one hour.
+ */
+const overlapsWindowWhere = (w: TimeWindow) => ({
+    scheduledStart: { lt: w.end },
+    OR: [
+        { scheduledEnd: { gt: w.start } },
+        { scheduledEnd: null, scheduledStart: { gt: new Date(w.start.getTime() - DEFAULT_SLOT_MS) } },
+    ],
+});
+
+/** The same overlap rule applied to a loaded row (exact re-check after the pre-filter). */
+const overlapsWindow = (job: Scheduled, w: TimeWindow) =>
+    !!job.scheduledStart &&
+    job.scheduledStart.getTime() < w.end.getTime() &&
+    effectiveEnd(job.scheduledStart, job.scheduledEnd).getTime() > w.start.getTime();
+
+// Statuses that hold a slot on someone's day. PAUSED is a multi-day job the
+// crew left overnight — still theirs, still booked.
+type BookedStatus = 'ASSIGNED' | 'EN_ROUTE' | 'ON_SITE' | 'PAUSED';
+const BOOKED_STATUSES: BookedStatus[] = ['ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'PAUSED'];
+
+/**
+ * Double-booking guard for a job's effective window. A tech is busy when they
+ * hold a direct job or a van they crew is booked; a van is busy when it holds a
+ * job or one of its crew holds a direct job — the same rule suggestTechs scores.
+ */
+export async function assertNoScheduleConflict(
+    companyId: string,
+    jobId: string | null, // null for a job not created yet
+    w: TimeWindow,
+    assignees: { techId: string | null; vanId: string | null },
+) {
+    const { techId, vanId } = assignees;
+    if (!techId && !vanId) return;
+
+    const [techVans, vanCrew] = await Promise.all([
+        techId
+            ? prisma.vanMember.findMany({
+                where: { userId: techId, van: { companyId, active: true } },
+                select: { vanId: true },
+            })
+            : Promise.resolve([] as { vanId: string }[]),
+        vanId
+            ? prisma.vanMember.findMany({
+                where: { vanId, van: { companyId, active: true } },
+                select: { userId: true },
+            })
+            : Promise.resolve([] as { userId: string }[]),
+    ]);
+    const techVanIds = techVans.map((v) => v.vanId);
+    const crewIds = vanCrew.map((m) => m.userId);
+
+    const assigneeOr = [
+        ...(techId ? [{ techId }] : []),
+        ...(techVanIds.length ? [{ vanId: { in: techVanIds } }] : []),
+        ...(vanId ? [{ vanId }] : []),
+        ...(crewIds.length ? [{ techId: { in: crewIds } }] : []),
+    ];
+    const candidates = await prisma.job.findMany({
+        where: {
+            companyId,
+            ...(jobId ? { id: { not: jobId } } : {}),
+            deletedAt: null,
+            status: { in: BOOKED_STATUSES },
+            AND: [overlapsWindowWhere(w), { OR: assigneeOr }],
+        },
+        select: { id: true, title: true, techId: true, vanId: true, scheduledStart: true, scheduledEnd: true },
+    });
+    const clashing = candidates.filter((c) => overlapsWindow(c, w));
+
+    const conflict = (message: string): never => {
+        throw new AppError(message, StatusCodes.CONFLICT);
+    };
+    if (techId) {
+        const own = clashing.find((c) => c.techId === techId);
+        if (own) conflict(`Tech is already booked: "${own.title}"`);
+        const viaVan = clashing.find((c) => c.vanId && techVanIds.includes(c.vanId));
+        if (viaVan) conflict(`Tech's van is already booked: "${viaVan.title}"`);
+    }
+    if (vanId) {
+        const own = clashing.find((c) => c.vanId === vanId);
+        if (own) conflict(`Van is already booked: "${own.title}"`);
+        const viaCrew = clashing.find((c) => c.techId && crewIds.includes(c.techId));
+        if (viaCrew) conflict(`A van crew member is already booked: "${viaCrew.title}"`);
+    }
+}
+
+type AssignmentSnapshot = Scheduled & { techId: string | null; vanId: string | null };
+
+/**
+ * In-app + socket heads-up (never SMS) to the people whose day just changed:
+ * whoever is newly on the job (tech or van crew), whoever was taken off it, and
+ * — when only the time moved — the people still on it. Best-effort: the
+ * schedule write already landed, so a failure is logged, never thrown.
+ */
+async function notifyScheduleChange(
+    companyId: string,
+    job: { id: string; title: string },
+    before: AssignmentSnapshot | null,
+    after: AssignmentSnapshot,
+) {
+    try {
+        const crewOf = async (vanId: string | null | undefined) =>
+            vanId
+                ? (await prisma.vanMember.findMany({
+                    where: { vanId, van: { companyId } },
+                    select: { userId: true },
+                })).map((m) => m.userId)
+                : [];
+        const [beforeCrew, afterCrew] = await Promise.all([crewOf(before?.vanId), crewOf(after.vanId)]);
+        const peopleOn = (techId: string | null | undefined, crew: string[]) =>
+            new Set([techId, ...crew].filter((id): id is string => !!id));
+        const beforeIds = peopleOn(before?.techId, beforeCrew);
+        const afterIds = peopleOn(after.techId, afterCrew);
+        if (beforeIds.size === 0 && afterIds.size === 0) return;
+
+        const timeMoved = !!before && (
+            !sameInstant(before.scheduledStart, after.scheduledStart) ||
+            !sameInstant(before.scheduledEnd, after.scheduledEnd)
+        );
+        const when = after.scheduledStart
+            ? formatInTimeZone(after.scheduledStart, await getCompanyTimezone(companyId))
+            : 'no time set';
+
+        const sends: Promise<unknown>[] = [];
+        for (const userId of afterIds) {
+            if (!beforeIds.has(userId)) {
+                sends.push(notificationService.notifyUser(
+                    userId, companyId, 'JOB_ASSIGNED', 'New job assigned', `${job.title} → ${when}`,
+                ));
+            } else if (timeMoved) {
+                sends.push(notificationService.notifyUser(
+                    userId, companyId, 'ALERT', 'Job moved', `${job.title} → ${when}`,
+                ));
+            }
+        }
+        for (const userId of beforeIds) {
+            if (!afterIds.has(userId)) {
+                sends.push(notificationService.notifyUser(
+                    userId, companyId, 'ALERT', 'Job reassigned', `${job.title} is no longer on your schedule`,
+                ));
+            }
+        }
+        await Promise.all(sends);
+    } catch (err) {
+        logger.warn(
+            { jobId: job.id, err: err instanceof Error ? err.message : String(err) },
+            'Schedule change notification failed',
+        );
+    }
+}
+
 // Dispatch-board status → colour, consumed by the web calendar.
 const STATUS_COLORS: Record<string, string> = {
     REQUESTED: '#9ca3af',
     ASSIGNED: '#3b82f6',
     EN_ROUTE: '#8b5cf6',
     ON_SITE: '#f59e0b',
+    PAUSED: '#f97316',
     COMPLETED: '#10b981',
     CANCELED: '#cbd5e1',
 };
@@ -103,15 +275,15 @@ export const schedulingService = {
     },
 
     getEvents: async (companyId: string, start: string, end: string, branchId?: string) => {
+        const range = { start: new Date(start), end: new Date(end) };
         const jobs = await prisma.job.findMany({
             where: {
                 companyId,
                 deletedAt: null,
                 ...(branchId ? { branchId } : {}),
-                scheduledStart: {
-                    gte: new Date(start),
-                    lte: new Date(end),
-                }
+                // Overlap, not "starts inside": a multi-day job that began last
+                // week still shows on this week's board.
+                ...overlapsWindowWhere(range),
             },
             include: {
                 customer: { select: { name: true, phone: true } },
@@ -122,7 +294,7 @@ export const schedulingService = {
         });
 
         // Transform to FullCalendar Events
-        return jobs.map(job => {
+        return jobs.filter((job) => overlapsWindow(job, range)).map(job => {
             const tech = (job as any).tech;
             const techName = tech
                 ? [tech.firstName, tech.lastName].filter(Boolean).join(' ') ||
@@ -135,7 +307,7 @@ export const schedulingService = {
                 start: job.scheduledStart,
                 // Recurring-generated jobs have no end; default to a 60-minute block
                 // so the calendar draws something real.
-                end: job.scheduledEnd ?? (job.scheduledStart ? new Date(job.scheduledStart.getTime() + 60 * 60 * 1000) : null),
+                end: job.scheduledStart ? effectiveEnd(job.scheduledStart, job.scheduledEnd) : null,
                 resourceId: job.vanId || job.techId || 'unassigned',
                 // Finished / cancelled jobs can't be dragged on the board.
                 editable: !terminal,
@@ -182,6 +354,10 @@ export const schedulingService = {
         if (!property) throw new AppError('Property not found', StatusCodes.NOT_FOUND);
 
         await assertAssigneesInCompany(companyId, { techId: input.techId, vanId: input.vanId });
+        await assertNoScheduleConflict(companyId, null, { start, end }, {
+            techId: input.techId ?? null,
+            vanId: input.vanId ?? null,
+        });
 
         // Whitelist every column — companyId is forced from the caller's token and
         // can never be set by the body (no tenant move).
@@ -202,24 +378,33 @@ export const schedulingService = {
         });
 
         socketService.emitToCompany(companyId, 'job:created', job);
+        await notifyScheduleChange(companyId, job, null, job);
         return job;
     },
 
     getMyWeek: async (companyId: string, userId: string, start: string, end: string) => {
+        const range = { start: new Date(start), end: new Date(end) };
         const vanMembership = await prisma.vanMember.findFirst({
             where: { userId, van: { companyId, active: true } },
             select: { vanId: true },
         });
+        const isMine = (job: { techId: string | null; vanId: string | null }) =>
+            job.techId === userId || (!!vanMembership && job.vanId === vanMembership.vanId);
 
+        // Overlap, not "fits inside": a null-end job (counts as one hour) and a
+        // multi-day job straddling the week edge used to vanish from the week.
         const jobs = await prisma.job.findMany({
             where: {
                 companyId,
                 deletedAt: null,
-                scheduledStart: { gte: new Date(start) },
-                scheduledEnd: { lte: new Date(end) },
-                OR: [
-                    { techId: userId },
-                    ...(vanMembership ? [{ vanId: vanMembership.vanId }] : []),
+                AND: [
+                    overlapsWindowWhere(range),
+                    {
+                        OR: [
+                            { techId: userId },
+                            ...(vanMembership ? [{ vanId: vanMembership.vanId }] : []),
+                        ],
+                    },
                 ],
             },
             include: {
@@ -230,11 +415,11 @@ export const schedulingService = {
             orderBy: { scheduledStart: 'asc' },
         });
 
-        return jobs.map(job => ({
+        return jobs.filter((job) => isMine(job) && overlapsWindow(job, range)).map(job => ({
             id: job.id,
             title: `${job.title} - ${job.customer.name}`,
             start: job.scheduledStart,
-            end: job.scheduledEnd,
+            end: job.scheduledStart ? effectiveEnd(job.scheduledStart, job.scheduledEnd) : null,
             extendedProps: {
                 status: job.status,
                 priority: job.priority,
@@ -246,6 +431,7 @@ export const schedulingService = {
             backgroundColor:
                 job.status === 'COMPLETED' ? '#10b981' :
                 job.status === 'ON_SITE' ? '#f59e0b' :
+                job.status === 'PAUSED' ? '#f97316' :
                 job.status === 'EN_ROUTE' ? '#8b5cf6' :
                 '#3b82f6',
         }));
@@ -277,9 +463,9 @@ export const schedulingService = {
         // Unassigning (no tech and no van left): a live job can't be stripped of
         // its crew; an ASSIGNED job falls back to REQUESTED below.
         const willBeUnassigned = !nextTechId && !nextVanId;
-        if (willBeUnassigned && (job.status === 'EN_ROUTE' || job.status === 'ON_SITE')) {
+        if (willBeUnassigned && (job.status === 'EN_ROUTE' || job.status === 'ON_SITE' || job.status === 'PAUSED')) {
             throw new AppError(
-                'Cannot unassign a job that is en route or on site',
+                'Cannot unassign a job that is en route, on site or paused',
                 StatusCodes.CONFLICT,
             );
         }
@@ -298,33 +484,16 @@ export const schedulingService = {
             throw new AppError('End must be after start', StatusCodes.BAD_REQUEST);
         }
 
-        // Conflict detection on both the tech and the van whenever an effective
-        // window exists and there is someone/something to double-book.
-        if (effStart && effEnd) {
-            const overlap = {
+        // Conflict detection on the tech, the van and their crew links whenever a
+        // start exists. A missing end counts as a one-hour slot, so a job with
+        // no end can still clash (and be clashed with).
+        if (effStart) {
+            await assertNoScheduleConflict(
                 companyId,
-                id: { not: job.id },
-                deletedAt: null,
-                status: { in: ['ASSIGNED', 'EN_ROUTE', 'ON_SITE'] as ('ASSIGNED' | 'EN_ROUTE' | 'ON_SITE')[] },
-                AND: [
-                    { scheduledStart: { lt: effEnd } },
-                    { scheduledEnd: { gt: effStart } },
-                ],
-            };
-            if (nextTechId) {
-                const conflict = await prisma.job.findFirst({
-                    where: { ...overlap, techId: nextTechId },
-                    select: { id: true, title: true },
-                });
-                if (conflict) throw new AppError(`Tech is already booked: "${conflict.title}"`, StatusCodes.CONFLICT);
-            }
-            if (nextVanId) {
-                const conflict = await prisma.job.findFirst({
-                    where: { ...overlap, vanId: nextVanId },
-                    select: { id: true, title: true },
-                });
-                if (conflict) throw new AppError(`Van is already booked: "${conflict.title}"`, StatusCodes.CONFLICT);
-            }
+                job.id,
+                { start: effStart, end: effectiveEnd(effStart, effEnd) },
+                { techId: nextTechId, vanId: nextVanId },
+            );
         }
 
         // Whitelist the writable fields — never let an arbitrary `...input` key
@@ -332,7 +501,13 @@ export const schedulingService = {
         // window and the assignment.
         const data: Record<string, unknown> = {};
         if (input.scheduledStart !== undefined) {
-            data.scheduledStart = input.scheduledStart ? new Date(input.scheduledStart) : null;
+            data.scheduledStart = effStart;
+            // A new start time needs its own 24h/1h customer reminders — the
+            // sweep skips any job whose sent-at flags are already stamped.
+            if (!sameInstant(job.scheduledStart, effStart)) {
+                data.reminder24hSentAt = null;
+                data.reminder1hSentAt = null;
+            }
         }
         if (input.scheduledEnd !== undefined) {
             data.scheduledEnd = input.scheduledEnd ? new Date(input.scheduledEnd) : null;
@@ -357,6 +532,7 @@ export const schedulingService = {
         });
 
         socketService.emitToCompany(companyId, 'schedule:updated', updatedJob);
+        await notifyScheduleChange(companyId, updatedJob, job, updatedJob);
         return updatedJob;
     },
 
@@ -377,20 +553,19 @@ export const schedulingService = {
         // crew is booked in the window, so van bookings count too.
         let overlappingJobs: Array<{ techId: string | null; vanId: string | null }> = [];
         const vansByTech = new Map<string, Set<string>>();
-        if (job.scheduledStart && job.scheduledEnd && techIds.length > 0) {
-            overlappingJobs = await prisma.job.findMany({
+        if (job.scheduledStart && techIds.length > 0) {
+            const slot = { start: job.scheduledStart, end: effectiveEnd(job.scheduledStart, job.scheduledEnd) };
+            const inWindow = await prisma.job.findMany({
                 where: {
                     companyId,
                     id: { not: job.id },
                     deletedAt: null,
-                    status: { in: ['ASSIGNED', 'EN_ROUTE', 'ON_SITE'] },
-                    AND: [
-                        { scheduledStart: { lt: job.scheduledEnd } },
-                        { scheduledEnd: { gt: job.scheduledStart } },
-                    ],
+                    status: { in: BOOKED_STATUSES },
+                    ...overlapsWindowWhere(slot),
                 },
-                select: { techId: true, vanId: true },
+                select: { techId: true, vanId: true, scheduledStart: true, scheduledEnd: true },
             });
+            overlappingJobs = inWindow.filter((o) => overlapsWindow(o, slot));
             const vanMembers = await prisma.vanMember.findMany({
                 where: { userId: { in: techIds }, van: { companyId, active: true } },
                 select: { userId: true, vanId: true },
@@ -424,35 +599,58 @@ export const schedulingService = {
         return { requiredSkills: required, candidates };
     },
 
-    /** Customer-facing tracker token + send "On my way" SMS. */
-    onMyWay: async (jobId: string, companyId: string) => {
+    /**
+     * "On my way" — kept for older clients and queued offline replays; the field
+     * apps now send PATCH /jobs/:id/status EN_ROUTE directly. Guards first, then
+     * the status change goes through jobsService.updateStatus, which owns the
+     * TRAVEL clock, the tracker token, the stale-replay check and the single
+     * customer en-route message.
+     */
+    onMyWay: async (
+        jobId: string,
+        companyId: string,
+        actor: { userId: string; role: string },
+        clientAt?: string,
+    ) => {
         const job = await prisma.job.findFirst({
-            where: { id: jobId, companyId },
-            include: { tech: { select: PUBLIC_USER_SELECT }, customer: true },
+            where: { id: jobId, companyId, deletedAt: null },
+            select: { id: true, status: true, techId: true, vanId: true, customerTrackingToken: true },
         });
         if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
-        if (!job.tech) throw new AppError('Job has no tech assigned', StatusCodes.BAD_REQUEST);
 
-        const token = job.customerTrackingToken ?? crypto.randomBytes(20).toString('hex');
-        const trackingUrl = `${config.WEB_URL}/track/${token}`;
-        const techName = [job.tech.firstName, job.tech.lastName].filter(Boolean).join(' ') || 'Your technician';
+        if (actor.role === 'TECHNICIAN' && job.techId !== actor.userId) {
+            const crewMate = job.vanId
+                ? await prisma.vanMember.findFirst({
+                    where: { userId: actor.userId, vanId: job.vanId, van: { companyId } },
+                    select: { id: true },
+                })
+                : null;
+            if (!crewMate) {
+                throw new AppError('You can only update jobs assigned to you or your van', StatusCodes.FORBIDDEN);
+            }
+        }
+        if (!job.techId && !job.vanId) {
+            throw new AppError('Job has no tech or van assigned', StatusCodes.BAD_REQUEST);
+        }
+        if (job.status === 'COMPLETED' || job.status === 'CANCELED') {
+            throw new AppError(`Job is already ${job.status.toLowerCase()}`, StatusCodes.CONFLICT);
+        }
+        if (job.status === 'ON_SITE') {
+            throw new AppError('Job is already on site', StatusCodes.CONFLICT);
+        }
 
-        await prisma.job.update({
-            where: { id: job.id },
-            data: { status: 'EN_ROUTE', customerTrackingToken: token, onMyWaySentAt: new Date() },
+        const trackingFor = (token: string | null | undefined) => ({
+            token: token ?? null,
+            trackingUrl: token ? `${config.WEB_URL}/track/${token}` : null,
         });
 
-        await prisma.jobTimelineEvent.create({
-            data: { companyId, jobId: job.id, type: 'EN_ROUTE', message: `${techName} marked en route` },
-        });
+        // Already en route: a repeat tap must not text the customer again.
+        if (job.status === 'EN_ROUTE') return trackingFor(job.customerTrackingToken);
 
-        await notificationService.notifyCustomer(job.customerId, companyId, 'JOB_EN_ROUTE', {
-            techName,
-            trackingUrl,
-        });
-
-        socketService.emitToCompany(companyId, 'schedule:updated', { id: job.id, status: 'EN_ROUTE' });
-        return { trackingUrl, token };
+        const updated = await jobsService.updateStatus(
+            job.id, companyId, 'EN_ROUTE', actor.userId, clientAt, actor.role,
+        );
+        return trackingFor(updated?.customerTrackingToken ?? job.customerTrackingToken);
     },
 
     /** Public, unauthenticated tracking view. */

@@ -93,6 +93,17 @@ export function idempotencyHeaders(id: string | undefined): Record<string, strin
     return id ? { "Idempotency-Key": id } : {};
 }
 
+// Small JSON field writes. On "bars but no data" a request can hang for the full
+// client default; capping it lets the retryer try again sooner. Safe to retry:
+// the same Idempotency-Key makes a slow first success replay, never double up.
+// Payload-heavy writes (signature image, receipt, photo, PDF summary) keep the
+// longer default.
+const FIELD_REQUEST_TIMEOUT_MS = 15_000;
+
+function fieldRequest(clientMutationId: string | undefined) {
+    return { headers: idempotencyHeaders(clientMutationId), timeout: FIELD_REQUEST_TIMEOUT_MS };
+}
+
 /** Stamp a stable idempotency key onto the variables object if it has none yet.
  *  Runs in onMutate (once per action, never on a restored/replayed execute), so
  *  the key is written into mutation.state.variables before the mutation is
@@ -103,13 +114,17 @@ function stampId(variables: { clientMutationId?: string }) {
 
 const ASSIGNED_JOBS_KEY = ["technician-assigned-jobs"];
 const MY_WEEK_KEY = ["my-week"];
+// My Schedule's copy of the same /jobs/assigned/me feed.
+const MY_OPEN_JOBS_KEY = ["my-open-jobs"];
 
 /** Apply a transform to one job inside every cached assigned-jobs list. */
 function patchJob(qc: QueryClient, jobId: string, fn: (job: any) => any) {
-    qc.setQueriesData({ queryKey: ASSIGNED_JOBS_KEY }, (old: any) => {
+    const apply = (old: any) => {
         if (!Array.isArray(old)) return old;
         return old.map((job) => (job.id === jobId ? fn({ ...job }) : job));
-    });
+    };
+    qc.setQueriesData({ queryKey: ASSIGNED_JOBS_KEY }, apply);
+    qc.setQueriesData({ queryKey: MY_OPEN_JOBS_KEY }, apply);
 }
 
 /** Patch a job's status inside every cached My Schedule (week) calendar list. */
@@ -134,11 +149,51 @@ function patchVanItemQty(qc: QueryClient, vanId: string, itemId: string, delta: 
     });
 }
 
-function invalidateFieldQueries(qc: QueryClient) {
+/** Field-ops (status/checklist/…) mutations still queued or in flight. */
+function pendingFieldOps(qc: QueryClient) {
+    return qc.isMutating({ predicate: (m) => m.options.scope?.id === FIELD_OPS_SCOPE.id });
+}
+
+function refetchFieldLists(qc: QueryClient) {
     return Promise.all([
         qc.invalidateQueries({ queryKey: ASSIGNED_JOBS_KEY }),
         qc.invalidateQueries({ queryKey: MY_WEEK_KEY }),
+        qc.invalidateQueries({ queryKey: MY_OPEN_JOBS_KEY }),
     ]);
+}
+
+/**
+ * Reconcile the field lists with the server once the field-ops FIFO queue has
+ * drained — never while later taps are still queued, or the refetch would
+ * overwrite their optimistic status with the server's older one (offering the
+ * tech a button they already pressed). Driven by the MutationCache rather than
+ * each default's onSettled, so every field-ops action — including ones with no
+ * onSettled, and a rejected one whose optimistic status must be rolled back —
+ * ends in exactly one refetch when the queue empties.
+ */
+function refetchWhenFieldOpsDrain(qc: QueryClient) {
+    qc.getMutationCache().subscribe((event) => {
+        const mutation = event.mutation;
+        if (!mutation || mutation.options.scope?.id !== FIELD_OPS_SCOPE.id) return;
+        const pending = mutation.state.status === "pending";
+        // Settled (success/error), or a still-queued action discarded from the
+        // outbox — its optimistic patch needs undoing. Ignore gc of settled ones.
+        const finished =
+            (event.type === "updated" && !pending) || (event.type === "removed" && pending);
+        if (!finished) return;
+        if (pendingFieldOps(qc) > 0) return;
+        void refetchFieldLists(qc);
+    });
+}
+
+/**
+ * For callers outside the field-ops scope (uploads, live socket pushes):
+ * refetch now when the queue is idle. Otherwise do nothing — the drain refetch
+ * above runs when the queue empties, so the refresh is deferred, not lost.
+ */
+export function refreshFieldQueriesWhenIdle(qc: QueryClient) {
+    if (pendingFieldOps(qc) > 0) return Promise.resolve();
+    return refetchFieldLists(qc);
 }
 
 const tempId = () => `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -153,12 +208,14 @@ const tempId = () => `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8
  * so a replay/retry can never create a duplicate.
  */
 export function registerOfflineMutationDefaults(qc: QueryClient) {
+    refetchWhenFieldOpsDrain(qc);
+
     qc.setMutationDefaults(OFFLINE_KEYS.status, {
         scope: FIELD_OPS_SCOPE,
         mutationFn: async ({ jobId, status, clientAt, clientMutationId }: { jobId: string; status: string; clientAt?: string; clientMutationId?: string }) => {
             // clientAt = when the tech tapped (not when this replays): the server
             // drives the clock from it and skips the customer SMS if it's stale.
-            await api.patch(`/jobs/${jobId}/status`, { status, clientAt }, { headers: idempotencyHeaders(clientMutationId) });
+            await api.patch(`/jobs/${jobId}/status`, { status, clientAt }, fieldRequest(clientMutationId));
         },
         onMutate: async (variables: { jobId: string; status: string; clientAt?: string; clientMutationId?: string }) => {
             stampId(variables);
@@ -166,6 +223,7 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
             const { jobId, status } = variables;
             await qc.cancelQueries({ queryKey: ASSIGNED_JOBS_KEY });
             await qc.cancelQueries({ queryKey: MY_WEEK_KEY });
+            await qc.cancelQueries({ queryKey: MY_OPEN_JOBS_KEY });
             patchJob(qc, jobId, (job) => {
                 job.status = status;
                 if ((status === "EN_ROUTE" || status === "ON_SITE") && !job.actualStart) {
@@ -176,13 +234,12 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
             });
             patchWeekEventStatus(qc, jobId, status);
         },
-        onSettled: () => invalidateFieldQueries(qc),
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.checklist, {
         scope: FIELD_OPS_SCOPE,
         mutationFn: async ({ jobId, checkId, isCompleted, clientMutationId }: { jobId: string; checkId: string; isCompleted: boolean; clientMutationId?: string }) => {
-            await api.patch(`/jobs/${jobId}/checklist/${checkId}`, { isCompleted }, { headers: idempotencyHeaders(clientMutationId) });
+            await api.patch(`/jobs/${jobId}/checklist/${checkId}`, { isCompleted }, fieldRequest(clientMutationId));
         },
         onMutate: async (variables: { jobId: string; checkId: string; isCompleted: boolean; clientMutationId?: string }) => {
             stampId(variables);
@@ -197,13 +254,12 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
                 return job;
             });
         },
-        onSettled: () => invalidateFieldQueries(qc),
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.note, {
         scope: FIELD_OPS_SCOPE,
         mutationFn: async ({ jobId, message, clientMutationId }: { jobId: string; message: string; clientMutationId?: string }) => {
-            await api.post(`/jobs/${jobId}/notes`, { message }, { headers: idempotencyHeaders(clientMutationId) });
+            await api.post(`/jobs/${jobId}/notes`, { message }, fieldRequest(clientMutationId));
         },
         onMutate: async (variables: { jobId: string; message: string; clientMutationId?: string }) => {
             stampId(variables);
@@ -217,13 +273,12 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
                 return job;
             });
         },
-        onSettled: () => invalidateFieldQueries(qc),
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.lineItemAdd, {
         scope: FIELD_OPS_SCOPE,
         mutationFn: async ({ jobId, name, quantity, unitPrice, type, priceBookItemId, clientMutationId }: { jobId: string; name: string; quantity: number; unitPrice: number; type: string; priceBookItemId?: string; tempId?: string; clientMutationId?: string }) => {
-            await api.post(`/jobs/${jobId}/line-items`, { name, quantity, unitPrice, type, priceBookItemId }, { headers: idempotencyHeaders(clientMutationId) });
+            await api.post(`/jobs/${jobId}/line-items`, { name, quantity, unitPrice, type, priceBookItemId }, fieldRequest(clientMutationId));
         },
         onMutate: async (variables: { jobId: string; name: string; quantity: number; unitPrice: number; type: string; tempId?: string; clientMutationId?: string }) => {
             stampId(variables);
@@ -249,13 +304,12 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
                 return job;
             });
         },
-        onSettled: () => invalidateFieldQueries(qc),
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.lineItemRemove, {
         scope: FIELD_OPS_SCOPE,
         mutationFn: async ({ jobId, itemId, clientMutationId }: { jobId: string; itemId: string; clientMutationId?: string }) => {
-            await api.delete(`/jobs/${jobId}/line-items/${itemId}`, { headers: idempotencyHeaders(clientMutationId) });
+            await api.delete(`/jobs/${jobId}/line-items/${itemId}`, fieldRequest(clientMutationId));
         },
         onMutate: async (variables: { jobId: string; itemId: string; clientMutationId?: string }) => {
             stampId(variables);
@@ -266,7 +320,6 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
                 return job;
             });
         },
-        onSettled: () => invalidateFieldQueries(qc),
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.signature, {
@@ -286,7 +339,6 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
                 return job;
             });
         },
-        onSettled: () => invalidateFieldQueries(qc),
     });
 
     qc.setMutationDefaults(OFFLINE_KEYS.expense, {
@@ -309,7 +361,7 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
         onMutate: async (variables: { jobId: string; description: string; amount: number; category: string; receiptBlobId?: string; clientMutationId?: string }) => {
             stampId(variables);
         },
-        onSettled: () => invalidateFieldQueries(qc),
+        onSettled: () => refreshFieldQueriesWhenIdle(qc),
     });
 
     // Field quote: the tech builds a price-book-driven quote on site. Prices are
@@ -319,7 +371,7 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     qc.setMutationDefaults(OFFLINE_KEYS.fieldQuote, {
         scope: FIELD_OPS_SCOPE,
         mutationFn: async ({ jobId, items, clientMutationId }: { jobId: string; items: Array<{ priceBookItemId?: string; name: string; quantity: number; type: string }>; clientMutationId?: string }) => {
-            await api.post(`/finance/estimates/field`, { jobId, items }, { headers: idempotencyHeaders(clientMutationId) });
+            await api.post(`/finance/estimates/field`, { jobId, items }, fieldRequest(clientMutationId));
         },
         onMutate: async (variables: { jobId: string; items: Array<{ priceBookItemId?: string; name: string; quantity: number; type: string }>; clientMutationId?: string }) => {
             stampId(variables);
@@ -335,12 +387,11 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     qc.setMutationDefaults(OFFLINE_KEYS.fieldInvoice, {
         scope: FIELD_OPS_SCOPE,
         mutationFn: async ({ jobId, clientMutationId }: { jobId: string; clientMutationId?: string }) => {
-            return (await api.post(`/finance/jobs/${jobId}/field-invoice`, {}, { headers: idempotencyHeaders(clientMutationId) })).data;
+            return (await api.post(`/finance/jobs/${jobId}/field-invoice`, {}, fieldRequest(clientMutationId))).data;
         },
         onMutate: async (variables: { jobId: string; clientMutationId?: string }) => {
             stampId(variables);
         },
-        onSettled: () => invalidateFieldQueries(qc),
     });
 
     // Field form / CoC submission. The submission is a separate entity (not part
@@ -349,7 +400,7 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     qc.setMutationDefaults(OFFLINE_KEYS.formSubmit, {
         scope: FIELD_OPS_SCOPE,
         mutationFn: async ({ jobId, templateId, data, signatureUrl, clientMutationId }: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string; clientMutationId?: string }) => {
-            await api.post(`/digital-forms/submissions`, { jobId, templateId, data, signatureUrl }, { headers: idempotencyHeaders(clientMutationId) });
+            await api.post(`/digital-forms/submissions`, { jobId, templateId, data, signatureUrl }, fieldRequest(clientMutationId));
         },
         onMutate: async (variables: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string; clientMutationId?: string }) => {
             stampId(variables);
@@ -388,7 +439,7 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
             });
             await delPhotoBlob(blobId);
         },
-        onSettled: () => invalidateFieldQueries(qc),
+        onSettled: () => refreshFieldQueriesWhenIdle(qc),
     });
 
     // Customer job summary (PDF by email + WhatsApp). Needs signal, but queuing it
@@ -406,17 +457,18 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
         },
     });
 
-    // "On my way" — notifies the customer. Idempotency-Key stops a double-tap (or a
-    // replay) from texting the customer twice.
+    // Legacy "On my way": the field UIs now send status EN_ROUTE instead. Kept so
+    // taps already queued on a phone still replay. clientAt lets the server skip
+    // a stale customer message; Idempotency-Key stops a double text.
     qc.setMutationDefaults(OFFLINE_KEYS.onMyWay, {
         scope: FIELD_OPS_SCOPE,
-        mutationFn: async ({ jobId, clientMutationId }: { jobId: string; clientMutationId?: string }) => {
-            await api.post(`/schedule/jobs/${jobId}/on-my-way`, {}, { headers: idempotencyHeaders(clientMutationId) });
+        mutationFn: async ({ jobId, clientAt, clientMutationId }: { jobId: string; clientAt?: string; clientMutationId?: string }) => {
+            await api.post(`/schedule/jobs/${jobId}/on-my-way`, { clientAt }, fieldRequest(clientMutationId));
         },
-        onMutate: async (variables: { jobId: string; clientMutationId?: string }) => {
+        onMutate: async (variables: { jobId: string; clientAt?: string; clientMutationId?: string }) => {
             stampId(variables);
+            if (!variables.clientAt) variables.clientAt = new Date().toISOString();
         },
-        onSettled: () => invalidateFieldQueries(qc),
     });
 
     // Van stock: draw on a job. Server decrements atomically; the Idempotency-Key
@@ -427,7 +479,7 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
             await api.post(
                 `/vans/${vanId}/inventory/${itemId}/use`,
                 { jobId, quantity },
-                { headers: idempotencyHeaders(clientMutationId) },
+                fieldRequest(clientMutationId),
             );
         },
         onMutate: async (variables: { vanId: string; itemId: string; jobId: string; quantity: number; clientMutationId?: string }) => {
@@ -447,7 +499,7 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
             await api.post(
                 `/vans/${vanId}/inventory/${itemId}/adjust`,
                 { delta },
-                { headers: idempotencyHeaders(clientMutationId) },
+                fieldRequest(clientMutationId),
             );
         },
         onMutate: async (variables: { vanId: string; itemId: string; delta: number; clientMutationId?: string }) => {
@@ -466,7 +518,7 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
             await api.post(
                 `/vans/${vanId}/inventory/${itemId}/request-restock`,
                 {},
-                { headers: idempotencyHeaders(clientMutationId) },
+                fieldRequest(clientMutationId),
             );
         },
         onMutate: async (variables: { vanId: string; itemId: string; clientMutationId?: string }) => {
@@ -486,6 +538,7 @@ const STATUS_TEXT: Record<string, string> = {
     ASSIGNED: "Assigned",
     EN_ROUTE: "En route",
     ON_SITE: "On site",
+    PAUSED: "Paused",
     COMPLETED: "Completed",
     CANCELED: "Canceled",
 };

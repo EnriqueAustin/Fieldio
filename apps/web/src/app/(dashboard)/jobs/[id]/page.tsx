@@ -52,6 +52,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { toast } from "@/components/ui/use-toast";
 
 interface LineItem {
     id: string;
@@ -271,8 +272,15 @@ export default function JobDetailPage() {
 
     const updateStatus = async (status: string) => {
         if (!job) return;
-        await api.patch(`/jobs/${job.id}/status`, { status });
-        fetchJob();
+        try {
+            await api.patch(`/jobs/${job.id}/status`, { status });
+            fetchJob();
+        } catch (err: any) {
+            toast({
+                title: err?.response?.data?.message || "Could not update the job status",
+                variant: "destructive",
+            });
+        }
     };
 
     const toggleChecklist = async (checkId: string, currentStatus: boolean) => {
@@ -282,9 +290,17 @@ export default function JobDetailPage() {
     };
 
     const generateInvoice = async () => {
-        if (!job) return;
-        await api.post(`/finance/jobs/${job.id}/invoice`);
-        fetchJob();
+        if (!job || job.status !== "COMPLETED") return;
+        try {
+            await api.post(`/finance/jobs/${job.id}/invoice`);
+            toast({ title: "Invoice created" });
+            fetchJob();
+        } catch (err: any) {
+            toast({
+                title: err?.response?.data?.message || "Could not generate the invoice",
+                variant: "destructive",
+            });
+        }
     };
 
     const fetchPayLink = async () => {
@@ -371,7 +387,8 @@ export default function JobDetailPage() {
             </div>
         );
 
-    const currentStepIndex = STATUS_STEPS.indexOf(job.status as any);
+    // A paused job has been on site, so the stepper shows it at that step.
+    const currentStepIndex = STATUS_STEPS.indexOf((job.status === "PAUSED" ? "ON_SITE" : job.status) as any);
 
     return (
         <div className="space-y-6 pb-20">
@@ -408,6 +425,10 @@ export default function JobDetailPage() {
                         </div>
                     </div>
 
+                    {/* Field status buttons drive the tech's clock and customer
+                        messages, so only a technician gets them. The office closes
+                        a job with "Mark complete" in the office controls below. */}
+                    {!isOffice && (
                     <div className="flex flex-wrap items-center gap-2">
                         {job.status === "ASSIGNED" && (
                             <Button
@@ -425,6 +446,19 @@ export default function JobDetailPage() {
                                 Arrive On Site
                             </Button>
                         )}
+                        {job.status === "PAUSED" && (
+                            <>
+                                <Button
+                                    className="bg-amber-500 hover:bg-amber-600 gap-2"
+                                    onClick={() => updateStatus("ON_SITE")}
+                                >
+                                    Resume on site
+                                </Button>
+                                <Button variant="outline" onClick={() => updateStatus("EN_ROUTE")}>
+                                    Back en route
+                                </Button>
+                            </>
+                        )}
                         {job.status === "ON_SITE" && (() => {
                             const incomplete = job.checklist.filter((c) => !c.isCompleted).length;
                             const blocked = job.checklist.length > 0 && incomplete > 0;
@@ -438,6 +472,9 @@ export default function JobDetailPage() {
                                         <CheckCircle2 className="h-4 w-4" />
                                         Complete Job
                                     </Button>
+                                    <Button variant="outline" onClick={() => updateStatus("PAUSED")}>
+                                        Pause
+                                    </Button>
                                     {blocked && (
                                         <span className="text-xs text-amber-600 font-medium">
                                             {incomplete} checklist item{incomplete > 1 ? "s" : ""} remaining
@@ -447,6 +484,7 @@ export default function JobDetailPage() {
                             );
                         })()}
                     </div>
+                    )}
                 </div>
 
                 {isOffice && (
@@ -954,12 +992,20 @@ export default function JobDetailPage() {
                                         <DollarSign className="h-5 w-5" />
                                     </div>
                                     <h3 className="mt-3 font-semibold">No invoice yet</h3>
-                                    <p className="text-sm text-muted-foreground mt-1">
-                                        Generate one from this job's line items.
-                                    </p>
-                                    <Button onClick={generateInvoice} className="mt-4 gap-2">
-                                        <FileText className="h-4 w-4" /> Generate invoice
-                                    </Button>
+                                    {job.status === "COMPLETED" ? (
+                                        <>
+                                            <p className="text-sm text-muted-foreground mt-1">
+                                                Generate one from this job's line items.
+                                            </p>
+                                            <Button onClick={generateInvoice} className="mt-4 gap-2">
+                                                <FileText className="h-4 w-4" /> Generate invoice
+                                            </Button>
+                                        </>
+                                    ) : (
+                                        <p className="text-sm text-muted-foreground mt-1">
+                                            An invoice can be generated once the job is completed.
+                                        </p>
+                                    )}
                                 </div>
                             )}
                         </TabsContent>

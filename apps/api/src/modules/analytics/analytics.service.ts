@@ -72,7 +72,7 @@ export const analyticsService = {
         });
 
         const activeTechs = await prisma.job.findMany({
-            where: { companyId, deletedAt: null, status: { in: ['EN_ROUTE', 'ON_SITE'] } },
+            where: { companyId, deletedAt: null, status: { in: ['EN_ROUTE', 'ON_SITE', 'PAUSED'] } },
             select: {
                 id: true,
                 title: true,

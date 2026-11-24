@@ -23,6 +23,8 @@ jobRouter.patch('/:id', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(
 // Office lifecycle corrections: cancel (and reopen) a job with a reason + audit.
 jobRouter.post('/:id/cancel', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(jobsController.cancel));
 jobRouter.post('/:id/reopen', restrictTo('ADMIN', 'OFFICE'), catchAsync(jobsController.reopen));
+// Office completion without field events: no time entries, no customer messages.
+jobRouter.post('/:id/complete', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(jobsController.completeByOffice));
 jobRouter.delete('/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(jobsController.softDelete));
 // Field writes carry an Idempotency-Key so a replayed offline action runs once.
 jobRouter.patch('/:id/status', idempotency, catchAsync(jobsController.updateStatus));

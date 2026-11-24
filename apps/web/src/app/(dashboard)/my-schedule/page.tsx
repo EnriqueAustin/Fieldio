@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
@@ -28,7 +28,10 @@ import {
     Layers,
 } from "lucide-react";
 import api from "../../../lib/api";
-import { OFFLINE_KEYS } from "../../../lib/offline-mutations";
+import { useAuthStore } from "../../../store/auth";
+import { useJobProgress } from "../../../components/dashboard/technician/use-job-progress";
+import { useFieldLiveUpdates } from "../../../components/dashboard/technician/use-live-updates";
+import type { TechnicianJob } from "../../../components/dashboard/technician/types";
 import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
 import { useRouter } from "next/navigation";
@@ -137,7 +140,7 @@ const dayHeading = (d: Date) => {
 
 export default function MySchedulePage() {
     const router = useRouter();
-    const queryClient = useQueryClient();
+    const userId = useAuthStore((s) => s.user?.id);
     const calendarRef = useRef<FullCalendar | null>(null);
     const [selectedEvent, setSelectedEvent] = useState<WeekEvent | null>(null);
     const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -171,32 +174,33 @@ export default function MySchedulePage() {
     });
     const openJobs = assignedQuery.data ?? [];
 
-    // Status changes route through the offline mutation default — they queue
-    // when there's no signal and patch the calendar optimistically.
-    const statusMutation = useMutation<unknown, any, { jobId: string; status: string }>({
-        mutationKey: OFFLINE_KEYS.status,
-    });
-    const setStatus = (jobId: string, status: string) => {
-        statusMutation.mutate({ jobId, status });
+    // Every status change — including "On my way" (EN_ROUTE), which texts the
+    // customer their tracking link — goes through the same offline status
+    // mutation as the field console: queued without signal, FIFO-ordered,
+    // idempotent, guarded server-side, and patched into the cached week and
+    // open-jobs lists optimistically.
+    const { statusMutation } = useJobProgress();
+    const setStatus = (jobId: string, status: TechnicianJob["status"]) => {
+        // A swallowed double-tap sent nothing — don't show a status we never sent.
+        if (!statusMutation.mutate({ jobId, status })) return;
         setSelectedEvent((cur) =>
             cur && cur.id === jobId
                 ? { ...cur, extendedProps: { ...cur.extendedProps, status } }
                 : cur
         );
-        queryClient.invalidateQueries({ queryKey: ["my-open-jobs"] });
     };
+    // Finishing a job (checklist, signature, forms, invoice) happens in the
+    // field console's job flow, not the office job page.
+    const openFieldJob = (jobId: string) => router.push(`/?job=${encodeURIComponent(jobId)}`);
 
-    // "On my way" notifies the customer. Routed through the offline mutation
-    // default (mutationFn + Idempotency-Key there) so a tap on patchy signal
-    // isn't lost and a double-tap / replay can't text the customer twice.
-    const onMyWayMutation = useMutation<unknown, any, { jobId: string }>({
-        mutationKey: OFFLINE_KEYS.onMyWay,
-        onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: ["my-week"] });
-            queryClient.invalidateQueries({ queryKey: ["my-open-jobs"] });
-        },
-    });
-    const onMyWay = (jobId: string) => onMyWayMutation.mutate({ jobId });
+    // Office assigns/moves work → refetch the week live.
+    const isMyJob = useCallback(
+        (push: { id?: string }) =>
+            (eventsQuery.data ?? []).some((e) => e.id === push.id) ||
+            (assignedQuery.data ?? []).some((j) => j.id === push.id),
+        [eventsQuery.data, assignedQuery.data]
+    );
+    useFieldLiveUpdates(userId, isMyJob);
 
     const onDatesSet = (arg: { start: Date; end: Date }) => {
         setRange({ start: arg.start.toISOString(), end: arg.end.toISOString() });
@@ -216,6 +220,8 @@ export default function MySchedulePage() {
             openJobs
                 .filter((j) => {
                     if (j.status === "COMPLETED" || j.status === "CANCELED") return false;
+                    // Multi-day work under way is today's work, not overdue.
+                    if (j.status === "ON_SITE" || j.status === "PAUSED") return false;
                     if (!j.scheduledStart) return true;
                     return isBefore(new Date(j.scheduledStart), todayStart);
                 })
@@ -227,9 +233,22 @@ export default function MySchedulePage() {
     // The week's scheduled jobs grouped by day, today first then ascending.
     const dayGroups = useMemo(() => {
         const groups = new Map<string, { date: Date; jobs: AgendaJob[] }>();
+        const rangeStart = new Date(range.start);
+        const rangeEnd = new Date(range.end);
+        const now = new Date();
+        const todayInRange = now >= rangeStart && now < rangeEnd;
         for (const e of events) {
             if (!e.start) continue;
-            const d = new Date(e.start);
+            const start = new Date(e.start);
+            // A multi-day job that began before this week lands on the week's
+            // first day; one under way (on site / paused) sits under Today.
+            const inProgress = e.extendedProps.status === "ON_SITE" || e.extendedProps.status === "PAUSED";
+            const d =
+                inProgress && todayInRange && start < startOfDay(now)
+                    ? now
+                    : start < rangeStart
+                    ? rangeStart
+                    : start;
             const key = format(d, "yyyy-MM-dd");
             const bucket = groups.get(key) ?? { date: startOfDay(d), jobs: [] };
             bucket.jobs.push(fromWeekEvent(e));
@@ -246,11 +265,68 @@ export default function MySchedulePage() {
                 const bt = isToday(b.date) ? -Infinity : b.date.getTime();
                 return at - bt;
             });
-    }, [events]);
+    }, [events, range.start, range.end]);
 
     const openCount = openJobs.filter(
         (j) => j.status !== "COMPLETED" && j.status !== "CANCELED"
     ).length;
+
+    // Status buttons shared by the mobile agenda card and the desktop panel.
+    // Never disabled while an earlier change syncs — it queues behind it.
+    const renderStatusActions = (jobId: string, status: string, size = "") => (
+        <>
+            {status === "ASSIGNED" && (
+                <Button
+                    onClick={() => setStatus(jobId, "EN_ROUTE")}
+                    className={`w-full ${size} bg-violet-600 hover:bg-violet-700 gap-2`}
+                >
+                    <Truck className="h-4 w-4" /> On my way (notify customer)
+                </Button>
+            )}
+            {status === "EN_ROUTE" && (
+                <Button
+                    onClick={() => setStatus(jobId, "ON_SITE")}
+                    className={`w-full ${size} bg-amber-500 hover:bg-amber-600 gap-2`}
+                >
+                    <Play className="h-4 w-4" /> Arrived / Start work
+                </Button>
+            )}
+            {status === "ON_SITE" && (
+                <div className="grid grid-cols-2 gap-2">
+                    <Button
+                        onClick={() => setStatus(jobId, "PAUSED")}
+                        variant="outline"
+                        className={`${size} gap-1`}
+                    >
+                        <PauseCircle className="h-4 w-4" /> Leave for today
+                    </Button>
+                    <Button
+                        onClick={() => openFieldJob(jobId)}
+                        className={`${size} bg-emerald-600 hover:bg-emerald-700 gap-1`}
+                    >
+                        <CheckCircle2 className="h-4 w-4" /> Finish
+                    </Button>
+                </div>
+            )}
+            {status === "PAUSED" && (
+                <div className="grid grid-cols-2 gap-2">
+                    <Button
+                        onClick={() => setStatus(jobId, "EN_ROUTE")}
+                        className={`${size} bg-violet-600 hover:bg-violet-700 gap-1`}
+                    >
+                        <Truck className="h-4 w-4" /> Resume
+                    </Button>
+                    <Button
+                        onClick={() => setStatus(jobId, "ON_SITE")}
+                        variant="outline"
+                        className={`${size} gap-1`}
+                    >
+                        <Play className="h-4 w-4" /> I&apos;m on site
+                    </Button>
+                </div>
+            )}
+        </>
+    );
 
     const renderActions = (job: AgendaJob) => (
         <div className="space-y-2 border-t pt-3">
@@ -272,48 +348,7 @@ export default function MySchedulePage() {
                     </a>
                 </Button>
             )}
-            {job.status === "ASSIGNED" && (
-                <Button
-                    disabled={onMyWayMutation.isPending}
-                    onClick={() => onMyWay(job.id)}
-                    className="w-full min-h-[44px] bg-violet-600 hover:bg-violet-700 gap-2"
-                >
-                    <Truck className="h-4 w-4" /> On my way (notify customer)
-                </Button>
-            )}
-            {job.status === "EN_ROUTE" && (
-                <Button
-                    onClick={() => setStatus(job.id, "ON_SITE")}
-                    className="w-full min-h-[44px] bg-amber-500 hover:bg-amber-600 gap-2"
-                >
-                    <Play className="h-4 w-4" /> Arrived / Start work
-                </Button>
-            )}
-            {job.status === "ON_SITE" && (
-                <div className="grid grid-cols-2 gap-2">
-                    <Button
-                        onClick={() => setStatus(job.id, "PAUSED")}
-                        variant="outline"
-                        className="min-h-[44px] gap-1"
-                    >
-                        <PauseCircle className="h-4 w-4" /> Pause
-                    </Button>
-                    <Button
-                        onClick={() => router.push(`/jobs/${job.id}`)}
-                        className="min-h-[44px] bg-emerald-600 hover:bg-emerald-700 gap-1"
-                    >
-                        <CheckCircle2 className="h-4 w-4" /> Finish
-                    </Button>
-                </div>
-            )}
-            {job.status === "PAUSED" && (
-                <Button
-                    onClick={() => setStatus(job.id, "ON_SITE")}
-                    className="w-full min-h-[44px] bg-amber-500 hover:bg-amber-600 gap-2"
-                >
-                    <Play className="h-4 w-4" /> Resume
-                </Button>
-            )}
+            {renderStatusActions(job.id, job.status, "min-h-[44px]")}
             <Button
                 onClick={() => router.push(`/jobs/${job.id}`)}
                 variant="outline"
@@ -617,48 +652,7 @@ export default function MySchedulePage() {
                                 </Button>
 
                                 <div className="space-y-2 border-t pt-3">
-                                    {selectedEvent.extendedProps.status === "ASSIGNED" && (
-                                        <Button
-                                            disabled={onMyWayMutation.isPending}
-                                            onClick={() => onMyWay(selectedEvent.id)}
-                                            className="w-full bg-violet-600 hover:bg-violet-700 gap-2"
-                                        >
-                                            <Truck className="h-4 w-4" /> On my way (notify customer)
-                                        </Button>
-                                    )}
-                                    {selectedEvent.extendedProps.status === "EN_ROUTE" && (
-                                        <Button
-                                            onClick={() => setStatus(selectedEvent.id, "ON_SITE")}
-                                            className="w-full bg-amber-500 hover:bg-amber-600 gap-2"
-                                        >
-                                            <Play className="h-4 w-4" /> Arrived / Start work
-                                        </Button>
-                                    )}
-                                    {selectedEvent.extendedProps.status === "ON_SITE" && (
-                                        <div className="grid grid-cols-2 gap-2">
-                                            <Button
-                                                onClick={() => setStatus(selectedEvent.id, "PAUSED")}
-                                                variant="outline"
-                                                className="gap-1"
-                                            >
-                                                <PauseCircle className="h-4 w-4" /> Pause
-                                            </Button>
-                                            <Button
-                                                onClick={() => router.push(`/jobs/${selectedEvent.id}`)}
-                                                className="bg-emerald-600 hover:bg-emerald-700 gap-1"
-                                            >
-                                                <CheckCircle2 className="h-4 w-4" /> Finish
-                                            </Button>
-                                        </div>
-                                    )}
-                                    {selectedEvent.extendedProps.status === "PAUSED" && (
-                                        <Button
-                                            onClick={() => setStatus(selectedEvent.id, "ON_SITE")}
-                                            className="w-full bg-amber-500 hover:bg-amber-600 gap-2"
-                                        >
-                                            <Play className="h-4 w-4" /> Resume
-                                        </Button>
-                                    )}
+                                    {renderStatusActions(selectedEvent.id, selectedEvent.extendedProps.status)}
                                     <Button
                                         onClick={() => router.push(`/jobs/${selectedEvent.id}`)}
                                         variant="outline"

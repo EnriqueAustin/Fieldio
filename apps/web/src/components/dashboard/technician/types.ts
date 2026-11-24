@@ -71,7 +71,7 @@ export interface PriceBookItem {
 
 export interface TechnicianJob {
     id: string;
-    status: "REQUESTED" | "ASSIGNED" | "EN_ROUTE" | "ON_SITE" | "COMPLETED" | "CANCELED";
+    status: "REQUESTED" | "ASSIGNED" | "EN_ROUTE" | "ON_SITE" | "PAUSED" | "COMPLETED" | "CANCELED";
     priority: "LOW" | "MEDIUM" | "HIGH" | "EMERGENCY";
     title: string;
     description?: string | null;
@@ -83,6 +83,8 @@ export interface TechnicianJob {
     // Set once the job has been invoiced (timestamp only — never an amount) so the
     // closeout tab can show "invoice sent" without exposing pricing to the tech.
     invoicedAt?: string | null;
+    // Set on van-crew jobs; used to tell whether a live job push is ours.
+    vanId?: string | null;
     customer: {
         id: string;
         name: string;
@@ -120,6 +122,7 @@ export const STATUS_LABELS: Record<TechnicianJob["status"], string> = {
     ASSIGNED: "Assigned",
     EN_ROUTE: "En route",
     ON_SITE: "On site",
+    PAUSED: "Paused",
     COMPLETED: "Completed",
     CANCELED: "Canceled",
 };
@@ -129,6 +132,7 @@ export const STATUS_STYLES: Record<TechnicianJob["status"], string> = {
     ASSIGNED: "bg-blue-100 text-blue-700",
     EN_ROUTE: "bg-violet-100 text-violet-700",
     ON_SITE: "bg-amber-100 text-amber-700",
+    PAUSED: "bg-orange-100 text-orange-700",
     COMPLETED: "bg-emerald-100 text-emerald-700",
     CANCELED: "bg-rose-100 text-rose-700",
 };
@@ -137,6 +141,8 @@ export const JOB_STATUS_FLOW: Record<string, TechnicianJob["status"] | null> = {
     ASSIGNED: "EN_ROUTE",
     EN_ROUTE: "ON_SITE",
     ON_SITE: "COMPLETED",
+    // Back from a pause: heading to site again.
+    PAUSED: "EN_ROUTE",
 };
 
 export function getAddress(job: TechnicianJob) {
@@ -207,6 +213,9 @@ export const JOB_GROUP_LABELS: Record<JobTimeGroup, string> = {
  *  Overdue = scheduled before today and not yet completed. Unscheduled jobs fall
  *  into Upcoming so they never masquerade as urgent. */
 export function getJobTimeGroup(job: TechnicianJob): JobTimeGroup {
+    // Work already under way (incl. a multi-day job paused overnight) is today's
+    // work, never "Overdue" just because it started on an earlier day.
+    if (job.status === "ON_SITE" || job.status === "PAUSED") return "today";
     if (!job.scheduledStart) return "upcoming";
     const scheduled = new Date(job.scheduledStart);
     const now = new Date();
@@ -269,8 +278,21 @@ export function getPrimaryAction(
             ? "Start route"
             : job.status === "EN_ROUTE"
             ? "Arrive on site"
+            : job.status === "PAUSED"
+            ? "Resume"
             : "Complete job";
     return { label, nextStatus: next };
+}
+
+/** The optional second status action shown under the primary one: on site the
+ *  tech can leave for the day (stops the clock, no customer message); a paused
+ *  job can be picked straight back up on site. */
+export function getSecondaryAction(
+    job: TechnicianJob
+): { label: string; nextStatus: TechnicianJob["status"] } | null {
+    if (job.status === "ON_SITE") return { label: "Pause / leave site for today", nextStatus: "PAUSED" };
+    if (job.status === "PAUSED") return { label: "I'm on site — continue work", nextStatus: "ON_SITE" };
+    return null;
 }
 
 // ---- Day route (GET /schedule/my-route) ----

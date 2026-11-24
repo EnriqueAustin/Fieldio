@@ -31,6 +31,7 @@ import { JobList } from "./technician/job-list";
 import { JobDetail } from "./technician/job-detail";
 import { TechnicianHome } from "./technician/technician-home";
 import { PullToRefresh } from "./technician/pull-to-refresh";
+import { useFieldLiveUpdates } from "./technician/use-live-updates";
 
 /** True once the job is on-site with a full checklist and a captured signature. */
 function jobCanComplete(job: TechnicianJob) {
@@ -72,6 +73,14 @@ export function TechnicianView({ user }: TechnicianViewProps) {
 
     const assignedJobs = useMemo(() => assignedJobsQuery.data ?? [], [assignedJobsQuery.data]);
 
+    // Office assigns/moves work → refetch live instead of waiting for the poll.
+    const isMyJob = useCallback(
+        (push: { id?: string; vanId?: string | null }) =>
+            assignedJobs.some((job) => job.id === push.id || (!!push.vanId && job.vanId === push.vanId)),
+        [assignedJobs]
+    );
+    useFieldLiveUpdates(user.id, isMyJob);
+
     // Prefetch today's + overdue jobs' forms so the CoC/forms card works offline.
     // Once per session per job set (prefetchFormsForJobs is a no-op for cached ids).
     const prefetchedFormsKey = useRef<string | null>(null);
@@ -98,6 +107,21 @@ export function TechnicianView({ user }: TechnicianViewProps) {
             setSelectedJobId(assignedJobs[0]?.id ?? null);
         }
     }, [assignedJobs, selectedJobId]);
+
+    // Deep link from My Schedule ("Finish" → /?job=<id>) opens that job's field
+    // flow once the list has it. The param is dropped so a reload or back
+    // doesn't reopen it.
+    const deepLinkHandled = useRef(false);
+    useEffect(() => {
+        if (deepLinkHandled.current || !assignedJobs.length) return;
+        deepLinkHandled.current = true;
+        const jobId = new URLSearchParams(window.location.search).get("job");
+        if (!jobId) return;
+        window.history.replaceState(window.history.state, "", window.location.pathname);
+        if (!assignedJobs.some((job) => job.id === jobId)) return;
+        setSelectedJobId(jobId);
+        setMobileJobId(jobId);
+    }, [assignedJobs]);
 
     // Reset per-job media/signature drafts whenever the worked job changes.
     useEffect(() => {

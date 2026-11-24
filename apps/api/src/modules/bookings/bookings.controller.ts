@@ -18,6 +18,8 @@ const publicSubmitSchema = z.object({
     preferredDate: z.string().datetime().optional(),
 });
 
+const BOOKING_SLOT_MS = 60 * 60 * 1000;
+
 export const bookingsController = {
     /**
      * Public submission — used by /book/:companyId on the marketing site.
@@ -57,11 +59,25 @@ export const bookingsController = {
             where: { id: req.params.id, companyId },
         });
         if (!booking) throw new AppError('Booking not found', StatusCodes.NOT_FOUND);
+        if (booking.status === 'CONVERTED') {
+            throw new AppError('Booking has already been converted', StatusCodes.CONFLICT);
+        }
 
         const result = await prisma.$transaction(async (tx) => {
+            // Claim the booking first: a double-click or a second dispatcher
+            // racing this one finds nothing to claim and gets a 409, instead of
+            // creating a duplicate customer + property + job.
+            const claimed = await tx.bookingRequest.updateMany({
+                where: { id: booking.id, companyId, status: { not: 'CONVERTED' } },
+                data: { status: 'CONVERTED' },
+            });
+            if (claimed.count === 0) {
+                throw new AppError('Booking has already been converted', StatusCodes.CONFLICT);
+            }
+
             const customer =
                 booking.customerId
-                    ? await tx.customer.findUnique({ where: { id: booking.customerId } })
+                    ? await tx.customer.findFirst({ where: { id: booking.customerId, companyId } })
                     : await tx.customer.create({
                           data: {
                               companyId,
@@ -91,13 +107,19 @@ export const bookingsController = {
                     title: booking.serviceType ?? 'Service request',
                     description: booking.description,
                     scheduledStart: booking.preferredDate,
+                    // A start with no end used to drop off the tech's week and
+                    // never clash; a booking is a one-hour slot until dispatch
+                    // sets the real length.
+                    scheduledEnd: booking.preferredDate
+                        ? new Date(booking.preferredDate.getTime() + BOOKING_SLOT_MS)
+                        : null,
                     status: 'REQUESTED',
                 },
             });
 
             await tx.bookingRequest.update({
                 where: { id: booking.id },
-                data: { status: 'CONVERTED', customerId: customer.id },
+                data: { customerId: customer.id },
             });
 
             return { customer, property, job };

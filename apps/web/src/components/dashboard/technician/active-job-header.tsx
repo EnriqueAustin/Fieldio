@@ -7,6 +7,8 @@ import { LiveTimer } from "./live-timer";
 import {
     getAddress,
     getJobTiming,
+    getPrimaryAction,
+    getSecondaryAction,
     PRIORITY_BADGE,
     STATUS_LABELS,
     STATUS_STYLES,
@@ -29,7 +31,6 @@ interface ActiveJobHeaderProps {
 
 export function ActiveJobHeader({
     job,
-    nextStatus,
     canComplete,
     mapsHref,
     onChangeStatus,
@@ -43,12 +44,17 @@ export function ActiveJobHeader({
             ? "Customer has the tracking link — they’re notified you’re on the way."
             : job.status === "ON_SITE"
             ? "Customer was notified you arrived. Completing sends them a job summary by email and WhatsApp."
+            : job.status === "PAUSED"
+            ? "Paused — your clock is stopped. Tap Resume when you head back, or “I’m on site” if you’re already there."
             : job.status === "COMPLETED"
             ? "Customer was sent the completion summary automatically by email and WhatsApp."
             : null;
 
     const priority = PRIORITY_BADGE[job.priority];
-    const showTimer = Boolean(job.actualStart) && job.status !== "COMPLETED";
+    const primary = getPrimaryAction(job);
+    const secondary = getSecondaryAction(job);
+    // A paused job's clock is off, so a running timer would mislead.
+    const showTimer = Boolean(job.actualStart) && job.status !== "COMPLETED" && job.status !== "PAUSED";
 
     return (
         <Card>
@@ -86,14 +92,18 @@ export function ActiveJobHeader({
                     ) : null}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                    {!hideStatusButton && nextStatus && job.status !== "ON_SITE" && (
-                        <Button className="h-11" onClick={() => onChangeStatus(nextStatus)}>
-                            {job.status === "ASSIGNED" ? "Start route" : "Arrive on site"}
+                    {!hideStatusButton && primary && (
+                        <Button
+                            className="h-11"
+                            onClick={() => onChangeStatus(primary.nextStatus)}
+                            disabled={primary.nextStatus === "COMPLETED" && !canComplete}
+                        >
+                            {primary.label}
                         </Button>
                     )}
-                    {!hideStatusButton && job.status === "ON_SITE" && (
-                        <Button className="h-11" onClick={() => onChangeStatus("COMPLETED")} disabled={!canComplete}>
-                            Complete job
+                    {!hideStatusButton && secondary && (
+                        <Button variant="outline" className="h-11" onClick={() => onChangeStatus(secondary.nextStatus)}>
+                            {secondary.label}
                         </Button>
                     )}
                     <Button asChild variant="outline" className="h-11">

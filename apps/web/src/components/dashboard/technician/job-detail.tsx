@@ -7,7 +7,7 @@ import { ActiveJobHeader } from "./active-job-header";
 import { WorkTab } from "./work-tab";
 import { MediaTab } from "./media-tab";
 import { CloseoutTab } from "./closeout-tab";
-import { getPrimaryAction, type PriceBookItem, type TechnicianJob } from "./types";
+import { getPrimaryAction, getSecondaryAction, type PriceBookItem, type TechnicianJob } from "./types";
 import { useJobForms } from "./use-forms";
 import type { useLineItems } from "./use-line-items";
 import type { useFieldQuote } from "./use-field-quote";
@@ -77,6 +77,7 @@ export function JobDetail({
 
     const canInvoice = job.status === "COMPLETED" || effectiveCanComplete;
     const primary = getPrimaryAction(job);
+    const secondary = getSecondaryAction(job);
     const primaryDisabled = primary?.nextStatus === "COMPLETED" && !effectiveCanComplete;
     // When checklist + signature are done but a required form is still outstanding,
     // point the tech at the real blocker.
@@ -182,11 +183,10 @@ export function JobDetail({
                     {primary ? (
                         <button
                             type="button"
-                            // `isPending` stays true while a mutation is PAUSED offline, which
-                            // would wedge the action bar (tap Arrive, then can't tap Complete).
-                            // Only block on a genuinely in-flight request; the optimistic status
-                            // already advances `primary`, so a queued tap flips the button next.
-                            disabled={primaryDisabled || (statusMutation.isPending && !statusMutation.isPaused)}
+                            // Never blocked by an earlier change that is still syncing: the
+                            // FIFO field-ops queue orders it behind that one, and the
+                            // optimistic status has already advanced `primary`.
+                            disabled={primaryDisabled}
                             onClick={() =>
                                 statusMutation.mutate({ jobId: job.id, status: primary.nextStatus })
                             }
@@ -207,6 +207,17 @@ export function JobDetail({
                         <p className="mt-1.5 text-center text-xs text-amber-700">
                             {blockReason ?? "Finish the checklist and capture a signature to complete."}
                         </p>
+                    )}
+                    {secondary && (
+                        <button
+                            type="button"
+                            onClick={() =>
+                                statusMutation.mutate({ jobId: job.id, status: secondary.nextStatus })
+                            }
+                            className="mt-2 flex min-h-[44px] w-full items-center justify-center rounded-xl border border-slate-300 text-sm font-semibold transition active:scale-[0.99]"
+                        >
+                            {secondary.label}
+                        </button>
                     )}
                 </div>
             )}

@@ -9,6 +9,7 @@ import {
     getAddress,
     getJobTiming,
     getPrimaryAction,
+    getSecondaryAction,
     groupJobs,
     JOB_GROUP_LABELS,
     PRIORITY_BADGE,
@@ -60,6 +61,7 @@ export function TechnicianHome({
     // compliance form blocks completion too. Cached, so no duplicate fetch.
     const { requiredPending: nextJobFormsPending } = useJobForms(nextJob.id);
     const primary = getPrimaryAction(nextJob);
+    const secondary = getSecondaryAction(nextJob);
     const primaryDisabled =
         primary?.nextStatus === "COMPLETED" && (!canCompleteNext || nextJobFormsPending);
     const priority = PRIORITY_BADGE[nextJob.priority];
@@ -110,13 +112,22 @@ export function TechnicianHome({
                     {primary && (
                         <button
                             type="button"
-                            // A paused (offline) status change is already applied optimistically,
-                            // so only a genuinely in-flight request should disable the button.
-                            disabled={primaryDisabled || (statusMutation.isPending && !statusMutation.isPaused)}
+                            // Never blocked by an earlier change still syncing: it queues
+                            // behind it (FIFO) and the status is already applied optimistically.
+                            disabled={primaryDisabled}
                             onClick={() => statusMutation.mutate({ jobId: nextJob.id, status: primary.nextStatus })}
                             className="flex min-h-[52px] w-full items-center justify-center rounded-xl bg-primary text-base font-semibold text-primary-foreground transition active:scale-[0.99] disabled:opacity-50"
                         >
                             {primary.label}
+                        </button>
+                    )}
+                    {secondary && (
+                        <button
+                            type="button"
+                            onClick={() => statusMutation.mutate({ jobId: nextJob.id, status: secondary.nextStatus })}
+                            className="flex min-h-[44px] w-full items-center justify-center rounded-xl border border-slate-300 text-sm font-semibold transition active:scale-[0.99]"
+                        >
+                            {secondary.label}
                         </button>
                     )}
 

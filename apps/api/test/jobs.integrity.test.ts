@@ -178,7 +178,11 @@ describe('reschedule', () => {
     it('detects a van double-booking', async () => {
         fakePrisma.job.seed([
             { id: 'job_a', companyId: COMPANY, techId: null, vanId: 'van_1', status: 'ASSIGNED', title: 'A' },
-            { id: 'job_b', companyId: COMPANY, techId: null, vanId: 'van_1', status: 'ASSIGNED', title: 'B' },
+            // job_b must actually occupy the window: an unscheduled job can't clash.
+            {
+                id: 'job_b', companyId: COMPANY, techId: null, vanId: 'van_1', status: 'ASSIGNED', title: 'B',
+                scheduledStart: new Date(times.scheduledStart), scheduledEnd: new Date(times.scheduledEnd),
+            },
         ]);
         const res = await request(app)
             .patch('/schedule/jobs/job_a')

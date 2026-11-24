@@ -82,7 +82,7 @@ export const trackingController = {
             where: {
                 companyId,
                 techId: { in: latest.map((ping) => ping.userId) },
-                status: { in: ['ASSIGNED', 'EN_ROUTE', 'ON_SITE'] },
+                status: { in: ['ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'PAUSED'] },
             },
             include: {
                 customer: { select: { name: true } },

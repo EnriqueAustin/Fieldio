@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, XCircle, RotateCcw, CalendarClock } from "lucide-react";
+import { Pencil, XCircle, RotateCcw, CalendarClock, CheckCircle2 } from "lucide-react";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -61,6 +61,7 @@ export function JobOfficeControls({
     const [cancelOpen, setCancelOpen] = useState(false);
     const [reopenOpen, setReopenOpen] = useState(false);
     const [reassignOpen, setReassignOpen] = useState(false);
+    const [completeOpen, setCompleteOpen] = useState(false);
 
     const [editForm, setEditForm] = useState({
         title: job.title,
@@ -70,6 +71,7 @@ export function JobOfficeControls({
     });
     const [cancelReason, setCancelReason] = useState("");
     const [reopenReason, setReopenReason] = useState("");
+    const [completeNote, setCompleteNote] = useState("");
 
     // ADMIN / OFFICE may reopen; cancel is ADMIN / OFFICE / DISPATCHER.
     const canReopen = role === "ADMIN" || role === "OFFICE";
@@ -78,6 +80,9 @@ export function JobOfficeControls({
     // A finished job can only be reopened while it has not been invoiced.
     const reopenable = isCanceled || (isCompleted && !job.invoice);
     const cancelable = !isCanceled && !isCompleted;
+    // Office completion (no field events) is ADMIN / OFFICE / DISPATCHER, like cancel.
+    const canComplete = role === "ADMIN" || role === "OFFICE" || role === "DISPATCHER";
+    const completable = !isCanceled && !isCompleted;
 
     // Technician + van pickers for the reassign dialog, loaded on demand.
     const { data: techs = [] } = useQuery<Tech[]>({
@@ -157,9 +162,35 @@ export function JobOfficeControls({
             }),
     });
 
+    // Closes the job without field events: no time entries and no customer messages.
+    const completeJob = useMutation({
+        mutationFn: () =>
+            api.post(`/jobs/${job.id}/complete`, completeNote.trim() ? { note: completeNote.trim() } : {}),
+        onSuccess: () => {
+            toast({ title: "Job marked complete" });
+            setCompleteOpen(false);
+            setCompleteNote("");
+            invalidate();
+        },
+        onError: (err: any) =>
+            toast({
+                title: err?.response?.data?.message || "Could not complete the job",
+                variant: "destructive",
+            }),
+    });
+
     return (
         <>
             <div className="flex flex-wrap items-center gap-2">
+                {canComplete && completable && (
+                    <Button
+                        size="sm"
+                        className="gap-2 bg-emerald-600 hover:bg-emerald-700"
+                        onClick={() => setCompleteOpen(true)}
+                    >
+                        <CheckCircle2 className="h-4 w-4" /> Mark complete
+                    </Button>
+                )}
                 <Button
                     variant="outline"
                     size="sm"
@@ -304,6 +335,45 @@ export function JobOfficeControls({
                             disabled={!cancelReason.trim() || cancelJob.isPending}
                         >
                             {cancelJob.isPending ? "Cancelling…" : "Cancel job"}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Mark complete (office) */}
+            <Dialog open={completeOpen} onOpenChange={setCompleteOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Mark this job complete</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <p className="text-sm text-muted-foreground">
+                            Use this when the work was done but not recorded in the field app.
+                            The customer is not messaged and no hours are added. Correct the
+                            technician&apos;s hours on the timesheet if needed.
+                        </p>
+                        <div className="space-y-1.5">
+                            <Label htmlFor="complete-note">Note (optional)</Label>
+                            <Textarea
+                                id="complete-note"
+                                rows={3}
+                                maxLength={1000}
+                                placeholder="e.g. Confirmed with the customer by phone"
+                                value={completeNote}
+                                onChange={(e) => setCompleteNote(e.target.value)}
+                            />
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setCompleteOpen(false)}>
+                            Back
+                        </Button>
+                        <Button
+                            className="bg-emerald-600 hover:bg-emerald-700"
+                            onClick={() => completeJob.mutate()}
+                            disabled={completeJob.isPending}
+                        >
+                            {completeJob.isPending ? "Completing…" : "Mark complete"}
                         </Button>
                     </DialogFooter>
                 </DialogContent>

@@ -140,6 +140,9 @@ export const MAX_OPEN_ENTRY_SECONDS = 12 * 60 * 60;
  * Close any entry that has been running past the cap, truncating it to the cap
  * and marking it for review. Runs on read, so a stale clock is corrected the
  * next time anyone looks at the timesheet.
+ *
+ * A PAUSED job never trips this: pausing closes the clock, and resuming opens a
+ * fresh entry from the resume time, so only a genuinely forgotten clock counts.
  */
 export async function truncateRunawayEntries(companyId: string, userId?: string) {
     const cutoff = new Date(Date.now() - MAX_OPEN_ENTRY_SECONDS * 1000);

@@ -18,6 +18,12 @@ const eventsQuerySchema = z.object({
     end: z.string().datetime(),
 });
 
+// Real tap time of a queued offline "On my way" — lets the status service skip a
+// stale customer message when the replay finally lands.
+const onMyWayBodySchema = z.object({
+    clientAt: z.string().datetime().optional(),
+});
+
 export const schedulingController = {
     getUnscheduled: async (req: Request, res: Response) => {
         const jobs = await schedulingService.getUnscheduled(req.user!.companyId);
@@ -80,7 +86,9 @@ export const schedulingController = {
     },
 
     onMyWay: async (req: Request, res: Response) => {
-        const data = await schedulingService.onMyWay(req.params.id, req.user!.companyId);
+        const { clientAt } = onMyWayBodySchema.parse(req.body ?? {});
+        const { userId, role, companyId } = req.user!;
+        const data = await schedulingService.onMyWay(req.params.id, companyId, { userId, role }, clientAt);
         res.status(StatusCodes.OK).json({ status: 'success', data });
     },
 
