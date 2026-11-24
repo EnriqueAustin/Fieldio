@@ -1,4 +1,29 @@
 import { z } from 'zod';
+import { notificationSettingsSchema, defaultNotificationSettings } from '../notifications/notification-templates';
+
+// 24-hour "HH:MM". Fixed-width zero-padded, so lexical compare == chronological.
+const timeString = z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use 24-hour HH:MM time');
+
+// Per-day operating window. `start`/`end` are kept even when closed so toggling
+// a day back open restores sensible times. When open, close must be after open.
+const dayHoursSchema = z
+    .object({
+        open: z.boolean().default(false),
+        start: timeString.default('08:00'),
+        end: timeString.default('17:00'),
+    })
+    .default({})
+    .superRefine((val, ctx) => {
+        if (val.open && val.end <= val.start) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: 'Closing time must be after opening time',
+                path: ['end'],
+            });
+        }
+    });
 
 export const companySettingsSchema = z.object({
     regional: z.object({
@@ -60,6 +85,10 @@ export const companySettingsSchema = z.object({
         autoSendEmail: z.boolean().default(true),
         autoSendWhatsapp: z.boolean().default(true),
     }).default({}),
+    // Automated customer notifications (booked / en route / completed / invoice
+    // sent / quote sent). Master gate and per-event flags are ON by default so
+    // existing companies keep their lifecycle messages. See modules/notifications.
+    notifications: notificationSettingsSchema,
     // Field quoting is OFF by default: most companies price from the office and
     // technicians never see pricing. Companies that trust techs to quote on site
     // can opt in, which unlocks POST /finance/estimates/field for the TECHNICIAN role.
@@ -102,6 +131,27 @@ export const companySettingsSchema = z.object({
         showOnEstimates: z.boolean().default(true),
         provider: z.string().optional().nullable(),
     }).default({}),
+    // Weekly operating hours. Drives the public booking widget's valid slots and
+    // is shown to customers. Mon–Fri 08:00–17:00 and Sat 08:00–13:00 by default,
+    // Sunday closed. A day that is closed still carries start/end for when it is
+    // reopened. Close must be after open on any open day (enforced per day above).
+    businessHours: z.object({
+        mon: dayHoursSchema,
+        tue: dayHoursSchema,
+        wed: dayHoursSchema,
+        thu: dayHoursSchema,
+        fri: dayHoursSchema,
+        sat: dayHoursSchema,
+        sun: dayHoursSchema,
+    }).default({
+        mon: { open: true, start: '08:00', end: '17:00' },
+        tue: { open: true, start: '08:00', end: '17:00' },
+        wed: { open: true, start: '08:00', end: '17:00' },
+        thu: { open: true, start: '08:00', end: '17:00' },
+        fri: { open: true, start: '08:00', end: '17:00' },
+        sat: { open: true, start: '08:00', end: '13:00' },
+        sun: { open: false, start: '08:00', end: '17:00' },
+    }),
     // Customer self-service from the portal link. Rescheduling moves a booked
     // job on the dispatch board without the office, so it is OFF by default.
     portal: z.object({
@@ -206,6 +256,7 @@ export const defaultCompanySettings: CompanySettings = {
         autoSendEmail: true,
         autoSendWhatsapp: true,
     },
+    notifications: defaultNotificationSettings,
     fieldQuoting: {
         enabled: false,
     },
@@ -244,6 +295,15 @@ export const defaultCompanySettings: CompanySettings = {
         enabled: false,
         showOnEstimates: true,
         provider: null,
+    },
+    businessHours: {
+        mon: { open: true, start: '08:00', end: '17:00' },
+        tue: { open: true, start: '08:00', end: '17:00' },
+        wed: { open: true, start: '08:00', end: '17:00' },
+        thu: { open: true, start: '08:00', end: '17:00' },
+        fri: { open: true, start: '08:00', end: '17:00' },
+        sat: { open: true, start: '08:00', end: '13:00' },
+        sun: { open: false, start: '08:00', end: '17:00' },
     },
     portal: {
         selfReschedule: {

@@ -82,15 +82,23 @@ const send = async (params: {
 export const whatsappService = {
     isConfigured,
 
-    sendText: (phone: string, body: string, companyId?: string) =>
-        send({ to: phone, template: 'inbox_reply', companyId, body }),
+    sendText: (phone: string, body: string, companyId?: string, template = 'inbox_reply') =>
+        send({ to: phone, template, companyId, body }),
 
-    sendJobEnRoute: (phone: string, techName: string, trackingUrl?: string, companyId?: string) =>
+    sendJobEnRoute: (
+        phone: string,
+        techName: string,
+        trackingUrl?: string,
+        companyId?: string,
+        companyName?: string
+    ) =>
         send({
             to: phone,
             template: 'job_en_route',
             companyId,
-            body: `Your technician ${techName} is on the way!${trackingUrl ? `\n\nTrack live: ${trackingUrl}` : ''}`,
+            body:
+                `Your ${companyName ? `${companyName} technician` : 'technician'}${techName === 'Your technician' ? '' : ` ${techName}`} is on the way!` +
+                (trackingUrl ? `\n\nTrack live: ${trackingUrl}` : ''),
         }),
 
     sendJobStarted: (phone: string, techName: string, companyId?: string) =>

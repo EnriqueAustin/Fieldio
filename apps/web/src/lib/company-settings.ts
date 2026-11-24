@@ -60,6 +60,8 @@ export type CompanySettings = {
         enabled: boolean;
         showOnEstimates: boolean;
     };
+    businessHours: BusinessHours;
+    notifications: NotificationSettings;
     portal: {
         selfReschedule: {
             enabled: boolean;
@@ -67,6 +69,152 @@ export type CompanySettings = {
         };
     };
     modules: CompanyModules;
+};
+
+// Per-day operating window. `start`/`end` are "HH:MM" 24-hour strings and are
+// kept even when the day is closed. Mirrors apps/api company-settings.ts.
+export type DayHours = {
+    open: boolean;
+    start: string;
+    end: string;
+};
+
+export type DayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+
+export type BusinessHours = Record<DayKey, DayHours>;
+
+export const defaultBusinessHours: BusinessHours = {
+    mon: { open: true, start: '08:00', end: '17:00' },
+    tue: { open: true, start: '08:00', end: '17:00' },
+    wed: { open: true, start: '08:00', end: '17:00' },
+    thu: { open: true, start: '08:00', end: '17:00' },
+    fri: { open: true, start: '08:00', end: '17:00' },
+    sat: { open: true, start: '08:00', end: '13:00' },
+    sun: { open: false, start: '08:00', end: '17:00' },
+};
+
+// The master `enabled` gate is ON by default: core lifecycle messages keep sending unless a company opts out.
+export const NOTIFICATION_CHANNELS = ['EMAIL', 'SMS', 'WHATSAPP'] as const;
+export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];
+
+export const NOTIFICATION_EVENT_KEYS = [
+    'JOB_BOOKED',
+    'TECH_EN_ROUTE',
+    'JOB_COMPLETED',
+    'INVOICE_SENT',
+    'QUOTE_SENT',
+] as const;
+export type NotificationEventKey = (typeof NOTIFICATION_EVENT_KEYS)[number];
+
+export type NotificationTemplate = {
+    enabled: boolean;
+    channel: NotificationChannel;
+    subject: string;
+    body: string;
+};
+
+export type NotificationSettings = {
+    enabled: boolean;
+    templates: Record<NotificationEventKey, NotificationTemplate>;
+};
+
+// Presentation metadata for the settings page: human labels and the placeholder
+// tokens a trigger supplies. Placeholder syntax matches the dunning templates:
+// {{token}}.
+export const NOTIFICATION_EVENTS: {
+    key: NotificationEventKey;
+    label: string;
+    description: string;
+    placeholders: string[];
+}[] = [
+    {
+        key: 'JOB_BOOKED',
+        label: 'Job booked',
+        description: 'Sent to the customer when a new job is booked.',
+        placeholders: ['customerName', 'companyName', 'jobDate'],
+    },
+    {
+        key: 'TECH_EN_ROUTE',
+        label: 'Technician en route',
+        description: 'Sent when the technician is on the way.',
+        placeholders: ['customerName', 'companyName', 'technicianName', 'trackingUrl'],
+    },
+    {
+        key: 'JOB_COMPLETED',
+        label: 'Job completed',
+        description: 'Sent when the job is marked complete.',
+        placeholders: ['customerName', 'companyName', 'technicianName', 'reference'],
+    },
+    {
+        key: 'INVOICE_SENT',
+        label: 'Invoice sent',
+        description: 'Sent when an invoice is issued to the customer.',
+        placeholders: ['customerName', 'companyName', 'invoiceNumber', 'amountDue', 'dueDate', 'payUrl'],
+    },
+    {
+        key: 'QUOTE_SENT',
+        label: 'Quote sent',
+        description: 'Sent when a quote is sent to the customer.',
+        placeholders: ['customerName', 'companyName', 'quoteNumber', 'quoteTotal', 'quoteUrl'],
+    },
+];
+
+export const defaultNotificationTemplates: Record<NotificationEventKey, NotificationTemplate> = {
+    JOB_BOOKED: {
+        enabled: true,
+        channel: 'EMAIL',
+        subject: 'Your booking with {{companyName}} is confirmed',
+        body:
+            'Hi {{customerName}},\n\n' +
+            "Thanks for booking with {{companyName}}. We've scheduled your job for {{jobDate}}.\n\n" +
+            "We'll let you know when our technician is on the way.\n\n" +
+            'Kind regards,\n{{companyName}}',
+    },
+    TECH_EN_ROUTE: {
+        enabled: true,
+        channel: 'SMS',
+        subject: '',
+        body:
+            // The live-tracking link is appended automatically when there is one.
+            'Hi {{customerName}}, your {{companyName}} technician {{technicianName}} is on the way.',
+    },
+    JOB_COMPLETED: {
+        enabled: true,
+        channel: 'EMAIL',
+        subject: 'Your job with {{companyName}} is complete',
+        body:
+            'Hi {{customerName}},\n\n' +
+            'Good news — {{technicianName}} has completed your job (ref {{reference}}). ' +
+            'Thank you for choosing {{companyName}}.\n\n' +
+            'If you have any questions, just reply to this message.\n\n' +
+            'Kind regards,\n{{companyName}}',
+    },
+    INVOICE_SENT: {
+        enabled: true,
+        channel: 'EMAIL',
+        subject: 'Invoice {{invoiceNumber}} from {{companyName}}',
+        body:
+            'Hi {{customerName}},\n\n' +
+            'Please find invoice {{invoiceNumber}} for {{amountDue}}, due by {{dueDate}}.\n\n' +
+            'You can view and pay it here: {{payUrl}}\n\n' +
+            'Thank you for your business,\n{{companyName}}',
+    },
+    QUOTE_SENT: {
+        enabled: true,
+        channel: 'EMAIL',
+        subject: 'Your quote {{quoteNumber}} from {{companyName}}',
+        body:
+            'Hi {{customerName}},\n\n' +
+            'Thank you for the opportunity to quote. Your quote {{quoteNumber}} comes to {{quoteTotal}}.\n\n' +
+            'You can review and accept it here: {{quoteUrl}}\n\n' +
+            'Please let us know if you have any questions.\n\n' +
+            'Kind regards,\n{{companyName}}',
+    },
+};
+
+export const defaultNotificationSettings: NotificationSettings = {
+    enabled: true,
+    templates: defaultNotificationTemplates,
 };
 
 // Optional modules. Each toggles only whether a feature shows in the navigation;
@@ -178,6 +326,8 @@ export const defaultCompanySettings: CompanySettings = {
     fieldQuoting: {
         enabled: false,
     },
+    businessHours: defaultBusinessHours,
+    notifications: defaultNotificationSettings,
     financing: {
         enabled: false,
         showOnEstimates: true,
@@ -266,6 +416,23 @@ export const normalizeCompanySettings = (input: unknown): CompanySettings => {
         },
         fieldQuoting: {
             enabled: merged.fieldQuoting?.enabled ?? false,
+        },
+        businessHours: (Object.keys(defaultBusinessHours) as DayKey[]).reduce((acc, day) => {
+            acc[day] = {
+                ...defaultBusinessHours[day],
+                ...(merged.businessHours?.[day] ?? {}),
+            };
+            return acc;
+        }, {} as BusinessHours),
+        notifications: {
+            enabled: merged.notifications?.enabled ?? true,
+            templates: NOTIFICATION_EVENT_KEYS.reduce((acc, key) => {
+                acc[key] = {
+                    ...defaultNotificationTemplates[key],
+                    ...(merged.notifications?.templates?.[key] ?? {}),
+                };
+                return acc;
+            }, {} as Record<NotificationEventKey, NotificationTemplate>),
         },
         financing: {
             enabled: merged.financing?.enabled ?? false,

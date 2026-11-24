@@ -69,16 +69,34 @@ const send = async (params: {
     }
 };
 
-export const smsService = {
-    sendText: (phone: string, body: string, companyId?: string) =>
-        send({ to: phone, template: 'inbox_reply', companyId, body }),
+/** En-route SMS: company-branded; tracking link and ETA only when we have them. */
+export const buildEnRouteText = (
+    techName: string,
+    opts: { companyName?: string; trackingUrl?: string; eta?: string } = {}
+) => {
+    const brand = opts.companyName ? `${opts.companyName} technician` : 'technician';
+    const subject = techName === 'Your technician' ? `Your ${brand}` : `Your ${brand} ${techName}`;
+    return (
+        `${subject} is on the way${opts.eta ? ` (ETA ${opts.eta})` : ''}.` +
+        (opts.trackingUrl ? ` Track live: ${opts.trackingUrl}` : '')
+    );
+};
 
-    sendJobEnRoute: (phone: string, techName: string, eta?: string, companyId?: string) =>
+export const smsService = {
+    sendText: (phone: string, body: string, companyId?: string, template = 'inbox_reply') =>
+        send({ to: phone, template, companyId, body }),
+
+    sendJobEnRoute: (
+        phone: string,
+        techName: string,
+        opts: { companyName?: string; trackingUrl?: string; eta?: string } = {},
+        companyId?: string
+    ) =>
         send({
             to: phone,
             template: 'job_en_route',
             companyId,
-            body: `Your Fieldio technician ${techName} is on the way${eta ? ` — ETA ${eta}` : ''}.`,
+            body: buildEnRouteText(techName, opts),
         }),
 
     sendJobStarted: (phone: string, techName: string, companyId?: string) =>

@@ -5,6 +5,14 @@ import { smsService } from './sms.service';
 import { whatsappService } from './whatsapp.service';
 import { paymentsService } from '../../modules/payments/payments.service';
 import { normalizeCompanySettings } from '../../modules/company/company-settings';
+import {
+    isDefaultNotificationTemplate,
+    renderNotificationTemplate,
+    type NotificationEvent,
+    type NotificationSettings,
+    type NotificationTemplate,
+} from '../../modules/notifications/notification-templates';
+import { logger } from '../../utils/logger';
 
 type InternalType = 'JOB_ASSIGNED' | 'MENTION' | 'ALERT' | 'SYSTEM';
 type CustomerType =
@@ -16,6 +24,133 @@ type CustomerType =
     | 'APPOINTMENT_REMINDER'
     | 'ESTIMATE_SENT'
     | 'REVIEW_REQUEST';
+
+// Customer message type -> the template event that governs it. Types without an
+// entry (JOB_STARTED, plain reminders) are only subject to the master gate;
+// PAYMENT_RECEIPT and REVIEW_REQUEST are not governed by these settings at all.
+const EVENT_FOR_TYPE: Partial<Record<CustomerType, NotificationEvent>> = {
+    JOB_EN_ROUTE: 'TECH_EN_ROUTE',
+    JOB_COMPLETED: 'JOB_COMPLETED',
+    INVOICE_SENT: 'INVOICE_SENT',
+    ESTIMATE_SENT: 'QUOTE_SENT',
+};
+const MASTER_GATED_TYPES: CustomerType[] = ['JOB_STARTED', 'APPOINTMENT_REMINDER'];
+
+type GateResult =
+    | { send: false }
+    | { send: true; event?: NotificationEvent; template?: NotificationTemplate; customized: boolean };
+
+/**
+ * Decide whether a customer message goes out. The master gate and the per-event
+ * flag both default to ON (see notification-templates.ts), so an untouched
+ * company keeps receiving the built-in lifecycle messages. A template the
+ * company edited ("customized") has its text/channel used instead.
+ *
+ * APPOINTMENT_REMINDER is shared by the booking confirmation and the 24h/1h
+ * reminders; a caller marks the confirmation with `payload.event = 'JOB_BOOKED'`.
+ */
+export const resolveCustomerNotification = (
+    notifications: NotificationSettings,
+    type: CustomerType,
+    payload: { event?: string } = {}
+): GateResult => {
+    const event: NotificationEvent | undefined =
+        type === 'APPOINTMENT_REMINDER' && payload.event === 'JOB_BOOKED'
+            ? 'JOB_BOOKED'
+            : EVENT_FOR_TYPE[type];
+
+    if (!event && !MASTER_GATED_TYPES.includes(type)) return { send: true, customized: false };
+    if (!notifications.enabled) return { send: false };
+    if (!event) return { send: true, customized: false };
+
+    const template = notifications.templates?.[event];
+    if (!template) return { send: true, event, customized: false };
+    if (!template.enabled) return { send: false };
+    return { send: true, event, template, customized: !isDefaultNotificationTemplate(event, template) };
+};
+
+const buildTemplateVars = (
+    event: NotificationEvent,
+    ctx: {
+        customerName: string;
+        companyName: string;
+        payload: any;
+        payUrl: string;
+        dueDate: string;
+        formatMoney: (n: unknown) => string;
+    }
+): Record<string, string | number> => {
+    const { payload } = ctx;
+    const base = { customerName: ctx.customerName, companyName: ctx.companyName };
+    switch (event) {
+        case 'JOB_BOOKED':
+            return {
+                ...base,
+                // `when` is the already-formatted date and time of the visit.
+                jobDate: payload.when ?? '',
+            };
+        case 'TECH_EN_ROUTE':
+            return {
+                ...base,
+                technicianName: payload.techName ?? 'Your technician',
+                trackingUrl: payload.trackingUrl ?? '',
+            };
+        case 'JOB_COMPLETED':
+            return {
+                ...base,
+                technicianName: payload.techName ?? 'Our technician',
+                reference: payload.reference ?? payload.jobTitle ?? '',
+            };
+        case 'INVOICE_SENT':
+            return {
+                ...base,
+                invoiceNumber: payload.invoiceNumber ?? String(payload.invoiceId ?? '').slice(0, 8),
+                amountDue: ctx.formatMoney(payload.total),
+                dueDate: ctx.dueDate,
+                payUrl: ctx.payUrl,
+            };
+        case 'QUOTE_SENT':
+            return {
+                ...base,
+                quoteNumber: payload.quoteNumber ?? String(payload.estimateId ?? '').slice(0, 8),
+                quoteTotal: ctx.formatMoney(payload.total),
+                quoteUrl: payload.viewUrl ?? '',
+            };
+    }
+};
+
+/** Send a company-authored message on the channel they chose, with sensible fallbacks. */
+const deliverCustom = async (
+    customer: { email: string | null; phone: string | null },
+    companyId: string,
+    channel: 'EMAIL' | 'SMS' | 'WHATSAPP',
+    subject: string,
+    body: string,
+    waEnabled: boolean,
+    event: NotificationEvent
+) => {
+    const template = `custom_${event.toLowerCase()}`;
+    const viaPhone = async () => {
+        if (!customer.phone) return false;
+        // WhatsApp when the company has it live and didn't pick SMS; SMS otherwise.
+        if (waEnabled && channel !== 'SMS') {
+            await whatsappService.sendText(customer.phone, body, companyId, template);
+        } else {
+            await smsService.sendText(customer.phone, body, companyId, template);
+        }
+        return true;
+    };
+    const viaEmail = async () => {
+        if (!customer.email) return false;
+        await emailService.sendRaw(customer.email, subject || 'Update from your service provider', body, companyId);
+        return true;
+    };
+    if (channel === 'EMAIL') {
+        if (!(await viaEmail())) await viaPhone();
+    } else if (!(await viaPhone())) {
+        await viaEmail();
+    }
+};
 
 export const notificationService = {
     notifyUser: async (
@@ -98,17 +233,68 @@ export const notificationService = {
         const settings = normalizeCompanySettings(company.settings);
         const waEnabled = settings.integrations.whatsapp.enabled && whatsappService.isConfigured();
 
+        const gate = resolveCustomerNotification(settings.notifications, type, payload);
+        if (!gate.send) {
+            logger.info({ companyId, type }, 'Customer notification disabled in company settings; skipped');
+            return;
+        }
+
+        const currency = settings.regional.currency;
+        const formatMoney = (n: unknown) => `${currency} ${Number(n ?? 0).toFixed(2)}`;
+
+        // The company edited this template: send their text on their channel.
+        if (gate.customized && gate.event && gate.template) {
+            let payUrl = '';
+            let dueDate = '';
+            if (type === 'INVOICE_SENT' && payload.invoiceId) {
+                payUrl = await paymentsService.getPayLinkForInvoice(payload.invoiceId, companyId);
+                const invoice = await prisma.invoice.findFirst({
+                    where: { id: payload.invoiceId, companyId },
+                    select: { dueDate: true },
+                });
+                if (invoice?.dueDate) {
+                    dueDate = new Intl.DateTimeFormat('en-ZA', {
+                        day: '2-digit',
+                        month: 'short',
+                        year: 'numeric',
+                        timeZone: settings.regional.timezone,
+                    }).format(new Date(invoice.dueDate));
+                }
+            }
+            const rendered = renderNotificationTemplate(
+                gate.template,
+                buildTemplateVars(gate.event, {
+                    customerName: customer.name,
+                    companyName: company.name,
+                    payload,
+                    payUrl,
+                    dueDate,
+                    formatMoney,
+                })
+            );
+            const trackingUrl = String(payload.trackingUrl ?? '');
+            // Never drop the live-tracking link just because the custom text omits it.
+            const body =
+                gate.event === 'TECH_EN_ROUTE' && trackingUrl && !rendered.body.includes(trackingUrl)
+                    ? `${rendered.body}\nTrack live: ${trackingUrl}`
+                    : rendered.body;
+            await deliverCustom(customer, companyId, rendered.channel, rendered.subject, body, waEnabled, gate.event);
+            return;
+        }
+
         switch (type) {
             case 'JOB_EN_ROUTE': {
                 const techName = payload.techName ?? 'Your technician';
-                const trackingUrl = payload.trackingUrl;
+                const trackingUrl = payload.trackingUrl || undefined;
                 if (customer.phone && waEnabled) {
-                    await whatsappService.sendJobEnRoute(customer.phone, techName, trackingUrl, companyId);
+                    await whatsappService.sendJobEnRoute(customer.phone, techName, trackingUrl, companyId, company.name);
                 } else if (customer.phone) {
-                    const msg = trackingUrl
-                        ? `Your technician ${techName} is on the way! Track live: ${trackingUrl}`
-                        : undefined;
-                    await smsService.sendJobEnRoute(customer.phone, techName, payload.eta, companyId);
+                    await smsService.sendJobEnRoute(
+                        customer.phone,
+                        techName,
+                        { companyName: company.name, trackingUrl, eta: payload.eta },
+                        companyId
+                    );
                 }
                 break;
             }
@@ -138,8 +324,7 @@ export const notificationService = {
                         companyId
                     );
                     if (customer.phone && waEnabled) {
-                        const currency = settings.regional.currency;
-                        const total = `${currency} ${Number(payload.total ?? 0).toFixed(2)}`;
+                        const total = formatMoney(payload.total);
                         await whatsappService.sendInvoice(
                             customer.phone,
                             payload.invoiceNumber ?? payload.invoiceId.slice(0, 8),
@@ -174,8 +359,7 @@ export const notificationService = {
                         companyId
                     );
                 if (customer.phone) {
-                    const currency = settings.regional.currency;
-                    const total = `${currency} ${Number(payload.total ?? 0).toFixed(2)}`;
+                    const total = formatMoney(payload.total);
                     // Prefer WhatsApp when configured, otherwise fall back to SMS so the
                     // approval link always reaches the customer on some channel.
                     if (waEnabled) {

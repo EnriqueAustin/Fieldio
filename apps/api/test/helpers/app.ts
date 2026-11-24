@@ -17,6 +17,7 @@ import { userRouter } from '../../src/routes/users';
 import { operationsRouter } from '../../src/routes/operations';
 import { trackingRouter } from '../../src/routes/tracking';
 import { bookingsRouter } from '../../src/routes/bookings';
+import { companyRouter } from '../../src/routes/company';
 import { recurringRouter } from '../../src/routes/recurring';
 import { projectsRouter } from '../../src/routes/projects';
 import { inventoryTransfersRouter } from '../../src/routes/inventoryTransfers';
@@ -28,6 +29,7 @@ import { dunningRouter } from '../../src/routes/dunning';
 import { documentsRouter } from '../../src/routes/documents';
 import { inventoryAlertsRouter } from '../../src/routes/inventoryAlerts';
 import { branchesRouter } from '../../src/routes/branches';
+import { notificationTemplatesRouter } from '../../src/routes/notificationTemplates';
 import { signAccessToken } from '../../src/utils/jwt';
 
 // Builds an Express app that mirrors the middleware chain of the real
@@ -58,6 +60,7 @@ export function buildTestApp(): Express {
     app.use('/operations', operationsRouter);
     app.use('/tracking', trackingRouter);
     app.use('/bookings', bookingsRouter);
+    app.use('/company', companyRouter);
     app.use('/recurring', recurringRouter);
     app.use('/projects', projectsRouter);
     app.use('/inventory-transfers', inventoryTransfersRouter);
@@ -69,6 +72,7 @@ export function buildTestApp(): Express {
     app.use('/documents', documentsRouter);
     app.use('/inventory-alerts', inventoryAlertsRouter);
     app.use('/branches', branchesRouter);
+    app.use('/notification-templates', notificationTemplatesRouter);
 
     app.use(errorHandler);
     return app;

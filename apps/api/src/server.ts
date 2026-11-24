@@ -65,6 +65,7 @@ import { statementsRouter } from './routes/statements';
 import { documentsRouter } from './routes/documents';
 import { inventoryAlertsRouter } from './routes/inventoryAlerts';
 import { branchesRouter } from './routes/branches';
+import { notificationTemplatesRouter } from './routes/notificationTemplates';
 import { publicTrackerRouter } from './routes/scheduling';
 import { searchRouter } from './routes/search';
 const app = express();
@@ -193,6 +194,7 @@ app.use('/statements', statementsRouter);
 app.use('/documents', documentsRouter);
 app.use('/inventory-alerts', inventoryAlertsRouter);
 app.use('/branches', branchesRouter);
+app.use('/notification-templates', notificationTemplatesRouter);
 app.use('/search', searchRouter);
 
 // Error handling
