@@ -37,6 +37,32 @@ const propertyAddressLine = (property: any): string | null => {
     return line || null;
 };
 
+/**
+ * The one place invoice money is calculated from a job's line items. Used by
+ * createFromJob and resyncFromJob so a refreshed draft can never disagree with a
+ * freshly created one. A supplier with no VAT number charges no VAT at all
+ * (rate 0, tax 0); everything is rounded to whole cents.
+ */
+export const buildInvoiceMoney = (
+    lineItems: { total: unknown }[],
+    billing: { taxNumber?: string | null; taxRate: number; taxLabel: string }
+) => {
+    const rate = supplierChargesVat(billing.taxNumber) ? billing.taxRate : 0;
+    const subtotal = round2(lineItems.reduce((acc, item) => acc + Number(item.total), 0));
+    const tax = round2((subtotal * rate) / 100);
+    const total = round2(subtotal + tax);
+    return {
+        items: lineItems,
+        subtotal,
+        tax,
+        total,
+        balance: total,
+        taxRate: rate,
+        taxLabel: billing.taxLabel,
+        taxNumber: billing.taxNumber || null,
+    };
+};
+
 export const invoiceService = {
     createFromJob: async (jobId: string, companyId: string) => {
         return prisma.$transaction(async (tx) => {
@@ -46,16 +72,21 @@ export const invoiceService = {
             });
 
             if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+            // A cancelled job has nothing to bill. (Not restricted to COMPLETED:
+            // techs send the field invoice + pay link on site before closing out.)
+            if (job.status === 'CANCELED') {
+                throw new AppError('A cancelled job cannot be invoiced', StatusCodes.BAD_REQUEST);
+            }
+            if (job.invoice?.status === 'VOID') {
+                throw new AppError(
+                    "This job's invoice was voided; re-invoicing a voided job isn't supported yet",
+                    StatusCodes.BAD_REQUEST
+                );
+            }
             if (job.invoice) throw new AppError('Job already invoiced', StatusCodes.BAD_REQUEST);
 
             const settings = normalizeCompanySettings(job.company.settings);
-            // A supplier with no VAT number charges no VAT at all (rate 0, tax 0).
-            const chargesVat = supplierChargesVat(settings.billing.taxNumber);
-            const rate = chargesVat ? settings.billing.taxRate : 0;
-
-            const subtotal = round2(job.lineItems.reduce((acc, item) => acc + Number(item.total), 0));
-            const tax = round2((subtotal * rate) / 100);
-            const total = round2(subtotal + tax);
+            const money = buildInvoiceMoney(job.lineItems, settings.billing);
 
             // Atomic, gap-free sequential numbering: bump the company counter inside
             // the same transaction so concurrent invoices never collide or reuse a number.
@@ -77,14 +108,14 @@ export const invoiceService = {
                     projectId: job.projectId,
                     jobId: job.id,
                     invoiceNumber,
-                    items: job.lineItems as any,
-                    subtotal,
-                    tax,
-                    total,
-                    balance: total,
-                    taxLabel: settings.billing.taxLabel,
-                    taxRate: rate,
-                    taxNumber: settings.billing.taxNumber || null,
+                    items: money.items as any,
+                    subtotal: money.subtotal,
+                    tax: money.tax,
+                    total: money.total,
+                    balance: money.balance,
+                    taxLabel: money.taxLabel,
+                    taxRate: money.taxRate,
+                    taxNumber: money.taxNumber,
                     supplierName: job.company.name,
                     supplierCompanyRegistration: settings.billing.companyRegistrationNumber || null,
                     customerName: job.customer?.name || null,
@@ -97,6 +128,85 @@ export const invoiceService = {
             });
 
             return invoice;
+        });
+    },
+
+    /**
+     * Rebuild a DRAFT invoice from the job's current line items (the office fixed
+     * the job after the draft was generated). Same maths as createFromJob; the
+     * invoice number is kept. Refused once the invoice is sent/paid/void or has
+     * any payment against it.
+     */
+    resyncFromJob: async (id: string, companyId: string, userId: string) => {
+        return prisma.$transaction(async (tx) => {
+            const invoice = await tx.invoice.findFirst({ where: { id, companyId, deletedAt: null } });
+            if (!invoice) throw new AppError('Invoice not found', StatusCodes.NOT_FOUND);
+            if (invoice.status !== 'DRAFT') {
+                throw new AppError(
+                    'Only a draft invoice can be refreshed from its job',
+                    StatusCodes.CONFLICT
+                );
+            }
+            const payment = await tx.payment.findFirst({ where: { invoiceId: invoice.id, companyId } });
+            if (payment) {
+                throw new AppError(
+                    'This invoice has a payment recorded and can no longer be refreshed',
+                    StatusCodes.CONFLICT
+                );
+            }
+
+            // An applied credit note lowers the balance without a payment row; a
+            // rebuild would silently reset it to the full total.
+            const appliedCredit = await tx.creditNote.findFirst({
+                where: { invoiceId: invoice.id, companyId, status: 'APPLIED' },
+            });
+            if (appliedCredit) {
+                throw new AppError(
+                    'A credit note has been applied to this invoice and it can no longer be refreshed',
+                    StatusCodes.CONFLICT
+                );
+            }
+
+            const job = await tx.job.findFirst({
+                where: { id: invoice.jobId, companyId, deletedAt: null },
+                include: { lineItems: true, company: true },
+            });
+            if (!job) throw new AppError('Job not found', StatusCodes.NOT_FOUND);
+
+            const settings = normalizeCompanySettings(job.company.settings);
+            const money = buildInvoiceMoney(job.lineItems, settings.billing);
+
+            const updated = await tx.invoice.update({
+                where: { id: invoice.id },
+                data: {
+                    items: money.items as any,
+                    subtotal: money.subtotal,
+                    tax: money.tax,
+                    total: money.total,
+                    balance: money.balance,
+                    taxLabel: money.taxLabel,
+                    taxRate: money.taxRate,
+                    taxNumber: money.taxNumber,
+                },
+            });
+
+            await tx.auditLog.create({
+                data: {
+                    companyId,
+                    userId,
+                    action: 'INVOICE_RESYNCED_FROM_JOB',
+                    entityId: invoice.id,
+                    entityType: 'INVOICE',
+                    metadata: {
+                        invoiceNumber: invoice.invoiceNumber,
+                        jobId: invoice.jobId,
+                        previousTotal: Number(invoice.total),
+                        newTotal: money.total,
+                    },
+                },
+            });
+
+            return updated;
         });
     },
 

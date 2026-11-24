@@ -56,6 +56,15 @@ export const invoiceController = {
         });
     },
 
+    resyncFromJob: async (req: Request, res: Response) => {
+        const invoice = await invoiceService.resyncFromJob(
+            req.params.id,
+            req.user!.companyId,
+            req.user!.userId
+        );
+        res.status(StatusCodes.OK).json({ status: 'success', data: { invoice } });
+    },
+
     // Bulk invoice generation from selected completed-uninvoiced jobs.
     bulkGenerate: async (req: Request, res: Response) => {
         const { jobIds } = z

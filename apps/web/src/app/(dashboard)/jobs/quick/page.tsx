@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -61,6 +61,10 @@ export default function QuickJobPage() {
     const [selectedTemplateId, setSelectedTemplateId] = useState("");
     const [existingCustomers, setExistingCustomers] = useState<ExistingCustomer[]>([]);
     const [customerSearch, setCustomerSearch] = useState("");
+    const [searchingCustomers, setSearchingCustomers] = useState(false);
+    // Which ?customerId= we already preselected, so a later searchParams change
+    // (slot prefill etc.) doesn't re-run the selection and wipe the form.
+    const preselectedCustomerId = useRef<string | null>(null);
     const [useExisting, setUseExisting] = useState(false);
     // Sites already on file for the selected customer. Booking against one of
     // these keeps their service history and equipment on a single record
@@ -96,26 +100,61 @@ export default function QuickJobPage() {
         api.get("/vans").then((res) => {
             setVans((res.data?.data?.vans ?? []).filter((v: any) => v.active).map((v: any) => ({ id: v.id, name: v.name, registration: v.registration })));
         }).catch(() => {});
-        api.get("/customers?limit=200").then((res) => {
-            setExistingCustomers(res.data?.data?.items ?? []);
-        });
         api.get("/job-templates").then((res) => {
             setTemplates(res.data?.data?.templates ?? []);
         }).catch(() => {});
     }, []);
 
+    // Server-side customer search (the API caps list pages at 100, so loading
+    // everything and filtering here would hide older customers and invite duplicates).
+    useEffect(() => {
+        const q = customerSearch.trim();
+        if (!q) {
+            setExistingCustomers([]);
+            setSearchingCustomers(false);
+            return;
+        }
+        let cancelled = false;
+        setSearchingCustomers(true);
+        const timer = setTimeout(() => {
+            api.get("/customers", { params: { search: q, limit: 20 } })
+                .then((res) => {
+                    if (!cancelled) setExistingCustomers(res.data?.data?.items ?? []);
+                })
+                .catch(() => {
+                    if (!cancelled) setExistingCustomers([]);
+                })
+                .finally(() => {
+                    if (!cancelled) setSearchingCustomers(false);
+                });
+        }, 250);
+        return () => {
+            cancelled = true;
+            clearTimeout(timer);
+        };
+    }, [customerSearch]);
+
     // Caller-ID pre-fill from query params
     useEffect(() => {
         const phone = searchParams.get("phone");
         const customerId = searchParams.get("customerId");
-        if (customerId && existingCustomers.length) {
-            const c = existingCustomers.find((x) => x.id === customerId);
-            if (c) selectExistingCustomer(c);
+        if (customerId) {
+            if (preselectedCustomerId.current === customerId) return;
+            preselectedCustomerId.current = customerId;
+            api.get(`/customers/${customerId}`)
+                .then((res) => {
+                    const c = res.data?.data?.customer;
+                    if (c) selectExistingCustomer(c);
+                })
+                .catch(() => {
+                    preselectedCustomerId.current = null;
+                    setError("Could not load that customer. Search for them instead.");
+                });
         } else if (phone) {
             setForm((f) => ({ ...f, customerPhone: phone }));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [searchParams, existingCustomers.length]);
+    }, [searchParams]);
 
     // Slot pre-fill from the dispatch board / calendar (click-to-create).
     useEffect(() => {
@@ -153,13 +192,6 @@ export default function QuickJobPage() {
             priority: tpl.defaultPriority || f.priority,
         }));
     };
-
-    const filteredCustomers = existingCustomers.filter(
-        (c) =>
-            c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
-            (c.phone && c.phone.includes(customerSearch)) ||
-            (c.email && c.email.toLowerCase().includes(customerSearch.toLowerCase()))
-    );
 
     const selectExistingCustomer = (c: ExistingCustomer) => {
         // Functional update: this also runs from the prefill effect, where `form`
@@ -321,9 +353,17 @@ export default function QuickJobPage() {
                                 className="pl-9"
                             />
                         </div>
-                        {customerSearch && filteredCustomers.length > 0 && (
-                            <div className="max-h-32 overflow-y-auto rounded-lg border divide-y">
-                                {filteredCustomers.slice(0, 5).map((c) => (
+                        {customerSearch.trim() && searchingCustomers && existingCustomers.length === 0 && (
+                            <p className="text-xs text-muted-foreground">Searching…</p>
+                        )}
+                        {customerSearch.trim() && !searchingCustomers && existingCustomers.length === 0 && (
+                            <p className="text-xs text-muted-foreground">
+                                No matching customers — fill in the details below to add a new one.
+                            </p>
+                        )}
+                        {customerSearch.trim() && existingCustomers.length > 0 && (
+                            <div className="max-h-48 overflow-y-auto rounded-lg border divide-y">
+                                {existingCustomers.map((c) => (
                                     <button
                                         key={c.id}
                                         onClick={() => selectExistingCustomer(c)}

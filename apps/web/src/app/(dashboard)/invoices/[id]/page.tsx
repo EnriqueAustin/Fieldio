@@ -16,6 +16,8 @@ import {
     AlertCircle,
     Receipt,
     Undo2,
+    FileMinus,
+    RefreshCw,
 } from "lucide-react";
 import api from "../../../../lib/api";
 import { downloadFile } from "../../../../lib/download";
@@ -139,6 +141,21 @@ export default function InvoiceDetailPage() {
             toast({ title: "Could not send", description: e?.response?.data?.message ?? "", variant: "destructive" }),
     });
 
+    const resync = useMutation({
+        mutationFn: () => api.post(`/finance/invoices/${id}/resync-from-job`).then((r) => r.data.data),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ["invoice", id] });
+            qc.invalidateQueries({ queryKey: ["invoices"] });
+            toast({ title: "Invoice refreshed", description: "Line items and totals now match the job." });
+        },
+        onError: (e: any) =>
+            toast({
+                title: "Could not refresh from job",
+                description: e?.response?.data?.message ?? "",
+                variant: "destructive",
+            }),
+    });
+
     const copyPayLink = useMutation({
         mutationFn: () =>
             api.get(`/payments/invoices/${id}/pay-link`).then((r) => r.data.data.url as string),
@@ -226,6 +243,8 @@ export default function InvoiceDetailPage() {
     const hasPayments = payments.length > 0;
     const canVoid = !isVoid && !hasPayments;
     const sendLabel = data.status === "DRAFT" ? "Send" : "Resend";
+    // Drafts with no payments can be rebuilt from the job's current line items.
+    const canResync = data.status === "DRAFT" && !hasPayments && !!data.job?.id;
 
     const voidDisabledReason = isVoid
         ? "This invoice is already void."
@@ -258,6 +277,22 @@ export default function InvoiceDetailPage() {
                         {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                         Download PDF
                     </Button>
+                    {canResync && (
+                        <Button
+                            variant="outline"
+                            onClick={() => resync.mutate()}
+                            disabled={resync.isPending}
+                            className="gap-1.5"
+                            title="Rebuild this draft from the job's current line items"
+                        >
+                            {resync.isPending ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                                <RefreshCw className="h-4 w-4" />
+                            )}
+                            Refresh from job
+                        </Button>
+                    )}
                     {!isVoid && (
                         <Button
                             variant="outline"
@@ -282,6 +317,14 @@ export default function InvoiceDetailPage() {
                                 <Link2 className="h-4 w-4" />
                             )}
                             Copy pay link
+                        </Button>
+                    )}
+                    {!isVoid && (
+                        <Button asChild variant="outline" className="gap-1.5">
+                            <Link href={`/credit-notes?fromInvoice=${data.id}`}>
+                                <FileMinus className="h-4 w-4" />
+                                Credit note
+                            </Link>
                         </Button>
                     )}
                     {!isVoid && balance > 0 && (

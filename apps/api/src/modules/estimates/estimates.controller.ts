@@ -48,7 +48,7 @@ export const estimateController = {
     },
 
     convertToJob: async (req: Request, res: Response) => {
-        const job = await estimateService.convertToJob(req.params.id, req.user!.companyId);
+        const job = await estimateService.convertToJob(req.params.id, req.user!.companyId, req.body ?? {});
         res.status(StatusCodes.OK).json({ status: 'success', data: { job } });
     },
 

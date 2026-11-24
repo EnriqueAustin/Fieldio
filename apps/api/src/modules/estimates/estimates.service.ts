@@ -90,8 +90,71 @@ const createEstimateOptionSchema = z.object({
     total: z.number(),
 });
 
+const LINE_ITEM_TYPES = ['SERVICE', 'MATERIAL', 'LABOR'] as const;
+type LineItemType = (typeof LINE_ITEM_TYPES)[number];
+
+const convertEstimateSchema = z.object({
+    // Optional: which of the customer's properties the job is for. Quotes don't
+    // store a property, so the office can pick one at conversion time.
+    propertyId: z.string().min(1).optional(),
+});
+
+/** Quote lines -> job lines, rejecting an unknown line type with a 400 (not a DB 500). */
+const toJobLineItems = (items: unknown, jobId: string) => {
+    if (!Array.isArray(items)) return [];
+    return items.map((item: any, index) => {
+        const type = String(item?.type ?? 'SERVICE').toUpperCase();
+        if (!(LINE_ITEM_TYPES as readonly string[]).includes(type)) {
+            throw new AppError(
+                `Line ${index + 1} has an invalid type "${item?.type}" (use ${LINE_ITEM_TYPES.join(', ')})`,
+                StatusCodes.BAD_REQUEST
+            );
+        }
+        const quantity = Number(item?.quantity ?? 1) || 1;
+        const unitPrice = Number(item?.unitPrice ?? 0) || 0;
+        return {
+            jobId,
+            name: String(item?.name || 'Service'),
+            quantity,
+            unitPrice,
+            total: round2(quantity * unitPrice),
+            type: type as LineItemType,
+        };
+    });
+};
+
+/** A readable job title for a converted quote: its first line, not a hash fragment. */
+const jobTitleFromEstimate = (estimateId: string, items: unknown): string => {
+    const lines = Array.isArray(items) ? items : [];
+    const first = String((lines[0] as any)?.name ?? '').trim();
+    if (!first) return `Quote #${estimateId.substring(0, 6)}`;
+    return lines.length > 1 ? `${first} (+${lines.length - 1} more)` : first;
+};
+
+/** 404 unless the customer (and project) belong to the caller's company. */
+const assertEstimateRefsInCompany = async (
+    companyId: string,
+    refs: { customerId: string; projectId?: string | null }
+) => {
+    const customer = await prisma.customer.findFirst({
+        where: { id: refs.customerId, companyId, deletedAt: null },
+        select: { id: true },
+    });
+    if (!customer) throw new AppError('Customer not found', StatusCodes.NOT_FOUND);
+    if (refs.projectId) {
+        const project = await prisma.project.findFirst({
+            where: { id: refs.projectId, companyId },
+            select: { id: true },
+        });
+        if (!project) throw new AppError('Project not found', StatusCodes.NOT_FOUND);
+    }
+};
+
 export const estimateService = {
-    create: async (companyId: string, input: z.infer<typeof createEstimateSchema>) => {
+    create: async (companyId: string, rawInput: z.infer<typeof createEstimateSchema>) => {
+        // Validate the body first so a missing customerId is a 400, not a 500.
+        const input = createEstimateSchema.parse(rawInput);
+        await assertEstimateRefsInCompany(companyId, input);
         const settings = await loadCompanySettings(companyId);
         // Server owns the money math: subtotal is the sum of (VAT-exclusive) line
         // totals, and VAT is applied from company settings. When no itemised lines
@@ -302,21 +365,33 @@ export const estimateService = {
         });
     },
 
-    convertToJob: async (id: string, companyId: string) => {
+    convertToJob: async (id: string, companyId: string, input: z.infer<typeof convertEstimateSchema> = {}) => {
+        const { propertyId } = convertEstimateSchema.parse(input);
         return prisma.$transaction(async (tx) => {
-            const estimate = await tx.estimate.findFirst({
-                where: { id, companyId },
-                include: { customer: true } // Need property from customer? simplified: grab first property
-            });
+            const estimate = await tx.estimate.findFirst({ where: { id, companyId } });
 
             if (!estimate) throw new AppError('Estimate not found', StatusCodes.NOT_FOUND);
-            if (estimate.jobId) throw new AppError('Estimate already converted', StatusCodes.BAD_REQUEST);
+            if (estimate.jobId) throw new AppError('Estimate already converted', StatusCodes.CONFLICT);
+            if (estimate.status !== 'SENT' && estimate.status !== 'APPROVED') {
+                throw new AppError(
+                    `A ${estimate.status.toLowerCase()} quote can't be converted to a job — only a sent or approved quote can be converted`,
+                    StatusCodes.BAD_REQUEST
+                );
+            }
 
-            // Find a property for the customer (Simulated logic: pick first one)
+            // Validate the line types up front so a bad quote is a 400, not a DB error.
+            const lineItems = toJobLineItems(estimate.items, '');
+
+            // The office-chosen property if given (must be this customer's),
+            // otherwise the customer's first property on file.
             const property = await tx.property.findFirst({
-                where: { customerId: estimate.customerId, companyId }
+                where: {
+                    customerId: estimate.customerId,
+                    companyId,
+                    ...(propertyId ? { id: propertyId } : {}),
+                },
             });
-
+            if (propertyId && !property) throw new AppError('Property not found', StatusCodes.NOT_FOUND);
             if (!property) throw new AppError('Customer has no property to assign job to', StatusCodes.BAD_REQUEST);
 
             // Create Job
@@ -326,32 +401,28 @@ export const estimateService = {
                     projectId: estimate.projectId,
                     customerId: estimate.customerId,
                     propertyId: property.id,
-                    title: `Job from Estimate #${estimate.id.substring(0, 6)}`,
+                    title: jobTitleFromEstimate(estimate.id, estimate.items),
                     status: 'REQUESTED',
-                    estimate: { connect: { id: estimate.id } }
                 }
             });
 
-            // Copy Line Items (Assuming items is array of objects)
-            const items = estimate.items as any[];
-            if (Array.isArray(items)) {
-                await tx.jobLineItem.createMany({
-                    data: items.map(item => ({
-                        jobId: job.id,
-                        name: item.name || 'Service',
-                        quantity: item.quantity || 1,
-                        unitPrice: item.unitPrice || 0,
-                        total: (item.quantity || 1) * (item.unitPrice || 0),
-                        type: item.type || 'SERVICE'
-                    }))
-                });
+            // Claim the quote atomically. The read above can't stop two concurrent
+            // converts; this conditional update can — the loser matches 0 rows and
+            // the throw rolls back its job, so exactly one job ever exists.
+            const claimed = await tx.estimate.updateMany({
+                where: { id: estimate.id, companyId, jobId: null },
+                data: { jobId: job.id, status: 'APPROVED' },
+            });
+            if (claimed.count === 0) {
+                throw new AppError('Estimate already converted', StatusCodes.CONFLICT);
             }
 
-            // Update Estimate Status
-            await tx.estimate.update({
-                where: { id: estimate.id },
-                data: { status: 'APPROVED' }
-            });
+            // Copy Line Items (Assuming items is array of objects)
+            if (lineItems.length > 0) {
+                await tx.jobLineItem.createMany({
+                    data: lineItems.map((line) => ({ ...line, jobId: job.id })),
+                });
+            }
 
             return job;
         });

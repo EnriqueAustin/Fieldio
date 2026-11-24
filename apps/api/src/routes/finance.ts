@@ -23,7 +23,7 @@ financeRouter.get('/estimates/:id', officeRead, catchAsync(estimateController.ge
 financeRouter.post('/estimates/:id/send', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(estimateController.send));
 financeRouter.post('/estimates/:id/decline', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(estimateController.decline));
 financeRouter.post('/estimates/:id/approve', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(estimateController.approveWithSignature));
-financeRouter.post('/estimates/:id/convert', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(estimateController.convertToJob));
+financeRouter.post('/estimates/:id/convert', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), idempotency, catchAsync(estimateController.convertToJob));
 
 // Estimate Options
 financeRouter.post('/estimates/:id/options', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(estimateController.addOption));
@@ -44,6 +44,8 @@ financeRouter.get('/invoices/:id', officeRead, catchAsync(invoiceController.getO
 // Tax invoice PDF — same office roles as the reads (never TECHNICIAN).
 financeRouter.get('/invoices/:id/pdf', officeRead, catchAsync(invoiceController.pdf));
 financeRouter.post('/invoices/:id/send', restrictTo('ADMIN', 'OFFICE'), idempotency, catchAsync(invoiceController.send));
+// Rebuild a DRAFT invoice from the job's current line items (keeps the number).
+financeRouter.post('/invoices/:id/resync-from-job', restrictTo('ADMIN', 'OFFICE', 'ACCOUNTANT'), idempotency, catchAsync(invoiceController.resyncFromJob));
 // Void: keeps the number, kills the pay link. Refused once a payment is recorded.
 financeRouter.post('/invoices/:id/void', restrictTo('ADMIN', 'OFFICE', 'ACCOUNTANT'), idempotency, catchAsync(invoiceController.void));
 financeRouter.post('/invoices/:id/reminder', restrictTo('ADMIN', 'OFFICE'), idempotency, catchAsync(invoiceController.sendReminder));
