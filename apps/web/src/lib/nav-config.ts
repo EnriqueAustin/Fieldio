@@ -29,6 +29,7 @@ import {
     AlertTriangle,
     FilePlus,
     Receipt,
+    Repeat,
     type LucideIcon,
 } from "lucide-react";
 import type { CompanyModules, ModuleKey } from "./company-settings";
@@ -45,6 +46,7 @@ const adminGroups: NavGroup[] = [
         items: [
             { label: "Dashboard", href: "/", icon: LayoutDashboard },
             { label: "Schedule", href: "/schedule", icon: Calendar },
+            { label: "Recurring plans", href: "/recurring", icon: Repeat },
             { label: "Jobs", href: "/jobs", icon: Briefcase },
             { label: "Projects", href: "/projects", icon: FolderKanban, module: "projects" },
             { label: "Bookings", href: "/bookings", icon: Inbox, module: "bookings" },
@@ -107,6 +109,7 @@ const dispatcherGroups: NavGroup[] = [
         items: [
             { label: "Dispatch", href: "/", icon: LayoutDashboard },
             { label: "Schedule", href: "/schedule", icon: Calendar },
+            { label: "Recurring plans", href: "/recurring", icon: Repeat },
             { label: "Jobs", href: "/jobs", icon: Briefcase },
             { label: "Quotes", href: "/estimates", icon: FileSignature },
             { label: "Bookings", href: "/bookings", icon: Inbox, module: "bookings" },
@@ -137,6 +140,7 @@ const officeGroups: NavGroup[] = [
         items: [
             { label: "Dashboard", href: "/", icon: LayoutDashboard },
             { label: "Schedule", href: "/schedule", icon: Calendar },
+            { label: "Recurring plans", href: "/recurring", icon: Repeat },
             { label: "Jobs", href: "/jobs", icon: Briefcase },
             { label: "Customers", href: "/customers", icon: Users },
             { label: "Leads", href: "/leads", icon: Filter, module: "leads" },

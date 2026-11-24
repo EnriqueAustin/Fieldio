@@ -1,30 +1,55 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
-import { format, startOfDay, endOfDay } from "date-fns";
-import { CalendarClock, Maximize2, Minimize2, MapPinned, RefreshCcw, Route, Satellite, ShieldCheck, TimerReset } from "lucide-react";
+import { addDays, format, isSameDay, startOfDay, endOfDay } from "date-fns";
+import { isAxiosError } from "axios";
+import Link from "next/link";
+import {
+    AlertOctagon,
+    CalendarClock,
+    CalendarDays,
+    ChevronLeft,
+    ChevronRight,
+    LayoutList,
+    Maximize2,
+    Minimize2,
+    MapPinned,
+    RefreshCcw,
+    Satellite,
+    TimerReset,
+    X,
+} from "lucide-react";
 import api from "../../../lib/api";
 import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
-import { Input } from "../../../components/ui/input";
-import { Label } from "../../../components/ui/label";
-import { Textarea } from "../../../components/ui/textarea";
-import { StatusPill } from "../../../components/ui/status-pill";
 import { DispatchMap } from "../../../components/schedule/dispatch-map";
+import { DispatchBoard, type BoardEvent, type BoardLane } from "../../../components/schedule/dispatch-board";
 import { UnscheduledJobsPanel } from "../../../components/schedule/unscheduled-jobs-panel";
 import { TechSuggestModal } from "../../../components/schedule/tech-suggest-modal";
 import { ReassignDialog } from "../../../components/schedule/reassign-dialog";
+import { JobQuickView, type QuickViewJob } from "../../../components/schedule/job-quick-view";
+import { TechRoutePanel } from "../../../components/schedule/tech-route-panel";
+import { useCompanySettings } from "../../../components/dashboard/technician/use-company-settings";
 import { toast } from "../../../components/ui/use-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { socket } from "../../../lib/socket";
 import { useAuthStore } from "../../../store/auth";
 import { useRouter } from "next/navigation";
+import {
+    calendarHoursRange,
+    computeAvailability,
+    defaultDropStart,
+    displayName,
+    fcBusinessHours,
+    hoursForDate,
+    type Availability,
+} from "../../../lib/schedule-utils";
 
-type CalendarEvent = {
+type ScheduleEvent = {
     id: string;
     title: string;
     start: string;
@@ -39,6 +64,11 @@ type CalendarEvent = {
         address?: string;
         techName?: string | null;
         vanName?: string | null;
+        customerName?: string | null;
+        customerPhone?: string | null;
+        priority?: string | null;
+        jobTitle?: string | null;
+        propertyId?: string | null;
     };
 };
 
@@ -54,6 +84,7 @@ type Technician = {
 type VanTeam = {
     id: string;
     name: string;
+    active: boolean;
     registration?: string | null;
     members: { id: string; role: string; user: { id: string; email: string; firstName?: string | null; lastName?: string | null } }[];
     _count: { jobs: number };
@@ -81,69 +112,99 @@ type LivePing = {
     };
 };
 
-type RecurringPlan = {
-    id: string;
-    title: string;
-    frequency: string;
-    nextRunAt: string;
-    active: boolean;
-    isDue: boolean;
-    customer: { id: string; name: string } | null;
-    property: { id: string; addressLine1: string; city: string } | null;
+type RecurringPlan = { id: string; active: boolean; isDue: boolean };
+
+type UnscheduledJob = { id: string; priority?: string };
+
+type ViewMode = "board" | "calendar";
+
+type CalendarOptions = ComponentProps<typeof FullCalendar>;
+type Arg<K extends keyof CalendarOptions> = NonNullable<CalendarOptions[K]> extends (arg: infer A) => unknown ? A : never;
+
+const HOUR_MS = 60 * 60 * 1000;
+
+const AVAILABILITY_LABEL: Record<Availability, string> = {
+    FREE: "Available",
+    EN_ROUTE: "En route",
+    ON_SITE: "On site",
+    BUSY: "Scheduled",
+    OFFLINE: "Offline",
 };
 
-type Customer = {
-    id: string;
-    name: string;
+const AVAILABILITY_DOT: Record<Availability, string> = {
+    FREE: "bg-emerald-500",
+    EN_ROUTE: "bg-violet-500",
+    ON_SITE: "bg-amber-500",
+    BUSY: "bg-blue-500",
+    OFFLINE: "bg-muted-foreground/40",
 };
 
-type Property = {
-    id: string;
-    customerId: string;
-    addressLine1: string;
-    city: string;
-    geoLat?: number | null;
-    geoLng?: number | null;
+const errorMessage = (err: unknown, fallback: string): string => {
+    if (isAxiosError<{ message?: string }>(err)) return err.response?.data?.message ?? fallback;
+    return fallback;
 };
 
-type UnscheduledJob = { id: string };
+const isMidnight = (d: Date) => d.getHours() === 0 && d.getMinutes() === 0;
 
-const frequencyOptions = ["WEEKLY", "BIWEEKLY", "MONTHLY", "QUARTERLY", "SEMIANNUAL", "ANNUAL"] as const;
+const toQuickView = (event: ScheduleEvent): QuickViewJob => ({
+    id: event.id,
+    title: event.extendedProps.jobTitle || event.title,
+    start: event.start,
+    end: event.end,
+    status: event.extendedProps.status,
+    priority: event.extendedProps.priority,
+    customerName: event.extendedProps.customerName,
+    customerPhone: event.extendedProps.customerPhone,
+    address: event.extendedProps.address,
+    techName: event.extendedProps.techName,
+    vanName: event.extendedProps.vanName,
+});
 
-const emptyForm = {
-    customerId: "",
-    propertyId: "",
-    title: "",
-    description: "",
-    frequency: "MONTHLY",
-    startDate: "",
-};
-
-const displayName = (u: { firstName?: string | null; lastName?: string | null; email: string }) =>
-    [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email.split("@")[0];
+const toBoardEvent = (event: ScheduleEvent): BoardEvent => ({
+    id: event.id,
+    title: event.title,
+    start: event.start,
+    end: event.end,
+    backgroundColor: event.backgroundColor,
+    editable: event.editable,
+    extendedProps: {
+        techId: event.extendedProps.techId ?? undefined,
+        vanId: event.extendedProps.vanId ?? undefined,
+        status: event.extendedProps.status,
+        customerName: event.extendedProps.customerName ?? undefined,
+        address: event.extendedProps.address,
+        techName: event.extendedProps.techName ?? undefined,
+        vanName: event.extendedProps.vanName ?? undefined,
+    },
+});
 
 export default function SchedulePage() {
     const router = useRouter();
     const queryClient = useQueryClient();
     const { accessToken } = useAuthStore();
+    const { settings } = useCompanySettings();
+    const businessHours = settings?.businessHours;
     const calendarRef = useRef<FullCalendar | null>(null);
     const fullscreenRef = useRef<HTMLDivElement | null>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
+    const [view, setView] = useState<ViewMode>("board");
+    const [boardDate, setBoardDate] = useState<Date>(() => startOfDay(new Date()));
+    const [selectedTechId, setSelectedTechId] = useState<string | null>(null);
     const [suggestJobId, setSuggestJobId] = useState<string | null>(null);
-    const [reassignJob, setReassignJob] = useState<CalendarEvent | null>(null);
-    const [events, setEvents] = useState<CalendarEvent[]>([]);
-    const [todayEvents, setTodayEvents] = useState<CalendarEvent[]>([]);
+    const [reassignJob, setReassignJob] = useState<ScheduleEvent | null>(null);
+    const [quickJob, setQuickJob] = useState<ScheduleEvent | null>(null);
+    const [events, setEvents] = useState<ScheduleEvent[]>([]);
+    const [todayEvents, setTodayEvents] = useState<ScheduleEvent[]>([]);
+    // Tagged with the day they belong to so a new day never flashes the previous day's jobs.
+    const [dayEvents, setDayEvents] = useState<{ day: string; events: ScheduleEvent[] }>({ day: "", events: [] });
+    const [dayLoading, setDayLoading] = useState(false);
+    const [dayError, setDayError] = useState(false);
     const [techs, setTechs] = useState<Technician[]>([]);
     const [pings, setPings] = useState<LivePing[]>([]);
     const [vanTeams, setVanTeams] = useState<VanTeam[]>([]);
     const [plans, setPlans] = useState<RecurringPlan[]>([]);
-    const [customers, setCustomers] = useState<Customer[]>([]);
-    const [properties, setProperties] = useState<Property[]>([]);
-    const [rangeLabel, setRangeLabel] = useState("");
     const [isLoading, setIsLoading] = useState(true);
     const [bootstrapError, setBootstrapError] = useState(false);
-    const [isSavingPlan, setIsSavingPlan] = useState(false);
-    const [planForm, setPlanForm] = useState(emptyForm);
 
     // Mirror pings into a ref so the socket handler can check membership without
     // re-subscribing on every ping.
@@ -152,7 +213,14 @@ export default function SchedulePage() {
         pingsRef.current = pings;
     }, [pings]);
 
-    // Unassigned KPI reads the same query the panel uses, so the tile and the
+    // The board day lives in a ref too, so socket refreshes reload whatever day
+    // is on screen and late responses for a day we've left are ignored.
+    const boardDateRef = useRef(boardDate);
+    useEffect(() => {
+        boardDateRef.current = boardDate;
+    }, [boardDate]);
+
+    // Unscheduled KPI reads the same query the panel uses, so the tile and the
     // list never disagree (and van-assigned jobs aren't miscounted).
     const { data: unscheduledJobs = [] } = useQuery<UnscheduledJob[]>({
         queryKey: ["unscheduled-jobs"],
@@ -165,12 +233,11 @@ export default function SchedulePage() {
             params: { start: start.toISOString(), end: end.toISOString() },
         });
         setEvents(response.data.data.events);
-        setRangeLabel(`${format(start, "d MMM")} - ${format(end, "d MMM")}`);
     }, []);
 
-    // Today's events feed the roster and the "jobs today" hint. They are fetched
-    // independently of the visible calendar range so navigating weeks doesn't make
-    // everyone look "Available".
+    // Today's events feed the roster and the KPIs. They are fetched independently
+    // of the visible calendar range so navigating weeks doesn't make everyone look
+    // "Available".
     const fetchTodayEvents = useCallback(async () => {
         const response = await api.get("/schedule/events", {
             params: {
@@ -179,6 +246,25 @@ export default function SchedulePage() {
             },
         });
         setTodayEvents(response.data.data.events);
+    }, []);
+
+    // Board day other than today (today reuses todayEvents).
+    const fetchBoardDay = useCallback(async (day: Date) => {
+        setDayLoading(true);
+        setDayError(false);
+        try {
+            const response = await api.get("/schedule/events", {
+                params: { start: startOfDay(day).toISOString(), end: endOfDay(day).toISOString() },
+            });
+            if (isSameDay(boardDateRef.current, day)) {
+                setDayEvents({ day: format(day, "yyyy-MM-dd"), events: response.data.data.events });
+            }
+        } catch (err) {
+            console.error("Board day load failed:", err);
+            if (isSameDay(boardDateRef.current, day)) setDayError(true);
+        } finally {
+            if (isSameDay(boardDateRef.current, day)) setDayLoading(false);
+        }
     }, []);
 
     const fetchUsers = useCallback(async () => {
@@ -192,20 +278,11 @@ export default function SchedulePage() {
     }, []);
 
     const fetchVans = useCallback(async () => {
-        const res = await api.get("/vans").catch(() => ({ data: { data: { vans: [] } } }));
-        setVanTeams((res.data.data.vans ?? []).filter((v: any) => v.active));
+        const res = await api.get("/vans").catch(() => ({ data: { data: { vans: [] as VanTeam[] } } }));
+        setVanTeams(((res.data.data.vans ?? []) as VanTeam[]).filter((v) => v.active));
     }, []);
 
-    const fetchCustomers = useCallback(async () => {
-        const res = await api.get("/customers", { params: { page: 1, limit: 100 } });
-        setCustomers(res.data.data.items.map((item: any) => ({ id: item.id, name: item.name })));
-    }, []);
-
-    const fetchProperties = useCallback(async () => {
-        const res = await api.get("/operations/properties");
-        setProperties(res.data.data.properties);
-    }, []);
-
+    // Only the due count is shown here; plans are managed on /recurring.
     const fetchRecurring = useCallback(async () => {
         const res = await api.get("/recurring");
         setPlans(res.data.data.plans);
@@ -227,8 +304,6 @@ export default function SchedulePage() {
                 fetchTracking(),
                 fetchRecurring(),
                 fetchVans(),
-                fetchCustomers(),
-                fetchProperties(),
                 fetchTodayEvents(),
             ]);
             results.forEach((r) => {
@@ -240,23 +315,35 @@ export default function SchedulePage() {
         } finally {
             setIsLoading(false);
         }
-    }, [fetchUsers, fetchTracking, fetchRecurring, fetchVans, fetchCustomers, fetchProperties, fetchTodayEvents]);
+    }, [fetchUsers, fetchTracking, fetchRecurring, fetchVans, fetchTodayEvents]);
 
     useEffect(() => {
         void bootstrap();
     }, [bootstrap]);
+
+    const boardIsToday = isSameDay(boardDate, new Date());
+
+    useEffect(() => {
+        if (!boardIsToday) void fetchBoardDay(boardDate);
+    }, [boardDate, boardIsToday, fetchBoardDay]);
+
+    // Everything that shows scheduled work: calendar range, today, board day, panel.
+    const refreshSchedule = useCallback(() => {
+        const apiRef = calendarRef.current?.getApi();
+        if (apiRef) void refreshCalendar(apiRef.view.activeStart, apiRef.view.activeEnd);
+        void fetchTodayEvents();
+        const day = boardDateRef.current;
+        if (!isSameDay(day, new Date())) void fetchBoardDay(day);
+        void queryClient.invalidateQueries({ queryKey: ["unscheduled-jobs"] });
+        void queryClient.invalidateQueries({ queryKey: ["dispatch-tech-route"] });
+    }, [refreshCalendar, fetchTodayEvents, fetchBoardDay, queryClient]);
 
     useEffect(() => {
         if (!accessToken) return;
         // Shared socket (autoConnect false): connect if nobody has yet.
         if (!socket.connected) socket.connect();
 
-        const onScheduleChange = () => {
-            const apiRef = calendarRef.current?.getApi();
-            if (apiRef) void refreshCalendar(apiRef.view.activeStart, apiRef.view.activeEnd);
-            void fetchTodayEvents();
-            void queryClient.invalidateQueries({ queryKey: ["unscheduled-jobs"] });
-        };
+        const onScheduleChange = () => refreshSchedule();
 
         const onTechLocation = (payload: {
             userId: string;
@@ -290,7 +377,7 @@ export default function SchedulePage() {
             socket.off("schedule:updated", onScheduleChange);
             socket.off("tech:location", onTechLocation);
         };
-    }, [accessToken, queryClient, refreshCalendar, fetchTodayEvents, fetchTracking]);
+    }, [accessToken, refreshSchedule, fetchTracking]);
 
     // Expanded "wall-board" view for the dispatcher. Prefer the native Fullscreen
     // API (hides browser chrome), but fall back to a CSS overlay that fills the
@@ -325,26 +412,20 @@ export default function SchedulePage() {
         // just closing a dialog (which handles its own Escape).
         const onKey = (e: KeyboardEvent) => {
             if (e.key !== "Escape") return;
-            if (suggestJobId || reassignJob) return;
+            if (suggestJobId || reassignJob || quickJob) return;
             if (document.querySelector('[role="dialog"]')) return;
             setIsFullscreen(false);
         };
         document.addEventListener("keydown", onKey);
         return () => document.removeEventListener("keydown", onKey);
-    }, [suggestJobId, reassignJob]);
+    }, [suggestJobId, reassignJob, quickJob]);
 
     // Recompute the calendar's size whenever the view expands/collapses.
     useEffect(() => {
         const id = setTimeout(() => calendarRef.current?.getApi().updateSize(), 150);
         return () => clearTimeout(id);
-    }, [isFullscreen]);
+    }, [isFullscreen, view]);
 
-    const visibleProperties = useMemo(
-        () => properties.filter((property) => !planForm.customerId || property.customerId === planForm.customerId),
-        [planForm.customerId, properties]
-    );
-
-    const activeTechs = pings.filter((ping) => ping.activeJob && !ping.isStale);
     const duePlans = plans.filter((plan) => plan.isDue && plan.active);
 
     // Map each tech to the van team ids they belong to, so a van-assigned job
@@ -360,45 +441,40 @@ export default function SchedulePage() {
         return map;
     }, [vanTeams]);
 
-    type Availability = "FREE" | "EN_ROUTE" | "ON_SITE" | "BUSY" | "OFFLINE";
-    const techRoster: { tech: Technician; availability: Availability; current?: string }[] = useMemo(() => {
-        return techs.map((tech) => {
-            const ping = pings.find((p) => p.userId === tech.id);
-            const activeStatus = ping?.activeJob?.status;
-            const vanIds = vanIdsByTech.get(tech.id);
-            const todayCount = todayEvents.filter((e) => {
-                if (e.extendedProps.techId === tech.id) return true;
-                if (e.extendedProps.vanId && vanIds?.has(e.extendedProps.vanId)) return true;
-                return false;
-            }).length;
-            const todayLabel = `${todayCount} job${todayCount !== 1 ? "s" : ""} today`;
+    const techRoster = useMemo(
+        () =>
+            techs.map((tech) => ({
+                tech,
+                ...computeAvailability({
+                    techId: tech.id,
+                    ping: pings.find((p) => p.userId === tech.id),
+                    todayEvents,
+                    vanIds: vanIdsByTech.get(tech.id),
+                }),
+            })),
+        [techs, pings, todayEvents, vanIdsByTech]
+    );
 
-            let availability: Availability = "FREE";
-            let current: string | undefined;
-            if (ping && !ping.isStale) {
-                if (activeStatus === "EN_ROUTE") {
-                    availability = "EN_ROUTE";
-                    current = ping.activeJob?.customerName;
-                } else if (activeStatus === "ON_SITE") {
-                    availability = "ON_SITE";
-                    current = ping.activeJob?.customerName;
-                } else if (todayCount > 0) {
-                    availability = "BUSY";
-                    current = todayLabel;
-                }
-            } else if (todayCount > 0) {
-                // Scheduled work but no fresh GPS ping — "Scheduled", not "Offline".
-                availability = "BUSY";
-                current = todayLabel;
-            } else {
-                availability = "OFFLINE";
-            }
-            return { tech, availability, current };
-        });
-    }, [techs, pings, todayEvents, vanIdsByTech]);
+    // A selected tech who disappears from the roster (deactivated) clears the selection.
+    const selectedTech = techs.find((t) => t.id === selectedTechId) ?? null;
+    useEffect(() => {
+        if (selectedTechId && techs.length > 0 && !techs.some((t) => t.id === selectedTechId)) {
+            setSelectedTechId(null);
+        }
+    }, [selectedTechId, techs]);
 
     const freeCount = techRoster.filter((r) => r.availability === "FREE").length;
     const onSiteCount = techRoster.filter((r) => r.availability === "ON_SITE").length;
+    const onTheRoadCount = techRoster.filter(
+        (r) => r.availability === "EN_ROUTE" || r.availability === "ON_SITE"
+    ).length;
+    const techIds = new Set(techs.map((t) => t.id));
+    const freshGpsCount = pings.filter((p) => !p.isStale && techIds.has(p.userId)).length;
+    const emergencyCount = unscheduledJobs.filter((j) => j.priority === "EMERGENCY").length;
+    const jobsTodayCount = todayEvents.filter((e) => e.extendedProps.status !== "CANCELED").length;
+    const completedTodayCount = todayEvents.filter((e) => e.extendedProps.status === "COMPLETED").length;
+
+    const activeTechs = pings.filter((ping) => ping.activeJob && !ping.isStale);
 
     const techPoints = activeTechs.map((ping) => {
         const tech = techs.find((t) => t.id === ping.userId);
@@ -422,33 +498,188 @@ export default function SchedulePage() {
             techPointId: ping.id,
         }));
 
-    const onDatesSet = async (arg: { start: Date; end: Date }) => {
-        await refreshCalendar(arg.start, arg.end);
-    };
+    // ---- Board ----
+    const boardDayKey = format(boardDate, "yyyy-MM-dd");
+    const boardSource = useMemo(
+        () => (boardIsToday ? todayEvents : dayEvents.day === boardDayKey ? dayEvents.events : []),
+        [boardIsToday, todayEvents, dayEvents, boardDayKey]
+    );
+    const boardEvents = useMemo(() => boardSource.map(toBoardEvent), [boardSource]);
+    const boardHours = hoursForDate(businessHours, boardDate);
 
-    const onEventDrop = async (info: any) => {
+    const allLanes = useMemo<BoardLane[]>(
+        () => [
+            { id: "unassigned", kind: "unassigned", label: "Unassigned" },
+            ...techRoster.map(({ tech, availability }) => ({
+                id: tech.id,
+                kind: "tech" as const,
+                label: displayName(tech),
+                sublabel: AVAILABILITY_LABEL[availability],
+                status: availability,
+            })),
+            ...vanTeams.map((van) => ({
+                id: van.id,
+                kind: "van" as const,
+                label: van.name,
+                sublabel: van.members.map((m) => displayName(m.user)).join(", ") || "No crew",
+            })),
+        ],
+        [techRoster, vanTeams]
+    );
+
+    // A selected tech narrows the board to Unassigned, their lane and the vans they crew.
+    const lanes = useMemo<BoardLane[]>(() => {
+        if (!selectedTechId) return allLanes;
+        const vanIds = vanIdsByTech.get(selectedTechId);
+        return allLanes.filter(
+            (lane) =>
+                lane.kind === "unassigned" ||
+                (lane.kind === "tech" && lane.id === selectedTechId) ||
+                (lane.kind === "van" && Boolean(vanIds?.has(lane.id)))
+        );
+    }, [allLanes, selectedTechId, vanIdsByTech]);
+
+    const patchSchedule = async (
+        move: {
+            jobId: string;
+            start: Date | string;
+            end: Date | string;
+            techId?: string | null;
+            vanId?: string | null;
+        },
+        successTitle: string,
+        failureTitle: string
+    ) => {
         try {
-            await api.patch(`/schedule/jobs/${info.event.id}`, {
-                scheduledStart: info.event.start,
-                scheduledEnd: info.event.end,
+            await api.patch(`/schedule/jobs/${move.jobId}`, {
+                scheduledStart: new Date(move.start).toISOString(),
+                scheduledEnd: new Date(move.end).toISOString(),
+                // Explicit nulls so a drop on "Unassigned" really unassigns.
+                techId: move.techId ?? null,
+                vanId: move.vanId ?? null,
             });
-            toast({ title: `Rescheduled to ${format(info.event.start, "EEE d MMM, p")}` });
-        } catch (err: any) {
-            // Surface the reason (e.g. backend 409 "Tech is already booked") instead
-            // of silently snapping the event back with no explanation.
-            info.revert();
-            toast({
-                title: err?.response?.data?.message ?? "Could not reschedule job",
-                variant: "destructive",
-            });
+            toast({ title: successTitle });
+        } catch (err) {
+            toast({ title: errorMessage(err, failureTitle), variant: "destructive" });
+        } finally {
+            refreshSchedule();
         }
     };
 
-    const onExternalDrop = async (info: any) => {
+    const onBoardMove = (move: {
+        jobId: string;
+        start: Date | string;
+        end: Date | string;
+        techId?: string | null;
+        vanId?: string | null;
+    }) => patchSchedule(move, `Moved to ${format(new Date(move.start), "EEE d MMM, HH:mm")}`, "Could not move job");
+
+    const onBoardDrop = (drop: {
+        jobId: string;
+        title: string;
+        start: Date | string;
+        end: Date | string;
+        techId?: string | null;
+        vanId?: string | null;
+    }) =>
+        patchSchedule(
+            drop,
+            drop.techId || drop.vanId
+                ? `Scheduled for ${format(new Date(drop.start), "EEE d MMM, HH:mm")}`
+                : "Scheduled — still unassigned",
+            "Could not schedule job"
+        );
+
+    const openQuickCreate = (start: Date, lane?: { id: string; kind: BoardLane["kind"] }) => {
+        const params = new URLSearchParams({
+            start: start.toISOString(),
+            end: new Date(start.getTime() + HOUR_MS).toISOString(),
+        });
+        if (lane?.kind === "tech") params.set("techId", lane.id);
+        if (lane?.kind === "van") params.set("vanId", lane.id);
+        router.push(`/jobs/quick?${params.toString()}`);
+    };
+
+    const onBoardSlotClick = (slot: { start: Date | string; laneId: string; kind: BoardLane["kind"] }) =>
+        openQuickCreate(new Date(slot.start), { id: slot.laneId, kind: slot.kind });
+
+    const openQuickViewById = (eventId: string, source: ScheduleEvent[]) => {
+        const event = source.find((e) => e.id === eventId);
+        if (event) setQuickJob(event);
+        else router.push(`/jobs/${eventId}`);
+    };
+
+    // ---- Calendar ----
+    const hoursRange = calendarHoursRange(businessHours);
+    const calendarBusinessHours = useMemo(() => fcBusinessHours(businessHours), [businessHours]);
+
+    const calendarEvents = useMemo(() => {
+        if (!selectedTechId) return events;
+        const vanIds = vanIdsByTech.get(selectedTechId);
+        return events.filter(
+            (e) =>
+                e.extendedProps.techId === selectedTechId ||
+                Boolean(e.extendedProps.vanId && vanIds?.has(e.extendedProps.vanId))
+        );
+    }, [events, selectedTechId, vanIdsByTech]);
+
+    const onDatesSet = async (arg: Arg<"datesSet">) => {
+        await refreshCalendar(arg.start, arg.end);
+    };
+
+    const onEventDrop = async (info: Arg<"eventDrop"> | Arg<"eventResize">) => {
+        const newStart = info.event.start;
+        if (!newStart) return;
+        let start = newStart;
+        let end = info.event.end ?? new Date(start.getTime() + HOUR_MS);
+        let adjusted = false;
+
+        // A month-view move lands on a whole day. Keep the job's original time of
+        // day when it had one; otherwise use opening time on that day.
+        if (info.event.allDay && isMidnight(newStart)) {
+            const oldStart = info.oldEvent.start;
+            const oldEnd = info.oldEvent.end;
+            const duration = oldStart && oldEnd ? oldEnd.getTime() - oldStart.getTime() : HOUR_MS;
+            if (oldStart && !info.oldEvent.allDay && !isMidnight(oldStart)) {
+                start = new Date(newStart);
+                start.setHours(oldStart.getHours(), oldStart.getMinutes(), 0, 0);
+            } else {
+                start = defaultDropStart(newStart, businessHours);
+            }
+            end = new Date(start.getTime() + (duration > 0 ? duration : HOUR_MS));
+            adjusted = true;
+        }
+
+        try {
+            await api.patch(`/schedule/jobs/${info.event.id}`, {
+                scheduledStart: start.toISOString(),
+                scheduledEnd: end.toISOString(),
+            });
+            toast({ title: `Rescheduled to ${format(start, "EEE d MMM, HH:mm")}` });
+            // Calendar range is refetched so an adjusted all-day drop shows its real time.
+            if (adjusted) refreshSchedule();
+            else {
+                void fetchTodayEvents();
+                if (!isSameDay(boardDateRef.current, new Date())) void fetchBoardDay(boardDateRef.current);
+            }
+        } catch (err) {
+            // Surface the reason (e.g. backend 409 "Tech is already booked") instead
+            // of silently snapping the event back with no explanation.
+            info.revert();
+            toast({ title: errorMessage(err, "Could not reschedule job"), variant: "destructive" });
+        }
+    };
+
+    const onExternalDrop = async (info: Arg<"eventReceive">) => {
         const jobId = info.event.id;
         const title = info.event.title;
-        const start = info.event.start as Date;
-        const end = info.event.end ?? new Date(start.getTime() + 60 * 60 * 1000);
+        const droppedStart = info.event.start ?? new Date();
+        // Month view drops onto a whole day: book it at opening time for an hour.
+        const isDayDrop = info.event.allDay || isMidnight(droppedStart);
+        const start = isDayDrop ? defaultDropStart(droppedStart, businessHours) : droppedStart;
+        const end = isDayDrop
+            ? new Date(start.getTime() + HOUR_MS)
+            : info.event.end ?? new Date(start.getTime() + HOUR_MS);
         try {
             await api.patch(`/schedule/jobs/${jobId}`, {
                 scheduledStart: start.toISOString(),
@@ -473,57 +704,25 @@ export default function SchedulePage() {
                 extendedProps: { techId: null, vanId: null, status: "REQUESTED" },
             });
             toast({ title: "Scheduled — now assign a technician" });
-        } catch (err: any) {
+        } catch (err) {
             info.event.remove();
-            toast({
-                title: err?.response?.data?.message ?? "Could not schedule job",
-                variant: "destructive",
-            });
+            toast({ title: errorMessage(err, "Could not schedule job"), variant: "destructive" });
         }
     };
 
-    const onEventClick = (info: any) => {
-        const event = {
-            id: info.event.id,
-            title: info.event.title,
-            start: info.event.startStr,
-            end: info.event.endStr,
-            extendedProps: {
-                techId: info.event.extendedProps?.techId ?? null,
-                vanId: info.event.extendedProps?.vanId ?? null,
-                status: info.event.extendedProps?.status,
-                customerId: info.event.extendedProps?.customerId,
-                address: info.event.extendedProps?.address,
-            },
-        } as CalendarEvent;
-        setReassignJob(event);
+    const onCalendarEventClick = (info: Arg<"eventClick">) => {
+        info.jsEvent.preventDefault();
+        openQuickViewById(info.event.id, events);
     };
 
-    const createPlan = async () => {
-        if (!planForm.customerId || !planForm.propertyId || !planForm.title || !planForm.startDate) return;
-
-        setIsSavingPlan(true);
-        try {
-            await api.post("/recurring", {
-                customerId: planForm.customerId,
-                propertyId: planForm.propertyId,
-                title: planForm.title,
-                description: planForm.description || undefined,
-                frequency: planForm.frequency,
-                startDate: new Date(planForm.startDate).toISOString(),
-            });
-            setPlanForm(emptyForm);
-            await fetchRecurring();
-        } finally {
-            setIsSavingPlan(false);
-        }
+    const onCalendarSelect = (info: Arg<"select">) => {
+        calendarRef.current?.getApi().unselect();
+        if (!info.view.type.startsWith("timeGrid")) return;
+        openQuickCreate(info.start, selectedTechId ? { id: selectedTechId, kind: "tech" } : undefined);
     };
 
-    const refreshCalendarView = () => {
-        const apiRef = calendarRef.current?.getApi();
-        if (apiRef) void refreshCalendar(apiRef.view.activeStart, apiRef.view.activeEnd);
-        void fetchTodayEvents();
-    };
+    // Definite height: the board and calendar both scroll inside it.
+    const boardHeight = isFullscreen ? "h-[calc(100vh-300px)] min-h-[420px]" : "h-[min(720px,70vh)] min-h-[420px]";
 
     return (
         <div
@@ -538,7 +737,7 @@ export default function SchedulePage() {
                 <div>
                     <h1 className="page-title">Dispatch Center</h1>
                     <p className="page-subtitle">
-                        Coordinate your team, monitor live field movement, and keep recurring work on track.
+                        Plan each technician&apos;s day, monitor live field movement, and keep jobs moving.
                     </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -563,7 +762,7 @@ export default function SchedulePage() {
             </div>
 
             {bootstrapError && (
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
                     <span>Could not load dispatch data. Check your connection and try again.</span>
                     <Button variant="outline" size="sm" onClick={() => void bootstrap()}>
                         Retry
@@ -576,68 +775,189 @@ export default function SchedulePage() {
             )}
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <OpsCard icon={Route} label="Unassigned jobs" value={String(unscheduledJobs.length)} hint="Needs dispatcher action" />
-                <OpsCard icon={Satellite} label="Live technicians" value={String(activeTechs.length)} hint="Fresh pings in last 15 min" />
-                <OpsCard icon={TimerReset} label="Recurring due" value={String(duePlans.length)} hint="Plans ready to generate" />
-                <OpsCard icon={ShieldCheck} label="Week range" value={rangeLabel || "Current week"} hint={`${todayEvents.length} jobs scheduled today`} />
+                <OpsCard
+                    icon={AlertOctagon}
+                    label="Unscheduled"
+                    value={String(unscheduledJobs.length)}
+                    hint={`${emergencyCount} emergency`}
+                />
+                <OpsCard
+                    icon={CalendarDays}
+                    label="Jobs today"
+                    value={String(jobsTodayCount)}
+                    hint={`${completedTodayCount} completed`}
+                />
+                <OpsCard
+                    icon={Satellite}
+                    label="On the road"
+                    value={`${onTheRoadCount} / ${techs.length}`}
+                    hint={`${freshGpsCount} with fresh GPS`}
+                />
+                <OpsCard
+                    icon={TimerReset}
+                    label="Recurring due"
+                    value={String(duePlans.length)}
+                    hint="Manage plans →"
+                    href="/recurring"
+                />
             </div>
 
-            <div className="grid gap-6 xl:grid-cols-[280px_minmax(0,1.4fr)_minmax(320px,0.95fr)]">
+            <div className="grid gap-6 xl:grid-cols-[280px_minmax(0,1fr)_300px] 2xl:grid-cols-[280px_minmax(0,1fr)_360px]">
                 <div className={isFullscreen ? "h-[calc(100vh-220px)]" : "h-[480px] xl:h-[820px]"}>
                     <UnscheduledJobsPanel
+                        dragMode={view === "board" ? "native" : "fullcalendar"}
                         onJobClick={(id) => router.push(`/jobs/${id}`)}
                         onSuggestTechClick={(id) => setSuggestJobId(id)}
                     />
                 </div>
-                <Card className="overflow-hidden">
+
+                <Card className="min-w-0">
                     <CardHeader className="border-b border-border/70">
-                        <CardTitle>Calendar board</CardTitle>
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div
+                                role="group"
+                                aria-label="Dispatch view"
+                                className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5"
+                            >
+                                <ViewButton active={view === "board"} onClick={() => setView("board")} icon={LayoutList}>
+                                    Board
+                                </ViewButton>
+                                <ViewButton active={view === "calendar"} onClick={() => setView("calendar")} icon={CalendarDays}>
+                                    Calendar
+                                </ViewButton>
+                            </div>
+
+                            {view === "board" && (
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <Button
+                                        variant="outline"
+                                        size="icon"
+                                        aria-label="Previous day"
+                                        onClick={() => setBoardDate((d) => addDays(d, -1))}
+                                    >
+                                        <ChevronLeft className="h-4 w-4" />
+                                    </Button>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        disabled={boardIsToday}
+                                        onClick={() => setBoardDate(startOfDay(new Date()))}
+                                    >
+                                        Today
+                                    </Button>
+                                    <Button
+                                        variant="outline"
+                                        size="icon"
+                                        aria-label="Next day"
+                                        onClick={() => setBoardDate((d) => addDays(d, 1))}
+                                    >
+                                        <ChevronRight className="h-4 w-4" />
+                                    </Button>
+                                    <span className="text-sm font-medium" aria-live="polite">
+                                        {format(boardDate, "EEEE d MMM yyyy")}
+                                        {!boardHours && (
+                                            <span className="ml-2 text-xs font-normal text-muted-foreground">Closed</span>
+                                        )}
+                                    </span>
+                                </div>
+                            )}
+
+                            {view === "calendar" && selectedTech && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
+                                    Showing {displayName(selectedTech)}
+                                    <button
+                                        type="button"
+                                        className="rounded-full p-0.5 hover:bg-primary/20"
+                                        aria-label="Show all technicians"
+                                        onClick={() => setSelectedTechId(null)}
+                                    >
+                                        <X className="h-3 w-3" />
+                                    </button>
+                                </span>
+                            )}
+                        </div>
                     </CardHeader>
                     <CardContent className="p-2 md:p-3">
-                        <div className={isFullscreen ? "h-[calc(100vh-260px)]" : "h-[560px] xl:h-[720px]"}>
-                            <FullCalendar
-                                ref={calendarRef}
-                                plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
-                                initialView="timeGridWeek"
-                                firstDay={1}
-                                headerToolbar={{
-                                    left: "prev,next today",
-                                    center: "title",
-                                    right: "dayGridMonth,timeGridWeek,timeGridDay",
-                                }}
-                                events={events}
-                                editable
-                                droppable
-                                selectable
-                                datesSet={onDatesSet}
-                                eventDrop={onEventDrop}
-                                eventResize={onEventDrop}
-                                eventReceive={onExternalDrop}
-                                eventClick={onEventClick}
-                                eventContent={(arg) => {
-                                    const sub =
-                                        arg.event.extendedProps.techName ||
-                                        arg.event.extendedProps.vanName ||
-                                        "Unassigned";
-                                    return (
-                                        <div className="overflow-hidden px-1 py-0.5 text-[11px] leading-tight">
-                                            {arg.timeText && <div className="font-semibold">{arg.timeText}</div>}
-                                            <div className="truncate font-medium">{arg.event.title}</div>
-                                            <div className="truncate opacity-80">{sub}</div>
-                                        </div>
-                                    );
-                                }}
-                                height="100%"
-                                slotMinTime="06:00:00"
-                                slotMaxTime="20:00:00"
-                                allDaySlot={false}
-                                nowIndicator
-                            />
+                        <div className={boardHeight}>
+                            {view === "board" ? (
+                                !boardIsToday && dayError ? (
+                                    <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+                                        <span>Could not load jobs for this day.</span>
+                                        <Button variant="outline" size="sm" onClick={() => void fetchBoardDay(boardDate)}>
+                                            Retry
+                                        </Button>
+                                    </div>
+                                ) : (
+                                    <div className="relative h-full">
+                                        {!boardIsToday && dayLoading && (
+                                            <div className="absolute right-2 top-2 z-10 rounded-md bg-background/90 px-2 py-1 text-xs text-muted-foreground shadow-sm">
+                                                Loading…
+                                            </div>
+                                        )}
+                                        <DispatchBoard
+                                            date={boardDate}
+                                            events={boardEvents}
+                                            lanes={lanes}
+                                            hours={boardHours}
+                                            highlightLaneId={selectedTechId}
+                                            onEventClick={(eventId) => openQuickViewById(eventId, boardSource)}
+                                            onMove={onBoardMove}
+                                            onDropUnscheduled={onBoardDrop}
+                                            onSlotClick={onBoardSlotClick}
+                                        />
+                                    </div>
+                                )
+                            ) : (
+                                <FullCalendar
+                                    ref={calendarRef}
+                                    plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
+                                    initialView="timeGridWeek"
+                                    firstDay={1}
+                                    // SA convention: 24-hour times (no ambiguous "1:00 - 2:00").
+                                    eventTimeFormat={{ hour: "2-digit", minute: "2-digit", hour12: false }}
+                                    slotLabelFormat={{ hour: "2-digit", minute: "2-digit", hour12: false }}
+                                    headerToolbar={{
+                                        left: "prev,next today",
+                                        center: "title",
+                                        right: "dayGridMonth,timeGridWeek,timeGridDay",
+                                    }}
+                                    events={calendarEvents}
+                                    editable
+                                    droppable
+                                    selectable
+                                    selectMirror
+                                    datesSet={onDatesSet}
+                                    eventDrop={onEventDrop}
+                                    eventResize={onEventDrop}
+                                    eventReceive={onExternalDrop}
+                                    eventClick={onCalendarEventClick}
+                                    select={onCalendarSelect}
+                                    eventContent={(arg) => {
+                                        const sub =
+                                            arg.event.extendedProps.techName ||
+                                            arg.event.extendedProps.vanName ||
+                                            "Unassigned";
+                                        return (
+                                            <div className="overflow-hidden px-1 py-0.5 text-[11px] leading-tight">
+                                                {arg.timeText && <div className="font-semibold">{arg.timeText}</div>}
+                                                <div className="truncate font-medium">{arg.event.title}</div>
+                                                <div className="truncate opacity-80">{sub}</div>
+                                            </div>
+                                        );
+                                    }}
+                                    height="100%"
+                                    slotMinTime={hoursRange.slotMinTime}
+                                    slotMaxTime={hoursRange.slotMaxTime}
+                                    businessHours={calendarBusinessHours}
+                                    allDaySlot={false}
+                                    nowIndicator
+                                />
+                            )}
                         </div>
                     </CardContent>
                 </Card>
 
-                <div className="space-y-6">
+                <div className="min-w-0 space-y-6">
                     <Card>
                         <CardHeader className="border-b border-border/70">
                             <CardTitle className="flex items-center gap-2">
@@ -652,15 +972,15 @@ export default function SchedulePage() {
 
                     <Card>
                         <CardHeader className="border-b border-border/70">
-                            <div className="flex items-center justify-between">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
                                 <CardTitle className="flex items-center gap-2">
                                     Tech availability
                                 </CardTitle>
                                 <div className="flex gap-2 text-xs">
-                                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
                                         <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> {freeCount} free
                                     </span>
-                                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-amber-700">
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
                                         <span className="h-1.5 w-1.5 rounded-full bg-amber-500" /> {onSiteCount} on site
                                     </span>
                                 </div>
@@ -670,37 +990,49 @@ export default function SchedulePage() {
                             {techRoster.length === 0 ? (
                                 <p className="text-sm text-muted-foreground p-3">No technicians found.</p>
                             ) : (
-                                techRoster.map(({ tech, availability, current }) => {
-                                    const tone = {
-                                        FREE: "bg-emerald-500",
-                                        EN_ROUTE: "bg-violet-500",
-                                        ON_SITE: "bg-amber-500",
-                                        BUSY: "bg-blue-500",
-                                        OFFLINE: "bg-slate-300",
-                                    }[availability];
-                                    const label = {
-                                        FREE: "Available",
-                                        EN_ROUTE: "En route",
-                                        ON_SITE: "On site",
-                                        BUSY: "Scheduled",
-                                        OFFLINE: "Offline",
-                                    }[availability];
-                                    return (
-                                        <div key={tech.id} className="flex items-center gap-3 rounded-lg border border-border/70 px-3 py-2">
-                                            <span className={`h-2 w-2 rounded-full ${tone} shrink-0`} />
-                                            <div className="flex-1 min-w-0">
-                                                <p className="text-sm font-medium truncate">{displayName(tech)}</p>
-                                                {current && (
-                                                    <p className="text-xs text-muted-foreground truncate">{current}</p>
-                                                )}
-                                            </div>
-                                            <span className="text-xs text-muted-foreground">{label}</span>
-                                        </div>
-                                    );
-                                })
+                                <>
+                                    <p className="px-1 pb-1 text-xs text-muted-foreground">
+                                        Click a technician to see their route and filter the board.
+                                    </p>
+                                    {techRoster.map(({ tech, availability, current }) => {
+                                        const selected = tech.id === selectedTechId;
+                                        return (
+                                            <button
+                                                type="button"
+                                                key={tech.id}
+                                                aria-pressed={selected}
+                                                onClick={() => setSelectedTechId(selected ? null : tech.id)}
+                                                className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                                                    selected
+                                                        ? "border-primary bg-primary/10"
+                                                        : "border-border/70 hover:bg-muted/50"
+                                                }`}
+                                            >
+                                                <span className={`h-2 w-2 rounded-full ${AVAILABILITY_DOT[availability]} shrink-0`} />
+                                                <span className="flex-1 min-w-0">
+                                                    <span className="block text-sm font-medium truncate">{displayName(tech)}</span>
+                                                    {current && (
+                                                        <span className="block text-xs text-muted-foreground truncate">{current}</span>
+                                                    )}
+                                                </span>
+                                                <span className="text-xs text-muted-foreground">{AVAILABILITY_LABEL[availability]}</span>
+                                            </button>
+                                        );
+                                    })}
+                                </>
                             )}
                         </CardContent>
                     </Card>
+
+                    {selectedTech && (
+                        <TechRoutePanel
+                            techId={selectedTech.id}
+                            techName={displayName(selectedTech)}
+                            date={boardDate}
+                            onClose={() => setSelectedTechId(null)}
+                            onStopClick={(jobId) => openQuickViewById(jobId, boardSource)}
+                        />
+                    )}
 
                     {vanTeams.length > 0 && (
                         <Card>
@@ -716,23 +1048,23 @@ export default function SchedulePage() {
                                     return (
                                         <div key={van.id} className="rounded-xl border border-border p-3">
                                             <div className="flex items-center justify-between gap-3">
-                                                <div>
-                                                    <p className="text-sm font-medium">{van.name}</p>
+                                                <div className="min-w-0">
+                                                    <p className="text-sm font-medium truncate">{van.name}</p>
                                                     <p className="text-xs text-muted-foreground">
-                                                        {driver ? `${[driver.user.firstName, driver.user.lastName].filter(Boolean).join(" ") || driver.user.email.split("@")[0]} (driver)` : "No driver"} · {memberCount} member{memberCount !== 1 ? "s" : ""}
+                                                        {driver ? `${displayName(driver.user)} (driver)` : "No driver"} · {memberCount} member{memberCount !== 1 ? "s" : ""}
                                                     </p>
                                                 </div>
-                                                <span className="text-xs text-muted-foreground">{van._count.jobs} jobs</span>
+                                                <span className="shrink-0 text-xs text-muted-foreground">{van._count.jobs} jobs</span>
                                             </div>
                                             {van.members.length > 0 && (
                                                 <div className="mt-2 flex -space-x-1">
                                                     {van.members.slice(0, 4).map((m) => (
-                                                        <div key={m.id} className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 border-2 border-white text-[9px] font-medium text-slate-700">
+                                                        <div key={m.id} className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-background bg-muted text-[9px] font-medium text-foreground">
                                                             {(m.user.firstName?.[0] || m.user.email[0]).toUpperCase()}
                                                         </div>
                                                     ))}
                                                     {van.members.length > 4 && (
-                                                        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-200 border-2 border-white text-[9px] font-medium text-slate-600">
+                                                        <div className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-background bg-muted text-[9px] font-medium text-muted-foreground">
                                                             +{van.members.length - 4}
                                                         </div>
                                                     )}
@@ -744,160 +1076,25 @@ export default function SchedulePage() {
                             </CardContent>
                         </Card>
                     )}
-
-                    <Card>
-                        <CardHeader className="border-b border-border/70">
-                            <CardTitle>Recurring maintenance plans</CardTitle>
-                        </CardHeader>
-                        <CardContent className="space-y-5 p-4">
-                            <div className="grid gap-3">
-                                <div className="grid gap-1.5">
-                                    <Label htmlFor="customerId">Customer</Label>
-                                    <select
-                                        id="customerId"
-                                        className="h-11 rounded-lg border border-input bg-background px-3 text-sm"
-                                        value={planForm.customerId}
-                                        onChange={(event) =>
-                                            setPlanForm((current) => ({
-                                                ...current,
-                                                customerId: event.target.value,
-                                                propertyId: "",
-                                            }))
-                                        }
-                                    >
-                                        <option value="">Select customer</option>
-                                        {customers.map((customer) => (
-                                            <option key={customer.id} value={customer.id}>
-                                                {customer.name}
-                                            </option>
-                                        ))}
-                                    </select>
-                                </div>
-
-                                <div className="grid gap-1.5">
-                                    <Label htmlFor="propertyId">Property</Label>
-                                    <select
-                                        id="propertyId"
-                                        className="h-11 rounded-lg border border-input bg-background px-3 text-sm"
-                                        value={planForm.propertyId}
-                                        onChange={(event) =>
-                                            setPlanForm((current) => ({
-                                                ...current,
-                                                propertyId: event.target.value,
-                                            }))
-                                        }
-                                    >
-                                        <option value="">Select property</option>
-                                        {visibleProperties.map((property) => (
-                                            <option key={property.id} value={property.id}>
-                                                {property.addressLine1}, {property.city}
-                                            </option>
-                                        ))}
-                                    </select>
-                                </div>
-
-                                <div className="grid gap-1.5">
-                                    <Label htmlFor="title">Plan title</Label>
-                                    <Input
-                                        id="title"
-                                        value={planForm.title}
-                                        onChange={(event) =>
-                                            setPlanForm((current) => ({ ...current, title: event.target.value }))
-                                        }
-                                        placeholder="Quarterly HVAC preventive service"
-                                    />
-                                </div>
-
-                                <div className="grid gap-1.5 md:grid-cols-2">
-                                    <div className="grid gap-1.5">
-                                        <Label htmlFor="frequency">Frequency</Label>
-                                        <select
-                                            id="frequency"
-                                            className="h-11 rounded-lg border border-input bg-background px-3 text-sm"
-                                            value={planForm.frequency}
-                                            onChange={(event) =>
-                                                setPlanForm((current) => ({
-                                                    ...current,
-                                                    frequency: event.target.value,
-                                                }))
-                                            }
-                                        >
-                                            {frequencyOptions.map((option) => (
-                                                <option key={option} value={option}>
-                                                    {option.replace("_", " ")}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-
-                                    <div className="grid gap-1.5">
-                                        <Label htmlFor="startDate">Start date</Label>
-                                        <Input
-                                            id="startDate"
-                                            type="datetime-local"
-                                            value={planForm.startDate}
-                                            onChange={(event) =>
-                                                setPlanForm((current) => ({
-                                                    ...current,
-                                                    startDate: event.target.value,
-                                                }))
-                                            }
-                                        />
-                                    </div>
-                                </div>
-
-                                <div className="grid gap-1.5">
-                                    <Label htmlFor="description">Notes</Label>
-                                    <Textarea
-                                        id="description"
-                                        value={planForm.description}
-                                        onChange={(event) =>
-                                            setPlanForm((current) => ({
-                                                ...current,
-                                                description: event.target.value,
-                                            }))
-                                        }
-                                        placeholder="Include filter replacement, coil clean, and safety checklist."
-                                    />
-                                </div>
-
-                                <Button className="w-full" onClick={() => void createPlan()} disabled={isSavingPlan}>
-                                    {isSavingPlan ? "Saving plan..." : "Create recurring plan"}
-                                </Button>
-                            </div>
-
-                            <div className="space-y-2 border-t border-border pt-4">
-                                {plans.length === 0 ? (
-                                    <p className="text-sm text-muted-foreground">No recurring plans created yet.</p>
-                                ) : (
-                                    plans.map((plan) => (
-                                        <div key={plan.id} className="rounded-xl border border-border bg-slate-50/70 p-3">
-                                            <div className="flex items-start justify-between gap-3">
-                                                <div>
-                                                    <p className="text-sm font-medium">{plan.title}</p>
-                                                    <p className="text-xs text-muted-foreground">
-                                                        {plan.customer?.name} · {plan.property?.addressLine1}
-                                                    </p>
-                                                </div>
-                                                <StatusPill status={plan.isDue ? "ON_SITE" : "ASSIGNED"} />
-                                            </div>
-                                            <div className="mt-2 flex items-center justify-between text-xs text-slate-600">
-                                                <span>{plan.frequency.toLowerCase()}</span>
-                                                <span>Next run {format(new Date(plan.nextRunAt), "d MMM yyyy")}</span>
-                                            </div>
-                                        </div>
-                                    ))
-                                )}
-                            </div>
-                        </CardContent>
-                    </Card>
                 </div>
             </div>
 
+            <JobQuickView
+                job={quickJob ? toQuickView(quickJob) : null}
+                onClose={() => setQuickJob(null)}
+                onReassign={() => {
+                    setReassignJob(quickJob);
+                    setQuickJob(null);
+                }}
+                onSuggestTech={(jobId) => {
+                    setQuickJob(null);
+                    setSuggestJobId(jobId);
+                }}
+            />
             <TechSuggestModal
                 jobId={suggestJobId}
                 onClose={() => setSuggestJobId(null)}
-                onAssigned={refreshCalendarView}
+                onAssigned={refreshSchedule}
             />
             <ReassignDialog
                 // Remount per job + slot so the dialog's fields prefill from the
@@ -912,9 +1109,35 @@ export default function SchedulePage() {
                 currentEnd={reassignJob?.end ?? null}
                 techs={techs.map((t) => ({ id: t.id, email: t.email, firstName: t.firstName, lastName: t.lastName }))}
                 vans={vanTeams.map((v) => ({ id: v.id, name: v.name }))}
-                onReassigned={refreshCalendarView}
+                onReassigned={refreshSchedule}
             />
         </div>
+    );
+}
+
+function ViewButton({
+    active,
+    onClick,
+    icon: Icon,
+    children,
+}: {
+    active: boolean;
+    onClick: () => void;
+    icon: typeof LayoutList;
+    children: string;
+}) {
+    return (
+        <button
+            type="button"
+            aria-pressed={active}
+            onClick={onClick}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                active ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+            }`}
+        >
+            <Icon className="h-4 w-4" />
+            {children}
+        </button>
     );
 }
 
@@ -923,22 +1146,35 @@ function OpsCard({
     label,
     value,
     hint,
+    href,
 }: {
-    icon: typeof Route;
+    icon: typeof Satellite;
     label: string;
     value: string;
     hint: string;
+    href?: string;
 }) {
-    return (
-        <div className="surface-card p-5">
+    const body = (
+        <>
             <div className="flex items-center justify-between">
-                <div className="icon-tile bg-slate-100 text-slate-700">
+                <div className="icon-tile bg-muted text-foreground">
                     <Icon className="h-5 w-5" />
                 </div>
                 <span className="text-2xl font-semibold tracking-tight">{value}</span>
             </div>
             <p className="mt-4 text-sm font-medium">{label}</p>
             <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
-        </div>
+        </>
     );
+    if (href) {
+        return (
+            <Link
+                href={href}
+                className="surface-card block p-5 transition hover:border-primary/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+                {body}
+            </Link>
+        );
+    }
+    return <div className="surface-card p-5">{body}</div>;
 }

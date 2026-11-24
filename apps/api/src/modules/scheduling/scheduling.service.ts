@@ -114,7 +114,7 @@ export const schedulingService = {
                 }
             },
             include: {
-                customer: { select: { name: true } },
+                customer: { select: { name: true, phone: true } },
                 property: { select: { addressLine1: true, city: true } },
                 tech: { select: { id: true, email: true, firstName: true, lastName: true, avatarUrl: true } },
                 van: { select: { id: true, name: true } },
@@ -133,12 +133,19 @@ export const schedulingService = {
                 id: job.id,
                 title: `${job.title} - ${job.customer.name}`,
                 start: job.scheduledStart,
-                end: job.scheduledEnd,
+                // Recurring-generated jobs have no end; default to a 60-minute block
+                // so the calendar draws something real.
+                end: job.scheduledEnd ?? (job.scheduledStart ? new Date(job.scheduledStart.getTime() + 60 * 60 * 1000) : null),
                 resourceId: job.vanId || job.techId || 'unassigned',
                 // Finished / cancelled jobs can't be dragged on the board.
                 editable: !terminal,
                 extendedProps: {
                     customerId: job.customerId,
+                    customerName: job.customer.name,
+                    customerPhone: job.customer.phone,
+                    propertyId: job.propertyId,
+                    jobTitle: job.title,
+                    priority: job.priority,
                     techId: job.techId,
                     techName,
                     vanId: job.vanId,

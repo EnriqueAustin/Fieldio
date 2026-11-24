@@ -8,4 +8,6 @@ recurringRouter.use(requireUser);
 // Recurring plans carry priced templates — office/sales/accounting only, never TECHNICIAN.
 recurringRouter.get('/', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER', 'CSR', 'SALES', 'ACCOUNTANT'), catchAsync(recurringController.list));
 recurringRouter.post('/', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(recurringController.create));
+recurringRouter.post('/run-due', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(recurringController.runDue));
+recurringRouter.patch('/:id', restrictTo('ADMIN', 'OFFICE', 'DISPATCHER'), catchAsync(recurringController.update));
 recurringRouter.delete('/:id', restrictTo('ADMIN', 'OFFICE'), catchAsync(recurringController.deactivate));

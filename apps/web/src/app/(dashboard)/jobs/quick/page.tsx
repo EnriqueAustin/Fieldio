@@ -9,6 +9,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, Zap, Search } from "lucide-react";
 import Link from "next/link";
+import { toLocalInput } from "@/lib/schedule-utils";
+
+const DEFAULT_DURATION_MS = 60 * 60 * 1000;
 
 interface Tech {
     id: string;
@@ -82,6 +85,7 @@ export default function QuickJobPage() {
         techId: "",
         vanId: "",
         scheduledStart: "",
+        scheduledEnd: "",
     });
 
     useEffect(() => {
@@ -113,6 +117,31 @@ export default function QuickJobPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [searchParams, existingCustomers.length]);
 
+    // Slot pre-fill from the dispatch board / calendar (click-to-create).
+    useEffect(() => {
+        const start = searchParams.get("start");
+        const end = searchParams.get("end");
+        const techId = searchParams.get("techId");
+        const vanId = searchParams.get("vanId");
+        const startDate = start ? new Date(start) : null;
+        const validStart = startDate && !Number.isNaN(startDate.getTime()) ? startDate : null;
+        const endDate = end ? new Date(end) : null;
+        const validEnd =
+            validStart && endDate && !Number.isNaN(endDate.getTime()) && endDate > validStart
+                ? endDate
+                : validStart
+                ? new Date(validStart.getTime() + DEFAULT_DURATION_MS)
+                : null;
+        if (!validStart && !techId && !vanId) return;
+        setForm((f) => ({
+            ...f,
+            scheduledStart: validStart ? toLocalInput(validStart) : f.scheduledStart,
+            scheduledEnd: validEnd ? toLocalInput(validEnd) : f.scheduledEnd,
+            techId: techId ?? f.techId,
+            vanId: vanId ?? f.vanId,
+        }));
+    }, [searchParams]);
+
     const applyTemplate = (templateId: string) => {
         setSelectedTemplateId(templateId);
         const tpl = templates.find((t) => t.id === templateId);
@@ -133,14 +162,16 @@ export default function QuickJobPage() {
     );
 
     const selectExistingCustomer = (c: ExistingCustomer) => {
-        setForm({
-            ...form,
+        // Functional update: this also runs from the prefill effect, where `form`
+        // would be stale and wipe the slot prefill.
+        setForm((prev) => ({
+            ...prev,
             existingCustomerId: c.id,
             existingPropertyId: "",
             customerName: c.name,
             customerPhone: c.phone || "",
             customerEmail: c.email || "",
-        });
+        }));
         setUseExisting(true);
         setCustomerSearch("");
 
@@ -188,6 +219,18 @@ export default function QuickJobPage() {
     };
 
     const handleSubmit = async () => {
+        const start = form.scheduledStart ? new Date(form.scheduledStart) : null;
+        // Always send an end with a start: without one, conflict checks skip the
+        // job and the tech's week view hides it.
+        const end = start
+            ? form.scheduledEnd
+                ? new Date(form.scheduledEnd)
+                : new Date(start.getTime() + DEFAULT_DURATION_MS)
+            : null;
+        if (start && end && end <= start) {
+            setError("Scheduled end must be after the start.");
+            return;
+        }
         setSubmitting(true);
         setError(null);
         try {
@@ -204,7 +247,8 @@ export default function QuickJobPage() {
                 priority: form.priority,
                 techId: form.techId || undefined,
                 vanId: form.vanId || undefined,
-                scheduledStart: form.scheduledStart ? new Date(form.scheduledStart).toISOString() : undefined,
+                scheduledStart: start ? start.toISOString() : undefined,
+                scheduledEnd: end ? end.toISOString() : undefined,
             };
             if (form.existingCustomerId) {
                 payload.existingCustomerId = form.existingCustomerId;
@@ -496,7 +540,30 @@ export default function QuickJobPage() {
                         <Input
                             type="datetime-local"
                             value={form.scheduledStart}
-                            onChange={(e) => setForm({ ...form, scheduledStart: e.target.value })}
+                            onChange={(e) => {
+                                const value = e.target.value;
+                                setForm((prev) => {
+                                    const start = value ? new Date(value) : null;
+                                    const end = prev.scheduledEnd ? new Date(prev.scheduledEnd) : null;
+                                    // Keep the end after the start (default one hour).
+                                    const scheduledEnd =
+                                        start && (!end || end <= start)
+                                            ? toLocalInput(new Date(start.getTime() + DEFAULT_DURATION_MS))
+                                            : prev.scheduledEnd;
+                                    return { ...prev, scheduledStart: value, scheduledEnd: value ? scheduledEnd : "" };
+                                });
+                            }}
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <Label htmlFor="scheduledEnd">Scheduled End</Label>
+                        <Input
+                            id="scheduledEnd"
+                            type="datetime-local"
+                            value={form.scheduledEnd}
+                            min={form.scheduledStart || undefined}
+                            disabled={!form.scheduledStart}
+                            onChange={(e) => setForm({ ...form, scheduledEnd: e.target.value })}
                         />
                     </div>
                 </div>
