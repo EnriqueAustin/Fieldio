@@ -40,6 +40,7 @@ import { format } from "date-fns";
 import { StatusPill } from "@/components/ui/status-pill";
 import { useAuthStore } from "@/store/auth";
 import { JobOfficeControls } from "@/components/jobs/job-office-controls";
+import { CertificatesSection } from "@/components/forms/certificates-section";
 import {
     Dialog,
     DialogContent,
@@ -675,6 +676,8 @@ export default function JobDetailPage() {
                                     </div>
                                 );
                             })()}
+
+                            {isOffice && <CertificatesSection jobId={job.id} />}
 
                             {job.notes && job.notes.length > 0 && (
                                 <div className="surface-card p-6">

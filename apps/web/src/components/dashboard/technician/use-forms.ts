@@ -5,36 +5,10 @@ import { useMutation, useQuery, type QueryClient } from "@tanstack/react-query";
 import api from "../../../lib/api";
 import { OFFLINE_KEYS } from "../../../lib/offline-mutations";
 import { toast } from "../../ui/use-toast";
+import { fieldId, type FormField, type FormSchema } from "../../forms/form-schema";
 
-export type FormFieldType =
-    | "text"
-    | "textarea"
-    | "number"
-    | "date"
-    | "checkbox"
-    | "boolean"
-    | "select"
-    | "multiselect"
-    | "signature";
-
-export interface FormField {
-    // Templates are authored in two places: the office builder uses `key`, the
-    // seed/CoC starter uses `name`. Support both so every template renders.
-    key?: string;
-    name?: string;
-    label: string;
-    type: FormFieldType;
-    required?: boolean;
-    options?: string[];
-}
-
-export interface FormSchema {
-    fields?: FormField[];
-    /** CoC / compliance certificate — only users with canIssueCoC may submit. */
-    requiresCoc?: boolean;
-    /** Opt-in: block job completion until a submission exists for this template. */
-    requiredForCompletion?: boolean;
-}
+export type { FormColumn, FormField, FormFieldType, FormSchema, PhotoAnswer } from "../../forms/form-schema";
+export { fieldId };
 
 export interface FormTemplate {
     id: string;
@@ -48,6 +22,7 @@ export interface FormTemplate {
 export interface FormSubmissionLite {
     id: string;
     templateId: string;
+    userId?: string;
     signatureUrl?: string | null;
     createdAt: string;
     user?: { firstName: string | null; lastName: string | null } | null;
@@ -91,10 +66,6 @@ export function prefetchFormsForJobs(queryClient: QueryClient, jobIds: string[])
     );
 }
 
-export function fieldId(field: FormField): string {
-    return field.key ?? field.name ?? "";
-}
-
 export function getSchema(template: FormTemplate): FormSchema {
     return (template.schema ?? {}) as FormSchema;
 }
@@ -126,12 +97,12 @@ export function useJobForms(jobId: string | null | undefined) {
         gcTime: FORMS_GC_TIME,
     });
 
-    const submitMutation = useMutation<unknown, any, { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string }>({
+    const submitMutation = useMutation<unknown, any, { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string; detached?: boolean }>({
         mutationKey: OFFLINE_KEYS.formSubmit,
         onError: (error: any) => {
             toast({
                 title: "Form not submitted",
-                description: error?.response?.data?.message ?? "Please try again.",
+                description: error?.response?.data?.message ?? error?.message ?? "Please try again.",
                 variant: "destructive",
             });
         },
@@ -175,7 +146,7 @@ export function useJobForms(jobId: string | null | undefined) {
         canIssueCoC,
         requiredPending,
         hasForms,
-        submit: (vars: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string }) =>
+        submit: (vars: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string; detached?: boolean }) =>
             submitMutation.mutateAsync(vars),
         isSubmitting: submitMutation.isPending,
     };

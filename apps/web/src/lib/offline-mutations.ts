@@ -2,7 +2,14 @@
 
 import type { Mutation, QueryClient } from "@tanstack/react-query";
 import api from "./api";
-import { getPhotoBlob, delPhotoBlob, getReceiptBlob, delReceiptBlob } from "./offline-db";
+import {
+    getPhotoBlob,
+    delPhotoBlob,
+    getReceiptBlob,
+    delReceiptBlob,
+    getFormPhotoBlob,
+    delFormPhotoBlob,
+} from "./offline-db";
 
 /**
  * Mutation keys shared between the technician field UI and the resumable
@@ -198,6 +205,168 @@ export function refreshFieldQueriesWhenIdle(qc: QueryClient) {
 
 const tempId = () => `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+/** A form photo answer as queued on the phone: bytes live in IndexedDB. */
+interface QueuedFormPhotoRef {
+    blobId: string;
+}
+
+const isQueuedFormPhoto = (v: unknown): v is QueuedFormPhotoRef =>
+    !!v && typeof v === "object" && typeof (v as QueuedFormPhotoRef).blobId === "string";
+
+/** Every form-photo blob id referenced by a queued submission's answers. */
+export function formPhotoBlobIds(data: Record<string, unknown>): string[] {
+    return Object.values(data).flatMap((v) => (Array.isArray(v) ? v.filter(isQueuedFormPhoto).map((p) => p.blobId) : []));
+}
+
+// Inline fallback limits — must stay under the API's per-photo cap (450k chars),
+// and all inline photos together under its 2 MB request body limit (leaving room
+// for the signature and the other answers).
+const INLINE_MAX_EDGE = 1024;
+const INLINE_MAX_CHARS = 440_000;
+const INLINE_TOTAL_MAX_CHARS = 1_400_000;
+
+/** A form submission that can never succeed as queued (retrying won't help). */
+class PermanentFormError extends Error {}
+
+/** True when a failed form submission is final: bad data, too large, or our own size check. */
+function isPermanentFormFailure(error: unknown): boolean {
+    if (error instanceof PermanentFormError) return true;
+    const status = (error as { response?: { status?: number } } | null)?.response?.status;
+    return status === 400 || status === 413 || status === 422;
+}
+
+function deleteFormPhotos(data: Record<string, unknown> | undefined) {
+    if (!data) return Promise.resolve();
+    return Promise.all(formPhotoBlobIds(data).map((id) => delFormPhotoBlob(id).catch(() => undefined))).then(() => undefined);
+}
+
+type FormSubmitVars = { data?: Record<string, unknown>; detached?: boolean } | undefined;
+
+/**
+ * Form photo bytes belong to their queued submission. When the tech discards a
+ * queued one from the outbox, or a detached (sheet already closed) one that
+ * failed is garbage-collected, nothing can replay it any more, so free the
+ * blobs. Blobs of a failed submit whose sheet is still open belong to the sheet
+ * (it cleans up on close), and blobs another live submission still references
+ * (a resubmit reuses them) are never touched.
+ */
+function cleanupFormPhotosOnRemoval(qc: QueryClient) {
+    const head = OFFLINE_KEYS.formSubmit.join("|");
+    const isFormSubmit = (m: Mutation<any, any, any, any>) => {
+        const key = m.options.mutationKey;
+        return Array.isArray(key) && key.join("|") === head;
+    };
+    qc.getMutationCache().subscribe((event) => {
+        if (event.type !== "removed" || !event.mutation || !isFormSubmit(event.mutation)) return;
+        const { status } = event.mutation.state;
+        const vars = event.mutation.state.variables as FormSubmitVars;
+        if (status === "success") return; // its blobs were deleted when it landed
+        if (status !== "pending" && !vars?.detached) return;
+
+        const stillUsed = new Set(
+            qc
+                .getMutationCache()
+                .getAll()
+                .filter((m) => m !== event.mutation && isFormSubmit(m) && m.state.status !== "success")
+                .flatMap((m) => formPhotoBlobIds((m.state.variables as FormSubmitVars)?.data ?? {}))
+        );
+        const ids = formPhotoBlobIds(vars?.data ?? {}).filter((id) => !stillUsed.has(id));
+        void Promise.all(ids.map((id) => delFormPhotoBlob(id).catch(() => undefined)));
+    });
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+    });
+}
+
+/**
+ * Shrink a photo to a small inline JPEG data URL. Only used when the server has
+ * no photo storage configured (upload returns 503), so the certificate still
+ * carries its evidence.
+ */
+async function blobToInlineJpeg(blob: Blob): Promise<string> {
+    const bitmap = await createImageBitmap(blob);
+    try {
+        let edge = INLINE_MAX_EDGE;
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            const scale = Math.min(1, edge / Math.max(bitmap.width, bitmap.height));
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+            canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+            const ctx = canvas.getContext("2d");
+            if (!ctx) break;
+            ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+            const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
+            if (dataUrl.length <= INLINE_MAX_CHARS) return dataUrl;
+            edge = Math.round(edge * 0.7);
+        }
+    } finally {
+        bitmap.close?.();
+    }
+    const raw = await blobToDataUrl(blob);
+    if (raw.length <= INLINE_MAX_CHARS && /^data:image\/(png|jpeg);base64,/.test(raw)) return raw;
+    throw new Error("A form photo is too large to attach. Retake it and try again.");
+}
+
+/**
+ * Upload each queued form photo to the job's gallery (so it shows with the job
+ * photos) and swap its blob reference for the server photo id. The blob id is
+ * the upload's Idempotency-Key, so a replay after a partial upload reuses the
+ * photos that already landed instead of duplicating them.
+ */
+async function resolveFormPhotos(
+    jobId: string,
+    data: Record<string, unknown>
+): Promise<{ data: Record<string, unknown>; inline: boolean }> {
+    const out: Record<string, unknown> = { ...data };
+    let inline = false;
+    let inlineChars = 0;
+    for (const [key, value] of Object.entries(data)) {
+        if (!Array.isArray(value) || !value.some(isQueuedFormPhoto)) continue;
+        const resolved: unknown[] = [];
+        for (const item of value) {
+            if (!isQueuedFormPhoto(item)) {
+                resolved.push(item);
+                continue;
+            }
+            const queued = await getFormPhotoBlob(item.blobId);
+            if (!queued) {
+                throw new Error("A photo for this form is missing from this device. Open the form again and retake it.");
+            }
+            const formData = new FormData();
+            formData.append("photo", queued.blob, queued.fileName);
+            if (queued.caption.trim()) formData.append("caption", queued.caption.trim());
+            try {
+                const res = await api.post(`/media/jobs/${jobId}/photos`, formData, {
+                    headers: idempotencyHeaders(item.blobId),
+                    timeout: 120000,
+                });
+                const photoId = res.data?.data?.photo?.id;
+                if (typeof photoId !== "string") throw new Error("Photo upload returned no photo id");
+                resolved.push({ photoId });
+            } catch (err: any) {
+                if (err?.response?.status !== 503) throw err;
+                const dataUrl = await blobToInlineJpeg(queued.blob);
+                inlineChars += dataUrl.length;
+                if (inlineChars > INLINE_TOTAL_MAX_CHARS) {
+                    throw new PermanentFormError(
+                        "This form has too many photos to send while photo storage is unavailable. Remove some photos and submit it again."
+                    );
+                }
+                resolved.push({ dataUrl });
+                inline = true;
+            }
+        }
+        out[key] = resolved;
+    }
+    return { data: out, inline };
+}
+
 /**
  * Register replayable defaults for every field action. Called once when the
  * QueryClient is created. Optimistic onMutate keeps the UI truthful offline;
@@ -207,15 +376,55 @@ const tempId = () => `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8
  * order, and (2) stamps an Idempotency-Key in onMutate and sends it as a header,
  * so a replay/retry can never create a duplicate.
  */
+/** A tap replayed later than this was made somewhere else: its position would give a wrong ETA. */
+const START_ROUTE_FIX_MAX_TAP_AGE_MS = 2 * 60_000;
+const START_ROUTE_FIX_TIMEOUT_MS = 4_000;
+
+/**
+ * Best-effort position for "Start route". Resolves undefined (never rejects)
+ * on a stale replayed tap, no geolocation, denial or timeout, so the status
+ * change is never blocked or failed by it.
+ */
+function startRouteLocation(clientAt: string | undefined) {
+    const tappedAt = clientAt ? Date.parse(clientAt) : Date.now();
+    if (!Number.isFinite(tappedAt) || Date.now() - tappedAt > START_ROUTE_FIX_MAX_TAP_AGE_MS) {
+        return Promise.resolve(undefined);
+    }
+    if (typeof navigator === "undefined" || !("geolocation" in navigator)) return Promise.resolve(undefined);
+    return new Promise<{ lat: number; lng: number; accuracy: number } | undefined>((resolve) => {
+        // Hard cap in case the browser never calls back (e.g. a pending prompt).
+        const timer = setTimeout(() => resolve(undefined), START_ROUTE_FIX_TIMEOUT_MS + 500);
+        navigator.geolocation.getCurrentPosition(
+            ({ coords }) => {
+                clearTimeout(timer);
+                resolve({ lat: coords.latitude, lng: coords.longitude, accuracy: Math.round(coords.accuracy) });
+            },
+            () => {
+                clearTimeout(timer);
+                resolve(undefined);
+            },
+            { enableHighAccuracy: true, maximumAge: 60_000, timeout: START_ROUTE_FIX_TIMEOUT_MS }
+        );
+    });
+}
+
 export function registerOfflineMutationDefaults(qc: QueryClient) {
     refetchWhenFieldOpsDrain(qc);
+    cleanupFormPhotosOnRemoval(qc);
 
     qc.setMutationDefaults(OFFLINE_KEYS.status, {
         scope: FIELD_OPS_SCOPE,
         mutationFn: async ({ jobId, status, clientAt, clientMutationId }: { jobId: string; status: string; clientAt?: string; clientMutationId?: string }) => {
             // clientAt = when the tech tapped (not when this replays): the server
             // drives the clock from it and skips the customer SMS if it's stale.
-            await api.patch(`/jobs/${jobId}/status`, { status, clientAt }, fieldRequest(clientMutationId));
+            // "Start route" also carries the current position (taken at send time,
+            // never stored in the queued variables) so the first SMS has an ETA.
+            const location = status === "EN_ROUTE" ? await startRouteLocation(clientAt) : undefined;
+            await api.patch(
+                `/jobs/${jobId}/status`,
+                { status, clientAt, ...(location ? { location } : {}) },
+                fieldRequest(clientMutationId)
+            );
         },
         onMutate: async (variables: { jobId: string; status: string; clientAt?: string; clientMutationId?: string }) => {
             stampId(variables);
@@ -397,12 +606,31 @@ export function registerOfflineMutationDefaults(qc: QueryClient) {
     // Field form / CoC submission. The submission is a separate entity (not part
     // of the assigned-jobs list), so we patch the per-job forms cache optimistically
     // and reconcile onSettled. Prices never appear on forms, so nothing to strip.
+    //
+    // Form photos are uploaded inside this mutation (not on the photo scope): the
+    // submission must reference them, and it stays on the field-ops scope so a
+    // required form still lands before the COMPLETED status that depends on it.
+    // `detached` = queued with the form sheet already closed (offline). Only then
+    // does a final failure free the photo blobs; an open sheet still needs them
+    // so the tech can fix the answers and resubmit.
     qc.setMutationDefaults(OFFLINE_KEYS.formSubmit, {
         scope: FIELD_OPS_SCOPE,
-        mutationFn: async ({ jobId, templateId, data, signatureUrl, clientMutationId }: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string; clientMutationId?: string }) => {
-            await api.post(`/digital-forms/submissions`, { jobId, templateId, data, signatureUrl }, fieldRequest(clientMutationId));
+        mutationFn: async ({ jobId, templateId, data, signatureUrl, clientMutationId }: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string; clientMutationId?: string; detached?: boolean }) => {
+            const resolved = await resolveFormPhotos(jobId, data);
+            await api.post(
+                `/digital-forms/submissions`,
+                { jobId, templateId, data: resolved.data, signatureUrl },
+                // Inline photo fallbacks make a large body; give it the upload timeout.
+                resolved.inline
+                    ? { headers: idempotencyHeaders(clientMutationId), timeout: 120000 }
+                    : fieldRequest(clientMutationId),
+            );
+            await deleteFormPhotos(data);
         },
-        onMutate: async (variables: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string; clientMutationId?: string }) => {
+        onError: (error: unknown, variables: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string; clientMutationId?: string; detached?: boolean }) => {
+            if (variables?.detached && isPermanentFormFailure(error)) void deleteFormPhotos(variables.data);
+        },
+        onMutate: async (variables: { jobId: string; templateId: string; data: Record<string, unknown>; signatureUrl?: string; clientMutationId?: string; detached?: boolean }) => {
             stampId(variables);
             const { jobId, templateId } = variables;
             await qc.cancelQueries({ queryKey: ["job-forms", jobId] });

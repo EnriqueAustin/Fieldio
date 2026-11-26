@@ -12,6 +12,12 @@ const getResend = (): Resend | null => {
     return resendClient;
 };
 
+export interface EmailAttachment {
+    filename: string;
+    content: Buffer;
+    contentType?: string;
+}
+
 const send = async (params: {
     to: string;
     subject: string;
@@ -19,6 +25,7 @@ const send = async (params: {
     template: string;
     companyId?: string;
     payload?: Record<string, unknown>;
+    attachments?: EmailAttachment[];
 }) => {
     const log = await prisma.notificationLog.create({
         data: {
@@ -48,6 +55,15 @@ const send = async (params: {
             to: params.to,
             subject: params.subject,
             html: params.html,
+            ...(params.attachments?.length
+                ? {
+                      attachments: params.attachments.map((a) => ({
+                          filename: a.filename,
+                          content: a.content,
+                          ...(a.contentType ? { content_type: a.contentType } : {}),
+                      })),
+                  }
+                : {}),
         });
         if (log) {
             await prisma.notificationLog.update({
@@ -92,6 +108,24 @@ export const emailService = {
             subject,
             template: 'raw',
             companyId,
+            html: wrap(subject, `<pre style="font-family: inherit; white-space: pre-wrap; margin:0;">${escapeHtml(body)}</pre>`),
+        }),
+
+    /** sendRaw with file attachments (e.g. certificate PDFs). Only names/sizes are logged. */
+    sendRawWithAttachments: (
+        to: string,
+        subject: string,
+        body: string,
+        attachments: EmailAttachment[],
+        companyId?: string,
+    ) =>
+        send({
+            to,
+            subject,
+            template: 'raw',
+            companyId,
+            payload: { attachments: attachments.map((a) => ({ filename: a.filename, bytes: a.content.length })) },
+            attachments,
             html: wrap(subject, `<pre style="font-family: inherit; white-space: pre-wrap; margin:0;">${escapeHtml(body)}</pre>`),
         }),
 

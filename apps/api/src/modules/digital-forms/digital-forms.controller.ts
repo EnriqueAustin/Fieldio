@@ -1,6 +1,15 @@
 import { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { digitalFormsService } from './digital-forms.service';
+import { renderCertificateByToken } from './coc-delivery.service';
+
+const sendPdf = (res: Response, buffer: Buffer, fileName: string) => {
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+    // Certificates carry customer details; never let a shared cache keep them.
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.status(StatusCodes.OK).send(buffer);
+};
 
 export const digitalFormsController = {
     createTemplate: async (req: Request, res: Response) => {
@@ -20,6 +29,15 @@ export const digitalFormsController = {
             req.body
         );
         res.status(StatusCodes.OK).json({ status: 'success', data: { template } });
+    },
+
+    getLibrary: async (_req: Request, res: Response) => {
+        res.status(StatusCodes.OK).json({ status: 'success', data: { library: digitalFormsService.getLibrary() } });
+    },
+
+    addFromLibrary: async (req: Request, res: Response) => {
+        const template = await digitalFormsService.addFromLibrary(req.user!.companyId, req.params.key);
+        res.status(StatusCodes.CREATED).json({ status: 'success', data: { template } });
     },
 
     getJobForms: async (req: Request, res: Response) => {
@@ -43,11 +61,12 @@ export const digitalFormsController = {
     },
 
     getSubmissions: async (req: Request, res: Response) => {
-        const { templateId, jobId, customerId } = req.query;
+        const { templateId, jobId, customerId, take } = req.query;
         const submissions = await digitalFormsService.getSubmissions(req.user!.companyId, {
-            templateId: templateId as string,
-            jobId: jobId as string,
-            customerId: customerId as string,
+            templateId: typeof templateId === 'string' ? templateId : undefined,
+            jobId: typeof jobId === 'string' ? jobId : undefined,
+            customerId: typeof customerId === 'string' ? customerId : undefined,
+            take: typeof take === 'string' && /^\d+$/.test(take) ? Number(take) : undefined,
         });
         res.status(StatusCodes.OK).json({ status: 'success', data: { submissions } });
     },
@@ -55,5 +74,25 @@ export const digitalFormsController = {
     getSubmissionDetails: async (req: Request, res: Response) => {
         const submission = await digitalFormsService.getSubmissionDetails(req.params.id, req.user!.companyId);
         res.status(StatusCodes.OK).json({ status: 'success', data: { submission } });
-    }
+    },
+
+    getSubmissionPdf: async (req: Request, res: Response) => {
+        const { buffer, fileName } = await digitalFormsService.getSubmissionPdf(
+            req.params.id,
+            req.user!.companyId,
+            req.user!.userId,
+            req.user!.role
+        );
+        sendPdf(res, buffer, fileName);
+    },
+
+    sendSubmission: async (req: Request, res: Response) => {
+        const result = await digitalFormsService.sendSubmission(req.params.id, req.user!.companyId, req.body);
+        res.status(StatusCodes.OK).json({ status: 'success', data: result });
+    },
+
+    publicPdf: async (req: Request, res: Response) => {
+        const { buffer, fileName } = await renderCertificateByToken(req.params.token);
+        sendPdf(res, buffer, fileName);
+    },
 };

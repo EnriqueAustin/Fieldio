@@ -1,23 +1,109 @@
 "use client";
 
-import { createStore, get, set, del, keys, entries } from "idb-keyval";
+import { get, set, del, keys, entries, type UseStore } from "idb-keyval";
+import { toast } from "../components/ui/use-toast";
 
 /**
- * Two IndexedDB stores back the offline experience:
- *  - the query/mutation cache persister (so jobs render and queued actions
- *    survive a reload while the tech has no signal)
- *  - a binary store for photos, which cannot be serialised into the JSON
- *    mutation cache.
+ * IndexedDB stores behind the offline experience, all in one database:
+ *  - rq-cache: the query/mutation cache persister (so jobs render and queued
+ *    actions survive a reload while the tech has no signal)
+ *  - photo-blobs: job photo bytes, which cannot be serialised into the JSON
+ *    mutation cache
+ *  - receipt-blobs: expense receipts (never swept into the photo gallery)
+ *  - form-photo-blobs: photos captured inside a form / CoC, uploaded when the
+ *    form submission replays (never touched by the job-photo sweeper)
+ *
+ * idb-keyval's createStore() only creates its object store when the database is
+ * first created, so a second store in the same database never exists. We open
+ * the database ourselves at an explicit version and create every missing store
+ * in the upgrade — existing data in older stores is kept.
  */
-const persisterStore =
-    typeof indexedDB !== "undefined" ? createStore("fieldio-offline", "rq-cache") : undefined;
-const photoStore =
-    typeof indexedDB !== "undefined" ? createStore("fieldio-offline", "photo-blobs") : undefined;
+const DB_NAME = "fieldio-offline";
+const DB_VERSION = 3;
+const STORE_NAMES = ["rq-cache", "photo-blobs", "receipt-blobs", "form-photo-blobs"] as const;
+type StoreName = (typeof STORE_NAMES)[number];
+
+// An upgrade is blocked while another tab (e.g. one still on the old bundle)
+// holds an older connection open. Give up after this long so the app boots.
+const BLOCKED_TIMEOUT_MS = 3_000;
+// Absolute cap on an open that neither succeeds, fails nor reports blocked.
+const OPEN_TIMEOUT_MS = 10_000;
+
+let dbPromise: Promise<IDBDatabase> | undefined;
+let blockedHintShown = false;
+
+function showBlockedHint() {
+    if (blockedHintShown) return;
+    blockedHintShown = true;
+    toast({
+        title: "Close other Fieldio tabs to finish updating",
+        description: "Offline saving is paused until the other tabs are closed and this page is reloaded.",
+        variant: "destructive",
+    });
+}
+
+function openDatabase(): Promise<IDBDatabase> {
+    if (dbPromise) return dbPromise;
+    const attempt = new Promise<IDBDatabase>((resolve, reject) => {
+        let settled = false;
+        const fail = (err: unknown) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(hardTimer);
+            if (dbPromise === attempt) dbPromise = undefined;
+            reject(err);
+        };
+        const hardTimer = setTimeout(() => fail(new Error("Offline storage did not open in time")), OPEN_TIMEOUT_MS);
+
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            for (const name of STORE_NAMES) {
+                if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
+            }
+        };
+        request.onblocked = () => {
+            showBlockedHint();
+            setTimeout(() => fail(new Error("Offline storage upgrade is blocked by another tab")), BLOCKED_TIMEOUT_MS);
+        };
+        request.onsuccess = () => {
+            const db = request.result;
+            // Let a newer tab upgrade the schema instead of being blocked by us.
+            db.onversionchange = () => {
+                db.close();
+                dbPromise = undefined;
+            };
+            db.onclose = () => {
+                dbPromise = undefined;
+            };
+            if (settled) {
+                // We already gave up on this open (blocked); keep it for later calls.
+                dbPromise = Promise.resolve(db);
+                return;
+            }
+            settled = true;
+            clearTimeout(hardTimer);
+            resolve(db);
+        };
+        request.onerror = () => fail(request.error);
+    });
+    dbPromise = attempt;
+    return attempt;
+}
+
+function storeFor(name: StoreName): UseStore {
+    return (txMode, callback) =>
+        openDatabase().then((db) => callback(db.transaction(name, txMode).objectStore(name)));
+}
+
+const hasIndexedDb = typeof indexedDB !== "undefined";
+const persisterStore = hasIndexedDb ? storeFor("rq-cache") : undefined;
+const photoStore = hasIndexedDb ? storeFor("photo-blobs") : undefined;
 // Receipts get their OWN store so they are never swept into the customer photo
 // gallery (they used to share photo-blobs under a `receipt-` key, and the photo
 // sweeper uploaded them as job photos).
-const receiptStore =
-    typeof indexedDB !== "undefined" ? createStore("fieldio-offline", "receipt-blobs") : undefined;
+const receiptStore = hasIndexedDb ? storeFor("receipt-blobs") : undefined;
+const formPhotoStore = hasIndexedDb ? storeFor("form-photo-blobs") : undefined;
 
 /** Legacy guard: a receipt queued before the split lives in the photo store under
  *  a `receipt-` key. Exclude those from any photo listing so they are never
@@ -28,19 +114,31 @@ const isReceiptKey = (id: string) => id.startsWith("receipt-");
  * AsyncStorage shape expected by @tanstack/query-async-storage-persister.
  * Backed by IndexedDB so it can hold the (potentially large) dehydrated cache.
  */
+// Set when the saved cache couldn't be read (storage blocked/unavailable). From
+// then on this tab never writes the cache: persisting its empty state would
+// overwrite the queued field actions saved on disk before they are restored.
+let persistDisabled = false;
+
 export const idbPersisterStorage = {
     getItem: async (key: string): Promise<string | null> => {
         if (!persisterStore) return null;
-        const value = await get<string>(key, persisterStore);
-        return value ?? null;
+        try {
+            const value = await get<string>(key, persisterStore);
+            return value ?? null;
+        } catch (err) {
+            // Boot online with an empty cache rather than hanging on restore.
+            persistDisabled = true;
+            console.warn("Offline cache unavailable; starting without it", err);
+            return null;
+        }
     },
     setItem: async (key: string, value: string): Promise<void> => {
-        if (!persisterStore) return;
-        await set(key, value, persisterStore);
+        if (!persisterStore || persistDisabled) return;
+        await set(key, value, persisterStore).catch((err) => console.warn("Offline cache not saved", err));
     },
     removeItem: async (key: string): Promise<void> => {
-        if (!persisterStore) return;
-        await del(key, persisterStore);
+        if (!persisterStore || persistDisabled) return;
+        await del(key, persisterStore).catch((err) => console.warn("Offline cache not cleared", err));
     },
 };
 
@@ -111,4 +209,29 @@ export async function getReceiptBlob(id: string): Promise<QueuedPhoto | undefine
 export async function delReceiptBlob(id: string): Promise<void> {
     if (receiptStore) await del(id, receiptStore);
     if (photoStore) await del(id, photoStore).catch(() => undefined); // legacy cleanup
+}
+
+/** A photo captured inside a form, waiting for the form submission to replay. */
+export interface QueuedFormPhoto {
+    jobId: string;
+    caption: string;
+    blob: Blob;
+    fileName: string;
+    createdAt: number;
+}
+
+/** Persist a form photo's bytes in its own store (the job-photo sweeper never sees it). */
+export async function putFormPhotoBlob(id: string, photo: QueuedFormPhoto): Promise<void> {
+    if (!formPhotoStore) throw new Error("Offline storage is not available on this device");
+    await set(id, photo, formPhotoStore);
+}
+
+export async function getFormPhotoBlob(id: string): Promise<QueuedFormPhoto | undefined> {
+    if (!formPhotoStore) return undefined;
+    return get<QueuedFormPhoto>(id, formPhotoStore);
+}
+
+export async function delFormPhotoBlob(id: string): Promise<void> {
+    if (!formPhotoStore) return;
+    await del(id, formPhotoStore);
 }

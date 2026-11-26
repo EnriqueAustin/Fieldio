@@ -7,6 +7,13 @@ import { logger } from '../../utils/logger';
 import { normalizeCompanySettings } from '../company/company-settings';
 import { PUBLIC_USER_SELECT } from '../../utils/publicSelects';
 import { formatDateTimeInTimeZone, resolveTimeZone } from '../../utils/timezone';
+import {
+    buildCertificateAttachments,
+    getJobCertificates,
+    withPublicLinks,
+    markCertificatesSent,
+    type JobCertificateSummary,
+} from '../digital-forms/coc-delivery.service';
 
 const fmtCurrency = (n: number, currency: string) =>
     new Intl.NumberFormat(undefined, { style: 'currency', currency, currencyDisplay: 'narrowSymbol' })
@@ -15,7 +22,12 @@ const fmtCurrency = (n: number, currency: string) =>
 const fmtDate = (d: Date | null | undefined, tz: string) =>
     d ? formatDateTimeInTimeZone(d, tz) : '—';
 
-const generateBuffer = async (job: any, company: any, settings: any): Promise<Buffer> => {
+const generateBuffer = async (
+    job: any,
+    company: any,
+    settings: any,
+    certificates: JobCertificateSummary[] = [],
+): Promise<Buffer> => {
     return new Promise((resolve, reject) => {
         const chunks: Buffer[] = [];
         const doc = new PDFDocument({ size: 'A4', margin: 50 });
@@ -115,6 +127,28 @@ const generateBuffer = async (job: any, company: any, settings: any): Promise<Bu
             doc.moveDown(0.6);
         }
 
+        // Certificates of Compliance / compliance records issued on this job. Each
+        // is its own PDF; the summary lists them and the message links them.
+        if (certificates.length > 0) {
+            doc.fontSize(12).fillColor('#0f172a').text('Certificates & compliance records');
+            doc.moveDown(0.3);
+            for (const c of certificates) {
+                doc.fontSize(10).fillColor('#0f172a').text(c.title, { width: 495 });
+                doc.fontSize(9).fillColor('#475569').text(
+                    [
+                        c.certificateNumber ? `Certificate no. ${c.certificateNumber}` : null,
+                        `Issued by ${c.issuedBy}`,
+                        fmtDate(c.issuedAt, tz),
+                    ].filter(Boolean).join(' · '),
+                    { width: 495 },
+                );
+                doc.moveDown(0.3);
+            }
+            doc.fontSize(8).fillColor('#64748b')
+                .text('Each certificate is sent to you as a separate document.', { width: 495 });
+            doc.moveDown(0.6);
+        }
+
         // Signature
         if (job.signatures?.length > 0) {
             doc.fontSize(12).fillColor('#0f172a').text('Customer sign-off');
@@ -153,7 +187,28 @@ export const jobSummaryService = {
         if (!company) throw new Error('Company not found');
         const settings = normalizeCompanySettings(company.settings);
 
-        const buffer = await generateBuffer(job, company, settings);
+        // Certificates are best-effort here: a problem with one must not stop the summary.
+        const certificates = await getJobCertificates(jobId, companyId).catch((err: Error) => {
+            logger.warn({ jobId, err: err.message }, 'Could not load job certificates for summary');
+            return [] as JobCertificateSummary[];
+        });
+        // Public links are minted only when the summary actually goes to the customer.
+        const willSend = Boolean((opts.email && job.customer.email) || (opts.whatsapp && job.customer.phone));
+        const linked =
+            willSend && certificates.length
+                ? await withPublicLinks(certificates).catch((err: Error) => {
+                      logger.warn({ jobId, err: err.message }, 'Could not create certificate links for summary');
+                      return [];
+                  })
+                : [];
+        const certificateLines = linked.length
+            ? `\n\nYour certificates:\n${linked
+                  .map((c) => `- ${c.title}${c.certificateNumber ? ` (no. ${c.certificateNumber})` : ''}: ${c.publicUrl}`)
+                  .join('\n')}`
+            : '';
+        const sentChannels: string[] = [];
+
+        const buffer = await generateBuffer(job, company, settings, certificates);
 
         let pdfUrl: string | null = null;
         if (isStorageConfigured()) {
@@ -182,12 +237,26 @@ export const jobSummaryService = {
                 const body = pdfUrl
                     ? `Hi ${job.customer.name},\n\nThanks for choosing ${company.name}. Your service summary is ready:\n${pdfUrl}\n\nIf anything looks off, please reply to this email.`
                     : `Hi ${job.customer.name},\n\nThanks for choosing ${company.name}. Your service summary has been generated and is available in your customer portal.\n\nIf anything looks off, please reply to this email.`;
-                await emailService.sendRaw(
-                    job.customer.email,
-                    `Your service summary — ${job.title}`,
-                    body,
-                    companyId,
-                );
+                // Attach the certificate PDFs when they fit the size budget; the
+                // links in the body cover the customer either way.
+                const attachments = certificates.length
+                    ? await buildCertificateAttachments(certificates.map((c) => c.id), companyId)
+                    : null;
+                const sent = attachments?.length
+                    ? await emailService.sendRawWithAttachments(
+                          job.customer.email,
+                          `Your service summary — ${job.title}`,
+                          `${body}${certificateLines}\n\nYour certificates are attached.`,
+                          attachments,
+                          companyId,
+                      )
+                    : await emailService.sendRaw(
+                          job.customer.email,
+                          `Your service summary — ${job.title}`,
+                          body + certificateLines,
+                          companyId,
+                      );
+                if (sent?.ok) sentChannels.push('email');
             } catch (err: any) {
                 logger.warn({ jobId, err: err.message }, 'Summary email failed');
             }
@@ -198,10 +267,17 @@ export const jobSummaryService = {
                 const body = pdfUrl
                     ? `Hi ${job.customer.name}, thanks for choosing ${company.name}. Your service summary for "${job.title}" is ready:\n${pdfUrl}`
                     : `Hi ${job.customer.name}, thanks for choosing ${company.name}. Your service summary for "${job.title}" is ready in your customer portal.`;
-                await whatsappService.sendText(job.customer.phone, body, companyId);
+                const sent = await whatsappService.sendText(job.customer.phone, body + certificateLines, companyId);
+                if (sent?.ok) sentChannels.push('whatsapp');
             } catch (err: any) {
                 logger.warn({ jobId, err: err.message }, 'Summary WhatsApp failed');
             }
+        }
+
+        if (certificates.length > 0 && sentChannels.length > 0) {
+            await markCertificatesSent(certificates.map((c) => c.id), sentChannels).catch((err: Error) =>
+                logger.warn({ jobId, err: err.message }, 'Could not record certificate delivery'),
+            );
         }
 
         return { pdfUrl, bytes: buffer.length };
