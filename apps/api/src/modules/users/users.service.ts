@@ -3,6 +3,7 @@ import { prisma } from '@fieldio/database';
 import { AppError } from '../../middleware/error';
 import { StatusCodes } from 'http-status-codes';
 import { z } from 'zod';
+import { pushService } from '../push/push.service';
 
 const createUserSchema = z.object({
     email: z.string().email(),
@@ -105,11 +106,14 @@ export const userService = {
             data.permissions = { ...current, canIssueCoC };
         }
 
-        return prisma.user.update({
+        const updated = await prisma.user.update({
             where: { id: userId },
             data,
             select: userSummarySelect,
         });
+        // A deactivated user's phones must stop getting job alerts.
+        if (data.status === 'INACTIVE') await pushService.removeAllForUser(userId, companyId);
+        return updated;
     },
 
     updateSkills: async (userId: string, companyId: string, skills: string[]) => {
@@ -147,9 +151,11 @@ export const userService = {
             throw new AppError('User not found', StatusCodes.NOT_FOUND);
         }
 
-        return prisma.user.update({
+        const deactivated = await prisma.user.update({
             where: { id: userId },
             data: { status: 'INACTIVE' },
         });
+        await pushService.removeAllForUser(userId, companyId);
+        return deactivated;
     },
 };

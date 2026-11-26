@@ -4,6 +4,7 @@ import { AppError } from '../../middleware/error';
 import { StatusCodes } from 'http-status-codes';
 import { config } from '../../config/env';
 import { notificationService } from '../../services/notifications/notification.service';
+import { jobPushLink } from '../../utils/push-link';
 import { socketService } from '../../services/socket.service';
 import { normalizeCompanySettings } from '../company/company-settings';
 import { computeMonthlyPayment } from '../financing/financing.service';
@@ -374,7 +375,9 @@ export const portalService = {
             const message = `${ctx.customer.name} rescheduled "${ctx.job.title}" to ${formatWhen(slot.start, ctx.timeZone)}.`;
             await notificationService.notifyStaff(ctx.companyId, 'Customer rescheduled', message);
             if (ctx.job.techId) {
-                await notificationService.notifyUser(ctx.job.techId, ctx.companyId, 'ALERT', 'Job moved', message);
+                await notificationService.notifyUser(
+                    ctx.job.techId, ctx.companyId, 'ALERT', 'Job moved', message, jobPushLink(ctx.job.id),
+                );
             }
         } catch {
             /* non-blocking — the job has already moved */

@@ -11,6 +11,7 @@ import {
 } from '../../utils/jwt';
 import { z } from 'zod';
 import { emailService } from '../../services/notifications/email.service';
+import { pushService } from '../push/push.service';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -99,6 +100,8 @@ export const authService = {
             where: { userId, revokedAt: null },
             data: { revokedAt: new Date() },
         });
+        // Every session revoked (password reset/change): drop this user's push devices too.
+        await pushService.removeAllForUser(userId);
     },
 
     validateStoredRefreshToken: async (rawToken: string): Promise<boolean> => {

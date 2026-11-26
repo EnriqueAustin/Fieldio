@@ -35,6 +35,9 @@ export const parseBooleanFlag = (raw: unknown): boolean => {
     return value === 'true' || value === '1';
 };
 
+const blankToUndefined = (raw: unknown): unknown =>
+    typeof raw === 'string' && raw.trim() === '' ? undefined : raw;
+
 const PLACEHOLDER_SECRET = /change|secret|example/i;
 
 /** Returns a startup error when production JWT secrets are placeholders, else null. */
@@ -98,6 +101,15 @@ export const envSchema = z.object({
 
     // Google Reviews
     GOOGLE_REVIEW_DELAY_HOURS: z.coerce.number().default(2),
+
+    // Web Push (VAPID). All optional: without both keys push is a logged no-op.
+    // Blank values (as copied from .env.example) count as unset.
+    VAPID_PUBLIC_KEY: z.preprocess(blankToUndefined, z.string().optional()),
+    VAPID_PRIVATE_KEY: z.preprocess(blankToUndefined, z.string().optional()),
+    VAPID_SUBJECT: z.preprocess(
+        blankToUndefined,
+        z.string().regex(/^(mailto:|https:\/\/)/, 'VAPID_SUBJECT must start with mailto: or https://').optional(),
+    ),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;

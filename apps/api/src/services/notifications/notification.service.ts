@@ -4,6 +4,7 @@ import { emailService } from './email.service';
 import { smsService } from './sms.service';
 import { whatsappService } from './whatsapp.service';
 import { paymentsService } from '../../modules/payments/payments.service';
+import { pushService } from '../../modules/push/push.service';
 import { normalizeCompanySettings } from '../../modules/company/company-settings';
 import {
     isDefaultNotificationTemplate,
@@ -94,6 +95,8 @@ const buildTemplateVars = (
                 ...base,
                 technicianName: payload.techName ?? 'Your technician',
                 trackingUrl: payload.trackingUrl ?? '',
+                // e.g. "15 min"; blank without a fresh GPS fix.
+                eta: typeof payload.eta === 'string' ? payload.eta : '',
             };
         case 'JOB_COMPLETED':
             return {
@@ -153,18 +156,34 @@ const deliverCustom = async (
 };
 
 export const notificationService = {
+    /**
+     * In-app feed + socket + Web Push to the user's registered phones.
+     * `push.jobId` collapses repeat alerts for one job into a single phone
+     * notification; `push.url` is the in-app page the alert opens;
+     * `push.body` replaces the message on the phone (lock screens must never
+     * show money, so callers whose in-app text has amounts pass one without).
+     */
     notifyUser: async (
         userId: string,
         companyId: string,
         type: InternalType,
         title: string,
-        message: string
+        message: string,
+        push: { url?: string; jobId?: string; body?: string } = {}
     ) => {
         const notification = await prisma.notification.create({
             data: { companyId, userId, type, title, message },
         });
         // Personal feed: only this user's sockets, never the whole company.
         socketService.emitToUser(userId, 'notification:received', notification);
+        // Fire-and-forget so a slow push service never delays the office request;
+        // sendToUser never throws. Title/message only: no prices in the payload.
+        void pushService.sendToUser(userId, companyId, {
+            title,
+            body: push.body ?? message,
+            url: push.url ?? '/',
+            tag: push.jobId ? `job-${push.jobId}` : `notification-${notification.id}`,
+        });
         return notification;
     },
 
@@ -206,14 +225,17 @@ export const notificationService = {
         const amount =
             payload.total != null ? ` (R ${Number(payload.total).toFixed(2)})` : '';
         const title = decision === 'APPROVED' ? 'Quote approved' : 'Quote declined';
-        const message =
+        const describe = (withAmount: string) =>
             decision === 'APPROVED'
-                ? `${who} approved quote #${shortId}${amount}${payload.signerName ? `, signed by ${payload.signerName}` : ''}.`
-                : `${who} declined quote #${shortId}${amount}.`;
+                ? `${who} approved quote #${shortId}${withAmount}${payload.signerName ? `, signed by ${payload.signerName}` : ''}.`
+                : `${who} declined quote #${shortId}${withAmount}.`;
+        const message = describe(amount);
+        // The phone notification can sit on a lock screen: same text, no amount.
+        const pushBody = describe('');
 
         await Promise.all(
             staff.map((s) =>
-                notificationService.notifyUser(s.id, companyId, 'ALERT', title, message)
+                notificationService.notifyUser(s.id, companyId, 'ALERT', title, message, { body: pushBody })
             )
         );
     },
@@ -287,7 +309,9 @@ export const notificationService = {
                 const techName = payload.techName ?? 'Your technician';
                 const trackingUrl = payload.trackingUrl || undefined;
                 if (customer.phone && waEnabled) {
-                    await whatsappService.sendJobEnRoute(customer.phone, techName, trackingUrl, companyId, company.name);
+                    await whatsappService.sendJobEnRoute(
+                        customer.phone, techName, trackingUrl, companyId, company.name, payload.eta || undefined
+                    );
                 } else if (customer.phone) {
                     await smsService.sendJobEnRoute(
                         customer.phone,

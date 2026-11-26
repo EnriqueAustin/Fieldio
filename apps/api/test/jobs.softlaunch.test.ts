@@ -409,7 +409,7 @@ describe('job create tenancy, default end and notifications', () => {
         const res = await quick({ existingCustomerId: CUSTOMER_ID, existingPropertyId: PROPERTY_ID, techId: TECH, scheduledStart: START });
         expect(res.status).toBe(201);
         expect(notifyCustomer).toHaveBeenCalledWith(CUSTOMER_ID, COMPANY, 'APPOINTMENT_REMINDER', expect.objectContaining({ event: 'JOB_BOOKED', when: expect.any(String) }));
-        expect(notificationService.notifyUser).toHaveBeenCalledWith(TECH, COMPANY, 'JOB_ASSIGNED', expect.any(String), expect.any(String));
+        expect(notificationService.notifyUser).toHaveBeenCalledWith(TECH, COMPANY, 'JOB_ASSIGNED', expect.any(String), expect.any(String), expect.objectContaining({ jobId: expect.any(String), url: expect.stringContaining('/?job=') }));
     });
 });
 
@@ -490,7 +490,7 @@ describe('booking conflicts and reschedule side effects', () => {
         const res = await request(app).patch('/jobs/job_1').set('Authorization', asOffice()).send({ techId: NEW_TECH });
         expect(res.status).toBe(200);
         const notifyUser = vi.mocked(notificationService.notifyUser);
-        expect(notifyUser).toHaveBeenCalledWith(NEW_TECH, COMPANY, 'JOB_ASSIGNED', expect.any(String), expect.any(String));
-        expect(notifyUser).toHaveBeenCalledWith(TECH, COMPANY, 'ALERT', 'Job reassigned', expect.any(String));
+        expect(notifyUser).toHaveBeenCalledWith(NEW_TECH, COMPANY, 'JOB_ASSIGNED', expect.any(String), expect.any(String), { jobId: 'job_1', url: '/?job=job_1' });
+        expect(notifyUser).toHaveBeenCalledWith(TECH, COMPANY, 'ALERT', 'Job reassigned', expect.any(String), { jobId: 'job_1', url: '/' });
     });
 });

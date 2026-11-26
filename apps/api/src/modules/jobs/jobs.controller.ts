@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { jobsService } from './jobs.service';
 import { z } from 'zod';
+import { locationFixSchema } from '../tracking/location-ping';
 
 const updateStatusSchema = z.object({
     // CANCELED is accepted here only so the service can point the caller at
@@ -10,6 +11,9 @@ const updateStatusSchema = z.object({
     // Real tap time for offline-queued status changes; validated here and in the
     // service against a [now-24h, now+2min] window before it's trusted.
     clientAt: z.string().datetime().optional(),
+    // The device's position at "Start route", so the first en-route message can
+    // carry an ETA. Only used for EN_ROUTE by the assigned tech/crew.
+    location: locationFixSchema.optional(),
 });
 
 const toggleChecklistSchema = z.object({
@@ -54,9 +58,9 @@ export const jobsController = {
     },
 
     updateStatus: async (req: Request, res: Response) => {
-        const { status, clientAt } = updateStatusSchema.parse(req.body);
+        const { status, clientAt, location } = updateStatusSchema.parse(req.body);
         const job = await jobsService.updateStatus(
-            req.params.id, req.user!.companyId, status, req.user!.userId, clientAt, req.user!.role
+            req.params.id, req.user!.companyId, status, req.user!.userId, clientAt, req.user!.role, location
         );
         res.status(StatusCodes.OK).json({ status: 'success', data: { job } });
     },

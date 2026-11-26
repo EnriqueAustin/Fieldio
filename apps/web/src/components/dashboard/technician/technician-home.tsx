@@ -19,6 +19,7 @@ import type { useJobProgress } from "./use-job-progress";
 import { useJobForms } from "./use-forms";
 import { TodaysRouteCard } from "./todays-route-card";
 import { DoneTodaySection } from "./done-today-section";
+import { PushOptIn } from "./push-opt-in";
 import { googleMapsLink, wazeLink } from "../../../lib/maps-link";
 
 interface TechnicianHomeProps {
@@ -73,6 +74,9 @@ export function TechnicianHome({
                 <h2 className="text-xl font-bold tracking-tight">Hi {name}</h2>
                 <span className="text-sm text-muted-foreground">{format(new Date(), "EEE, MMM d")}</span>
             </div>
+
+            {/* Opt-in for phone alerts (hides itself when not applicable) */}
+            <PushOptIn />
 
             {/* Up next hero */}
             <Card className="overflow-hidden border-l-4 border-l-blue-500">

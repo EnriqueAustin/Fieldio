@@ -137,7 +137,8 @@ export const NOTIFICATION_EVENTS: {
         key: 'TECH_EN_ROUTE',
         label: 'Technician en route',
         description: 'Sent when the technician is on the way.',
-        placeholders: ['customerName', 'companyName', 'technicianName', 'trackingUrl'],
+        // `eta` (e.g. "15 min") is blank when the tech has no fresh GPS fix.
+        placeholders: ['customerName', 'companyName', 'technicianName', 'trackingUrl', 'eta'],
     },
     {
         key: 'JOB_COMPLETED',

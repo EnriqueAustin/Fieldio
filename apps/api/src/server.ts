@@ -41,7 +41,7 @@ import { priceBookRouter } from './routes/priceBook';
 import { publicPortalRouter, portalRouter } from './routes/portal';
 import { projectsRouter } from './routes/projects';
 import { timeTrackingRouter } from './routes/timeTracking';
-import { digitalFormsRouter } from './routes/digitalForms';
+import { digitalFormsRouter, publicCertificatesRouter } from './routes/digitalForms';
 import { inventoryTransfersRouter } from './routes/inventoryTransfers';
 import { membershipRouter } from './routes/memberships';
 import { campaignRouter } from './routes/campaigns';
@@ -68,6 +68,7 @@ import { branchesRouter } from './routes/branches';
 import { notificationTemplatesRouter } from './routes/notificationTemplates';
 import { publicTrackerRouter } from './routes/scheduling';
 import { searchRouter } from './routes/search';
+import { pushRouter } from './routes/push';
 const app = express();
 const httpServer = createServer(app);
 
@@ -119,6 +120,7 @@ app.post(
 // Rate limiting
 app.use('/public/payments', publicEndpointLimiter);
 app.use('/public/portal', publicEndpointLimiter);
+app.use('/public/certificates', publicEndpointLimiter);
 app.use('/public/bookings', bookingLimiter);
 app.use('/', apiLimiter);
 
@@ -145,6 +147,7 @@ app.use('/public/portal', publicPortalRouter);
 app.use('/public/messaging', publicMessagingRouter);
 app.use('/public/calls', publicCallsRouter);
 app.use('/public/track', publicTrackerRouter);
+app.use('/public/certificates', publicCertificatesRouter);
 
 // Auth deserialization for everything below
 app.use(deserializeUser);
@@ -196,6 +199,7 @@ app.use('/inventory-alerts', inventoryAlertsRouter);
 app.use('/branches', branchesRouter);
 app.use('/notification-templates', notificationTemplatesRouter);
 app.use('/search', searchRouter);
+app.use('/push', pushRouter);
 
 // Error handling
 app.use(errorHandler);

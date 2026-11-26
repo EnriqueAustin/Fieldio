@@ -76,6 +76,7 @@ model Company {
   VanInventoryTarget    VanInventoryTarget[]
   InventoryAlert        InventoryAlert[]
   KpiSnapshot           KpiSnapshot[]
+  PushSubscription      PushSubscription[]
 }
 
 enum UserRole {
@@ -120,6 +121,7 @@ model User {
   auditLogs             AuditLog[]
   refreshTokens         RefreshToken[]
   passwordResetTokens   PasswordResetToken[]
+  pushSubscriptions     PushSubscription[]
   locationPings         UserLocationPing[]
   DigitalFormSubmission DigitalFormSubmission[]
   TimeEntry             TimeEntry[]
@@ -2090,4 +2092,24 @@ model IdempotencyKey {
 
   @@unique([companyId, userId, key])
   @@index([createdAt])
+}
+
+// A browser/device Web Push subscription. The endpoint is unique per browser
+// install, so a new login on the same phone reassigns the row to that user.
+model PushSubscription {
+  id         String    @id @default(uuid())
+  companyId  String
+  userId     String
+  endpoint   String    @unique
+  p256dh     String
+  auth       String
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([userId])
 }

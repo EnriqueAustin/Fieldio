@@ -1,5 +1,5 @@
 import { prisma } from '@fieldio/database';
-import { buildGoogleMapsRouteUrl, estimateLiveEta, planRoute, ROUTE_ESTIMATE } from './route-planner';
+import { buildGoogleMapsRouteUrl, planRoute, ROUTE_ESTIMATE } from './route-planner';
 import { AppError } from '../../middleware/error';
 import { StatusCodes } from 'http-status-codes';
 import { z } from 'zod';
@@ -10,6 +10,11 @@ import { PUBLIC_USER_SELECT } from '../../utils/publicSelects';
 import { logger } from '../../utils/logger';
 import { formatInTimeZone, getCompanyTimezone } from '../../utils/timezone';
 import { jobsService } from '../jobs/jobs.service';
+import { normalizeCompanySettings } from '../company/company-settings';
+import { latestFixForJob } from '../tracking/job-location';
+import { estimateEtaMinutes, haversineKm } from '../../utils/eta';
+import { jobPushLink, jobRemovedPushLink } from '../../utils/push-link';
+import { previousAssignees } from '../../utils/reassignment';
 
 const createJobSchema = z.object({
     customerId: z.string().min(1),
@@ -56,6 +61,8 @@ async function assertAssigneesInCompany(
 // window matters (conflicts, the tech's week, the board) such a job occupies a
 // default 60-minute slot instead of vanishing or never clashing.
 const DEFAULT_SLOT_MS = 60 * 60 * 1000;
+/** The public tracker never shows a fix older than this (e.g. from a previous trip). */
+const TRACKER_FIX_MAX_AGE_MS = 30 * 60_000;
 
 export type TimeWindow = { start: Date; end: Date };
 type Scheduled = { scheduledStart: Date | null; scheduledEnd: Date | null };
@@ -197,18 +204,18 @@ async function notifyScheduleChange(
         for (const userId of afterIds) {
             if (!beforeIds.has(userId)) {
                 sends.push(notificationService.notifyUser(
-                    userId, companyId, 'JOB_ASSIGNED', 'New job assigned', `${job.title} → ${when}`,
+                    userId, companyId, 'JOB_ASSIGNED', 'New job assigned', `${job.title} → ${when}`, jobPushLink(job.id),
                 ));
             } else if (timeMoved) {
                 sends.push(notificationService.notifyUser(
-                    userId, companyId, 'ALERT', 'Job moved', `${job.title} → ${when}`,
+                    userId, companyId, 'ALERT', 'Job moved', `${job.title} → ${when}`, jobPushLink(job.id),
                 ));
             }
         }
         for (const userId of beforeIds) {
             if (!afterIds.has(userId)) {
                 sends.push(notificationService.notifyUser(
-                    userId, companyId, 'ALERT', 'Job reassigned', `${job.title} is no longer on your schedule`,
+                    userId, companyId, 'ALERT', 'Job reassigned', `${job.title} is no longer on your schedule`, jobRemovedPushLink(job.id),
                 ));
             }
         }
@@ -531,7 +538,10 @@ export const schedulingService = {
             include: { tech: { select: PUBLIC_USER_SELECT }, customer: true }
         });
 
-        socketService.emitToCompany(companyId, 'schedule:updated', updatedJob);
+        socketService.emitToCompany(companyId, 'schedule:updated', {
+            ...updatedJob,
+            ...previousAssignees(job, updatedJob),
+        });
         await notifyScheduleChange(companyId, updatedJob, job, updatedJob);
         return updatedJob;
     },
@@ -654,51 +664,61 @@ export const schedulingService = {
     },
 
     /** Public, unauthenticated tracking view. */
-    getTracking: async (token: string) => {
+    getTracking: async (token: string, now: Date = new Date()) => {
         const job = await prisma.job.findFirst({
-            where: { customerTrackingToken: token },
+            where: { customerTrackingToken: token, deletedAt: null },
             include: {
-                tech: { select: { firstName: true, lastName: true, avatarUrl: true } },
+                tech: { select: { firstName: true, avatarUrl: true } },
                 customer: { select: { name: true } },
                 property: { select: { addressLine1: true, city: true, geoLat: true, geoLng: true } },
-                company: { select: { name: true } },
+                company: { select: { name: true, settings: true } },
             },
         });
         if (!job) throw new AppError('Tracker not found', StatusCodes.NOT_FOUND);
 
-        // Latest ping for the tech
-        let lastPing: { lat: number; lng: number; createdAt: Date } | null = null;
-        if (job.techId) {
-            const p = await prisma.userLocationPing.findFirst({
-                where: { userId: job.techId, companyId: job.companyId },
-                orderBy: { createdAt: 'desc' },
-                select: { lat: true, lng: true, createdAt: true },
-            });
-            lastPing = p;
-        }
-        // Straight-line estimate only while the tech is actually driving here and
-        // the ping is fresh; otherwise `basis: 'none'` and the page shows no ETA.
-        const eta = estimateLiveEta({
-            status: job.status,
-            ping: lastPing,
-            site: job.property ? { lat: job.property.geoLat, lng: job.property.geoLng } : null,
-        });
+        // The tracker link outlives the visit: only look up — and only ever
+        // reveal — where the tech is while they are driving to this customer,
+        // and never an old fix from before this trip.
+        const enRoute = job.status === 'EN_ROUTE';
+        const fix = enRoute ? await latestFixForJob(job) : null;
+        const visibleFix =
+            fix && now.getTime() - new Date(fix.createdAt).getTime() <= TRACKER_FIX_MAX_AGE_MS ? fix : null;
+
+        const site = job.property ? { lat: job.property.geoLat, lng: job.property.geoLng } : null;
+        // Recomputed on every poll; null when the fix is stale or the site isn't geocoded.
+        const etaMinutes = enRoute ? estimateEtaMinutes({ fix: visibleFix, destination: site, now }) : null;
+        const distanceKm =
+            etaMinutes !== null && visibleFix && site?.lat != null && site.lng != null
+                ? Math.round(haversineKm(visibleFix, { lat: site.lat, lng: site.lng }) * 10) / 10
+                : null;
+        const settings = normalizeCompanySettings(job.company?.settings);
+
         return {
             job: {
                 id: job.id,
                 title: job.title,
                 status: job.status,
                 scheduledStart: job.scheduledStart,
-                techName: [job.tech?.firstName, job.tech?.lastName].filter(Boolean).join(' '),
-                techAvatar: job.tech?.avatarUrl,
+                // First name only — the customer never needs the tech's surname.
+                techName: job.tech?.firstName ?? '',
+                techAvatar: job.tech?.avatarUrl ?? null,
             },
             customer: job.customer,
             property: job.property,
-            company: job.company,
-            // The tracker link outlives the visit; only reveal where the tech is
-            // while they are driving to this customer.
-            techLocation: job.status === 'EN_ROUTE' ? lastPing : null,
-            eta,
+            company: { name: job.company?.name ?? null, phone: settings.contact.phone ?? null },
+            techLocation: visibleFix
+                ? {
+                      lat: visibleFix.lat,
+                      lng: visibleFix.lng,
+                      createdAt: visibleFix.createdAt,
+                      ageSeconds: Math.max(0, Math.round((now.getTime() - new Date(visibleFix.createdAt).getTime()) / 1000)),
+                  }
+                : null,
+            etaMinutes,
+            eta:
+                etaMinutes !== null
+                    ? { minutes: etaMinutes, distanceKm, basis: 'live' as const }
+                    : { minutes: null, distanceKm: null, basis: 'none' as const },
         };
     },
 

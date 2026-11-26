@@ -31,7 +31,8 @@ export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];
  */
 export const NOTIFICATION_PLACEHOLDERS: Record<NotificationEvent, string[]> = {
     JOB_BOOKED: ['customerName', 'companyName', 'jobDate'],
-    TECH_EN_ROUTE: ['customerName', 'companyName', 'technicianName', 'trackingUrl'],
+    // `eta` (e.g. "15 min") is empty when the tech has no fresh GPS fix.
+    TECH_EN_ROUTE: ['customerName', 'companyName', 'technicianName', 'trackingUrl', 'eta'],
     JOB_COMPLETED: ['customerName', 'companyName', 'technicianName', 'reference'],
     INVOICE_SENT: ['customerName', 'companyName', 'invoiceNumber', 'amountDue', 'dueDate', 'payUrl'],
     QUOTE_SENT: ['customerName', 'companyName', 'quoteNumber', 'quoteTotal', 'quoteUrl'],

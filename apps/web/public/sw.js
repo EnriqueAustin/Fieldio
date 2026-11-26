@@ -12,6 +12,10 @@
 
 const CACHE_NAME = 'fieldio-v4';
 const OFFLINE_URL = '/offline.html';
+// Bumped when the push/notificationclick handlers change. The app asks the
+// active worker for this (GET_CAPABILITIES) before subscribing, so an older
+// worker without the handlers never receives pushes it can't display.
+const PUSH_HANDLER_VERSION = 1;
 
 // App shell + assets we want available on a cold, signal-less launch. The two
 // field routes are precached so a tech who force-quit the app can still open
@@ -56,6 +60,9 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('message', (event) => {
     if (event.data && event.data.type === 'SKIP_WAITING') {
         self.skipWaiting();
+    }
+    if (event.data && event.data.type === 'GET_CAPABILITIES' && event.ports && event.ports[0]) {
+        event.ports[0].postMessage({ push: PUSH_HANDLER_VERSION });
     }
 });
 
@@ -125,5 +132,56 @@ self.addEventListener('fetch', (event) => {
                 .catch(() => cachedResponse);
             return cachedResponse || fetchPromise;
         })
+    );
+});
+
+// ----- Web Push: job alerts while the app is closed -----
+// Payload (from the API's push service): { title, body, url, tag }. Same tag
+// replaces the earlier notification for that job instead of stacking.
+self.addEventListener('push', (event) => {
+    let data = {};
+    try {
+        data = event.data ? event.data.json() : {};
+    } catch {
+        data = { body: event.data ? event.data.text() : '' };
+    }
+    const title = data.title || 'Fieldio';
+    const options = {
+        body: data.body || '',
+        icon: '/icons/icon-192.png',
+        badge: '/icons/icon-maskable-192.png',
+        // In-app paths only; '//host' would leave the origin.
+        data: { url: typeof data.url === 'string' && /^\/(?![/\\])/.test(data.url) ? data.url : '/' },
+    };
+    if (data.tag) {
+        options.tag = data.tag;
+        // Re-alert for an update to the same job, not just silently replace it.
+        options.renotify = true;
+    }
+    event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// Focus an open Fieldio window (navigating it to the alert's page) or open one.
+self.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+    const path = (event.notification.data && event.notification.data.url) || '/';
+    const target = new URL(path, self.location.origin).href;
+    event.waitUntil(
+        (async () => {
+            const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+            for (const client of windows) {
+                if (new URL(client.url).origin !== self.location.origin) continue;
+                await client.focus();
+                if (client.url !== target && 'navigate' in client) {
+                    try {
+                        await client.navigate(target);
+                    } catch {
+                        // Uncontrolled clients can't be navigated; focusing is enough.
+                    }
+                }
+                return;
+            }
+            await self.clients.openWindow(target);
+        })()
     );
 });

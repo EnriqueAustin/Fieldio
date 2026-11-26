@@ -32,6 +32,8 @@ import { JobDetail } from "./technician/job-detail";
 import { TechnicianHome } from "./technician/technician-home";
 import { PullToRefresh } from "./technician/pull-to-refresh";
 import { useFieldLiveUpdates } from "./technician/use-live-updates";
+import { useLocationSharing } from "./technician/use-location-sharing";
+import { LocationSharingIndicator } from "./technician/active-job-header";
 
 /** True once the job is on-site with a full checklist and a captured signature. */
 function jobCanComplete(job: TechnicianJob) {
@@ -80,6 +82,8 @@ export function TechnicianView({ user }: TechnicianViewProps) {
         [assignedJobs]
     );
     useFieldLiveUpdates(user.id, isMyJob);
+    // Live position for the customer tracker + dispatch map, only while a job is EN_ROUTE.
+    useLocationSharing(assignedJobs);
 
     // Prefetch today's + overdue jobs' forms so the CoC/forms card works offline.
     // Once per session per job set (prefetchFormsForJobs is a no-op for cached ids).
@@ -272,6 +276,10 @@ export function TechnicianView({ user }: TechnicianViewProps) {
                 ) : (
                     <PullToRefresh onRefresh={() => assignedJobsQuery.refetch()}>
                         {staleBanner}
+                        {/* Renders only while a job is EN_ROUTE (status "off" otherwise). */}
+                        <div className="mb-3 empty:hidden">
+                            <LocationSharingIndicator />
+                        </div>
                         <TechnicianHome
                             name={techName}
                             jobs={assignedJobs}

@@ -280,6 +280,8 @@ export function createFakePrisma() {
         smsMessage: table('smsMessage'),
         notificationLog: table('notificationLog'),
         jobTemplate: table('jobTemplate'),
+        // Web Push devices (push.test.ts); endpoint is unique like the real model.
+        pushSubscription: table('pushSubscription', [['endpoint']]),
         // Raw SQL is not modelled; analytics uses it only for a top-techs
         // leaderboard, so an empty result set is a safe stand-in.
         $queryRaw: async () => [],

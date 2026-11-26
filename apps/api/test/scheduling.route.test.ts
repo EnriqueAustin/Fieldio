@@ -265,6 +265,8 @@ describe('GET /public/track/:token ETA', () => {
             job('j_track', {
                 status,
                 customerTrackingToken: 'tok_123',
+                // Trip start: the tracker only uses fixes from after it.
+                onMyWaySentAt: minutesAgo(60),
                 property: property(7),
                 tech: { firstName: 'Sipho', lastName: 'M', avatarUrl: null },
                 company: { name: 'Mthembu Plumbing' },

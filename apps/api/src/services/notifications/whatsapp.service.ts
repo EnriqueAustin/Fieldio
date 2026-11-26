@@ -90,7 +90,9 @@ export const whatsappService = {
         techName: string,
         trackingUrl?: string,
         companyId?: string,
-        companyName?: string
+        companyName?: string,
+        // e.g. "15 min", only when the tech has a fresh GPS fix.
+        eta?: string
     ) =>
         send({
             to: phone,
@@ -98,6 +100,7 @@ export const whatsappService = {
             companyId,
             body:
                 `Your ${companyName ? `${companyName} technician` : 'technician'}${techName === 'Your technician' ? '' : ` ${techName}`} is on the way!` +
+                (eta ? ` ETA about ${eta}.` : '') +
                 (trackingUrl ? `\n\nTrack live: ${trackingUrl}` : ''),
         }),
 

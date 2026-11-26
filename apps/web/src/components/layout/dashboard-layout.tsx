@@ -7,6 +7,7 @@ import { cn, displayName } from "../../lib/utils";
 import { LogOut, Search, ChevronsUpDown, Zap, Briefcase, FileText, User as UserIcon, Loader2, Menu } from "lucide-react";
 import { useAuthStore } from "../../store/auth";
 import api from "../../lib/api";
+import { unsubscribeFromPush } from "../../lib/push";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { MobileNav } from "./mobile-nav";
 import { AccountSheet } from "./account-sheet";
@@ -152,6 +153,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
     const handleLogout = async () => {
         try {
+            // Stop job alerts on this phone while we're still signed in (the
+            // DELETE needs the token). Capped so a dead signal never stalls logout.
+            await Promise.race([
+                unsubscribeFromPush(),
+                new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+            ]);
             await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"}/auth/logout`, {
                 method: "POST",
                 credentials: "include",

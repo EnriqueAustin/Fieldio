@@ -2,50 +2,71 @@ import { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { z } from 'zod';
 import { prisma } from '@fieldio/database';
-import { socketService } from '../../services/socket.service';
-import { evaluateGeofence } from './geofence';
+import { AppError } from '../../middleware/error';
+import { isAssignedToJob } from './job-location';
+import { locationFixSchema, recordLocationPing } from './location-ping';
 
-const pingSchema = z.object({
-    lat: z.number(),
-    lng: z.number(),
-    accuracy: z.number().optional(),
+// The user always comes from the token, never the body (unknown keys such as
+// `userId` are stripped), so a device can only report its own position.
+const pingSchema = locationFixSchema.extend({
+    jobId: z.string().min(1).max(64).optional(),
 });
+
+const NOT_EN_ROUTE = "Location is only shared while you're on the way to a job";
+
+/**
+ * POPIA: a technician's location is only collected while they are driving to
+ * a job. With a jobId the job must be theirs (or their van's) and EN_ROUTE;
+ * without one they must have some EN_ROUTE job.
+ */
+async function assertMayShareLocation(companyId: string, userId: string, jobId: string | undefined) {
+    if (jobId) {
+        const job = await prisma.job.findFirst({
+            where: { id: jobId, companyId, deletedAt: null },
+            select: { companyId: true, techId: true, vanId: true, status: true },
+        });
+        if (!job || !(await isAssignedToJob(job, userId))) {
+            throw new AppError('You can only share your location for your own jobs', StatusCodes.FORBIDDEN);
+        }
+        if (job.status !== 'EN_ROUTE') throw new AppError(NOT_EN_ROUTE, StatusCodes.CONFLICT);
+        return;
+    }
+
+    const own = await prisma.job.findFirst({
+        where: { companyId, techId: userId, status: 'EN_ROUTE', deletedAt: null },
+        select: { id: true },
+    });
+    if (own) return;
+    const vans = await prisma.vanMember.findMany({
+        where: { userId, van: { companyId } },
+        select: { vanId: true },
+    });
+    const crewJob = vans.length
+        ? await prisma.job.findFirst({
+              where: { companyId, vanId: { in: vans.map((v) => v.vanId) }, status: 'EN_ROUTE', deletedAt: null },
+              select: { id: true },
+          })
+        : null;
+    if (!crewJob) throw new AppError(NOT_EN_ROUTE, StatusCodes.CONFLICT);
+}
 
 export const trackingController = {
     /**
-     * Technician's device pings their location. Broadcasts to dispatchers via socket.
-     * We persist sparsely — only one ping per ~30s — to keep the table small.
+     * Technician's device pings their location while en route. Broadcasts to
+     * dispatchers via socket. We persist sparsely — only one ping per ~30s — to
+     * keep the table small.
      */
     ping: async (req: Request, res: Response) => {
         const body = pingSchema.parse(req.body);
         const userId = req.user!.userId;
         const companyId = req.user!.companyId;
 
-        // Throttle: only persist if the latest ping is older than 30s.
-        const recent = await prisma.userLocationPing.findFirst({
-            where: { userId },
-            orderBy: { createdAt: 'desc' },
+        await assertMayShareLocation(companyId, userId, body.jobId);
+        await recordLocationPing({
+            companyId,
+            userId,
+            fix: { lat: body.lat, lng: body.lng, accuracy: body.accuracy },
         });
-        const shouldPersist = !recent || Date.now() - recent.createdAt.getTime() > 30_000;
-
-        if (shouldPersist) {
-            await prisma.userLocationPing.create({
-                data: { userId, companyId, lat: body.lat, lng: body.lng, accuracy: body.accuracy },
-            });
-            // Fire-and-forget geofence evaluation
-            evaluateGeofence({ companyId, userId, lat: body.lat, lng: body.lng }).catch(() => undefined);
-
-            // Broadcast only when we actually persisted — the dispatch map reacts
-            // to this, so it must be throttled the same ~30s as the write (not a
-            // flood on every device ping).
-            socketService.emitToCompany(companyId, 'tech:location', {
-                userId,
-                lat: body.lat,
-                lng: body.lng,
-                accuracy: body.accuracy,
-                at: new Date().toISOString(),
-            });
-        }
 
         res.status(StatusCodes.NO_CONTENT).send();
     },

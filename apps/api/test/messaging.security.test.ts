@@ -223,10 +223,14 @@ describe('socket routing', () => {
             item: { id: 'li1', name: 'Geyser valve', quantity: 2, unitPrice: 350, total: 700 },
         });
         const office = sent.find((s) => s.rooms.includes('role:company_1:OFFICE'))!;
-        const field = sent.find((s) => s.rooms.includes('role:company_1:TECHNICIAN'))!;
+        // Job events no longer go to the technician role room (only the job's
+        // crew, via user rooms: see socket.scoping.test.ts); the non-office staff
+        // roles still get the price-stripped copy.
+        const field = sent.find((s) => s.rooms.includes('role:company_1:CSR'))!;
         expect(office.data.item.unitPrice).toBe(350);
         expect(field.data.item).toEqual({ id: 'li1', name: 'Geyser valve', quantity: 2 });
         expect(field.rooms).not.toContain('role:company_1:ADMIN');
+        expect(sent.flatMap((s) => s.rooms)).not.toContain('role:company_1:TECHNICIAN');
     });
 
     it('stripPriceFields removes nested money', () => {

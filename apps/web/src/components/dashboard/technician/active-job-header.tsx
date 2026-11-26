@@ -1,9 +1,10 @@
 "use client";
 
-import { Clock, Phone, Route } from "lucide-react";
+import { Clock, MapPin, MapPinOff, Phone, Route } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../../ui/card";
 import { Button } from "../../ui/button";
 import { LiveTimer } from "./live-timer";
+import { useLocationSharingStatus } from "./use-location-sharing";
 import {
     getAddress,
     getJobTiming,
@@ -27,6 +28,46 @@ interface ActiveJobHeaderProps {
     // Overrides the default checklist/signature amber hint when a different gate
     // (e.g. a required compliance form) is the actual blocker.
     blockReason?: string;
+}
+
+// The tech must always be able to see when their location is being shared.
+export function LocationSharingIndicator() {
+    const status = useLocationSharingStatus();
+    if (status === "sharing") {
+        return (
+            <div
+                role="status"
+                className="flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800"
+            >
+                <span className="relative flex h-2.5 w-2.5 shrink-0" aria-hidden="true">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                </span>
+                <span>Sharing your location with the customer until you arrive</span>
+            </div>
+        );
+    }
+    if (status === "paused") {
+        return (
+            <div role="status" className="flex items-start gap-2 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700">
+                <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>Location sharing paused while the app is in the background.</span>
+            </div>
+        );
+    }
+    if (status === "denied" || status === "unsupported") {
+        return (
+            <div role="status" className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <MapPinOff className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>
+                    {status === "denied"
+                        ? "Location is off. Allow location for this site in your browser settings so customers can see you’re on the way."
+                        : "This device can’t share its location, so the customer won’t see you on the map."}
+                </span>
+            </div>
+        );
+    }
+    return null;
 }
 
 export function ActiveJobHeader({
@@ -90,6 +131,7 @@ export function ActiveJobHeader({
                             <span>{commsHint}</span>
                         </div>
                     ) : null}
+                    {job.status === "EN_ROUTE" ? <LocationSharingIndicator /> : null}
                 </div>
                 <div className="flex flex-wrap gap-2">
                     {!hideStatusButton && primary && (

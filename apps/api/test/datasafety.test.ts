@@ -216,7 +216,7 @@ describe('POST /jobs/quick with a technician', () => {
             });
 
         expect(res.status).toBe(201);
-        expect(notifyUser).toHaveBeenCalledWith(TECH_ID, COMPANY, 'JOB_ASSIGNED', expect.any(String), expect.any(String));
+        expect(notifyUser).toHaveBeenCalledWith(TECH_ID, COMPANY, 'JOB_ASSIGNED', expect.any(String), expect.any(String), expect.objectContaining({ jobId: expect.any(String), url: expect.stringContaining('/?job=') }));
         const customerTypes = notifyCustomer.mock.calls.map((c: any[]) => c[2]);
         expect(customerTypes).not.toContain('JOB_EN_ROUTE');
     });

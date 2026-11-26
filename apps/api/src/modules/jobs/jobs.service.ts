@@ -9,6 +9,11 @@ import { closeOpenEntries } from '../time-tracking/timeTracking.service';
 import { formatInTimeZone, getCompanyTimezone, startOfDayInTimeZone } from '../../utils/timezone';
 import { getMissingRequiredForm } from '../digital-forms/digital-forms.service';
 import { config } from '../../config/env';
+import { enRouteEtaLabel, isAssignedToJob } from '../tracking/job-location';
+import { recordLocationPing, type LocationFixInput } from '../tracking/location-ping';
+import { logger } from '../../utils/logger';
+import { jobPushLink, jobRemovedPushLink } from '../../utils/push-link';
+import { previousAssignees } from '../../utils/reassignment';
 // scheduling.service imports jobsService too; the cycle is safe because neither
 // side touches the other at module load, only inside function calls.
 import { assertNoScheduleConflict } from '../scheduling/scheduling.service';
@@ -196,7 +201,7 @@ async function assertLineItemsEditable(jobId: string, companyId: string) {
  * the van crew is told their van has the job.
  */
 async function notifyJobBooked(
-    job: { title: string; techId: string | null; vanId: string | null; customerId: string; scheduledStart: Date | null },
+    job: { id: string; title: string; techId: string | null; vanId: string | null; customerId: string; scheduledStart: Date | null },
     companyId: string,
 ) {
     if (job.techId) {
@@ -204,7 +209,7 @@ async function notifyJobBooked(
         if (tech) {
             await notificationService.notifyUser(
                 tech.id, companyId, 'JOB_ASSIGNED',
-                'New job assigned', `You have been assigned to: ${job.title}`
+                'New job assigned', `You have been assigned to: ${job.title}`, jobPushLink(job.id)
             );
             const techName = [tech.firstName, tech.lastName].filter(Boolean).join(' ') || tech.email;
             // `event` routes this through the "Booking confirmation" toggle.
@@ -226,10 +231,50 @@ async function notifyJobBooked(
             if (member.userId !== job.techId) {
                 await notificationService.notifyUser(
                     member.userId, companyId, 'JOB_ASSIGNED',
-                    'New van job', `Your van has been assigned to: ${job.title}`
+                    'New van job', `Your van has been assigned to: ${job.title}`, jobPushLink(job.id)
                 );
             }
         }
+    }
+}
+
+/**
+ * Van moved on a job (X → Y or X → none): the old crew hears it is off their
+ * schedule, the new crew that their van has it. Anyone still on the job (the
+ * lead tech, or a member of both vans) hears nothing. The tech side is handled
+ * by the caller.
+ */
+async function notifyVanChange(
+    companyId: string,
+    job: { id: string; title: string },
+    before: { techId: string | null; vanId: string | null },
+    after: { techId: string | null; vanId: string | null },
+) {
+    const crewOf = async (vanId: string | null) =>
+        vanId
+            ? (await prisma.vanMember.findMany({
+                where: { vanId, van: { companyId } },
+                select: { userId: true },
+            })).map((m) => m.userId)
+            : [];
+    const [oldCrew, newCrew] = await Promise.all([crewOf(before.vanId), crewOf(after.vanId)]);
+    const stillOn = new Set([after.techId, ...newCrew].filter((v): v is string => !!v));
+    const alreadyOn = new Set([before.techId, ...oldCrew].filter((v): v is string => !!v));
+
+    for (const userId of new Set(oldCrew)) {
+        if (stillOn.has(userId)) continue;
+        await notificationService.notifyUser(
+            userId, companyId, 'ALERT',
+            'Job reassigned', `${job.title} is no longer on your schedule`, jobRemovedPushLink(job.id)
+        );
+    }
+    for (const userId of new Set(newCrew)) {
+        // The new lead tech already got "New job assigned" from the caller.
+        if (alreadyOn.has(userId) || userId === after.techId) continue;
+        await notificationService.notifyUser(
+            userId, companyId, 'JOB_ASSIGNED',
+            'New van job', `Your van has been assigned to: ${job.title}`, jobPushLink(job.id)
+        );
     }
 }
 
@@ -489,7 +534,7 @@ export const jobsService = {
         if (wasUnassigned && parsed.techId) {
             await notificationService.notifyUser(
                 parsed.techId, companyId, 'JOB_ASSIGNED',
-                'New job assigned', `You have been assigned to: ${updated.title}`
+                'New job assigned', `You have been assigned to: ${updated.title}`, jobPushLink(id)
             );
             const tech = await prisma.user.findUnique({ where: { id: parsed.techId } });
             if (tech) {
@@ -505,20 +550,27 @@ export const jobsService = {
             // Tech-to-tech reassign: in-app only, same wording as the schedule board.
             await notificationService.notifyUser(
                 parsed.techId, companyId, 'JOB_ASSIGNED',
-                'New job assigned', `You have been assigned to: ${updated.title}`
+                'New job assigned', `You have been assigned to: ${updated.title}`, jobPushLink(id)
             );
             await notificationService.notifyUser(
                 job.techId, companyId, 'ALERT',
-                'Job reassigned', `${updated.title} is no longer on your schedule`
+                'Job reassigned', `${updated.title} is no longer on your schedule`, jobRemovedPushLink(id)
             );
         } else if (parsed.techId === null && job.techId) {
             await notificationService.notifyUser(
                 job.techId, companyId, 'ALERT',
-                'Job reassigned', `${updated.title} is no longer on your schedule`
+                'Job reassigned', `${updated.title} is no longer on your schedule`, jobRemovedPushLink(id)
             );
         }
 
-        socketService.emitToCompany(companyId, 'job:updated', updated);
+        if (parsed.vanId !== undefined && parsed.vanId !== job.vanId) {
+            await notifyVanChange(companyId, { id, title: updated.title }, job, updated);
+        }
+
+        socketService.emitToCompany(companyId, 'job:updated', {
+            ...updated,
+            ...previousAssignees(job, updated),
+        });
         return updated;
     },
 
@@ -908,7 +960,10 @@ export const jobsService = {
         return { items, total, page, totalPages: Math.ceil(total / limit) };
     },
 
-    updateStatus: async (id: string, companyId: string, status: string, userId: string, clientAt?: string, actorRole?: string) => {
+    updateStatus: async (
+        id: string, companyId: string, status: string, userId: string, clientAt?: string, actorRole?: string,
+        location?: LocationFixInput,
+    ) => {
         // Cancelling has its own flow (reason, invoice check, clock stop, audit).
         // Technicians can't cancel at all; the office uses POST /jobs/:id/cancel.
         if (status === 'CANCELED') {
@@ -1006,7 +1061,13 @@ export const jobsService = {
                 ...(status === 'EN_ROUTE' && !job.actualStart ? { actualStart: effective } : {}),
                 ...(status === 'ON_SITE' && !job.actualStart ? { actualStart: effective } : {}),
                 ...(status === 'COMPLETED' ? { actualEnd: effective } : {}),
-                ...(trackerToken ? { customerTrackingToken: trackerToken, onMyWaySentAt: effective } : {}),
+                ...(trackerToken ? { customerTrackingToken: trackerToken } : {}),
+                // Start of this trip (every move into EN_ROUTE, e.g. again after a
+                // parts run). The public tracker and ETA only use fixes from after
+                // it, so a customer never sees the drive to the previous customer.
+                ...(status === 'EN_ROUTE' && job.status !== 'EN_ROUTE'
+                    ? { onMyWaySentAt: effective.getTime() > now.getTime() ? now : effective }
+                    : {}),
                 ...(status === 'ON_SITE' && !alreadyArrivedToday ? { arrivedNotifiedAt: effective } : {}),
             },
             include: {
@@ -1088,14 +1149,25 @@ export const jobsService = {
             ? [updatedJob.tech.firstName, updatedJob.tech.lastName].filter(Boolean).join(' ') || updatedJob.tech.email
             : 'Your technician';
 
+        // The position sent with "Start route" is stored first so the en-route
+        // message below can carry an ETA. POPIA: only for EN_ROUTE, only from the
+        // tech/crew actually driving, and never for a stale replayed tap.
+        if (status === 'EN_ROUTE' && location && !isStale && (await isAssignedToJob(job, userId))) {
+            await recordLocationPing({ companyId, userId, fix: location, evaluateGeofence: false })
+                .catch((err) => logger.warn({ jobId: id, err: (err as Error).message }, 'Start-route location not stored'));
+        }
+
         // Time-sensitive customer messages are skipped for stale (replayed) taps;
         // internal realtime updates and completion artefacts still go out.
         if (status === 'EN_ROUTE' && updatedJob.customer && !isStale) {
             const token = updatedJob.customerTrackingToken;
             const trackingUrl = token ? `${config.WEB_URL}/track/${token}` : '';
+            // Only when the tech already has a fresh fix; otherwise the text goes without one.
+            const eta = await enRouteEtaLabel(updatedJob);
             await notificationService.notifyCustomer(updatedJob.customerId, companyId, 'JOB_EN_ROUTE', {
                 techName,
                 trackingUrl,
+                ...(eta ? { eta } : {}),
             });
         }
 

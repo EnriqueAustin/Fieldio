@@ -30,6 +30,7 @@ import { documentsRouter } from '../../src/routes/documents';
 import { inventoryAlertsRouter } from '../../src/routes/inventoryAlerts';
 import { branchesRouter } from '../../src/routes/branches';
 import { notificationTemplatesRouter } from '../../src/routes/notificationTemplates';
+import { pushRouter } from '../../src/routes/push';
 import { signAccessToken } from '../../src/utils/jwt';
 
 // Builds an Express app that mirrors the middleware chain of the real
@@ -73,6 +74,7 @@ export function buildTestApp(): Express {
     app.use('/inventory-alerts', inventoryAlertsRouter);
     app.use('/branches', branchesRouter);
     app.use('/notification-templates', notificationTemplatesRouter);
+    app.use('/push', pushRouter);
 
     app.use(errorHandler);
     return app;
