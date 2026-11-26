@@ -183,3 +183,46 @@ Also fixed (P1):
 Still open from the reviewer:
 - Company socket events (including customer details) reach every tech. They should go to the assigned tech or crew only.
 - `fakePrisma` ignores `OR`/`AND`/`NOT`.
+
+## Resolution status: week 2 (2026-11-26, uncommitted)
+
+The week-2 changes are in the working tree but not committed. Current state:
+- **Tests and checks:** the API suite passes 727/727, `tsc` is clean for both the API and web, and the web tests pass.
+- **Review:** one Opus 5.5 reviewer pass is done, and all of its "fix first" and "should fix" items are resolved.
+- **Not yet tried** in a browser or on a real phone.
+
+| Item | Status | What changed |
+|---|---|---|
+| P0 4: CoC to the customer | Done | See "CoC detail" below. |
+| P0 3: live tracking + ETA | Done | See "Tracking detail" below. |
+| P0 12: tech alerts with the app closed | Done (needs setup) | See "Push alerts" below. |
+| Socket scoping (POPIA) | Done | Job and schedule events go to office roles plus the assigned tech, previous tech, van crew and previous van crew only. Prices are still stripped for non-office roles. |
+| Offline storage bug | Fixed | The IndexedDB photo and receipt stores were never created, because idb-keyval `createStore` only creates the first store in a database. They now open at v3 and create every store. A blocked upgrade times out and the app starts online instead of hanging. |
+
+**CoC detail**
+- **New field types:** signature, photo, table (test results), section and Yes/No. Submissions are validated on the server.
+- **Templates:** fully editable. Each submission keeps a snapshot of the template it was filled against.
+- **Starter records:** SANS 10142-1 electrical and PIRB geyser.
+- **Offline:** form photos work offline.
+- **PDF:** made with pdfkit.
+- **Sending:** the email attaches the PDF and includes a link; WhatsApp sends the link. The public link is a token under `/public/certificates`, behind the rate limiter.
+- **Summary and office:** certificates appear in the job summary and on the office job and forms pages. Only `customerFacing` forms ever go to customers.
+
+**Tracking detail**
+- **Sharing:** the phone shares its location only while the job is EN_ROUTE, and shows an indicator while it does.
+- **ETA:** "Start route" sends a fix, so the first SMS or WhatsApp can carry an ETA.
+- **Public tracker:** it is a map that only uses fixes from the current trip and shows the tech's first name only.
+
+**Push alerts**
+- **What it does:** Web Push for assigns, moves and reassignments. An alert opens `/?job=<id>`, and repeat alerts for the same job collapse into one.
+- **Cleanup:** subscriptions are tied to the signed-in user and removed on logout, deactivation or password reset. Endpoints are limited to the browsers' own push services.
+
+**Owner steps before push works**
+1. Run `npx web-push generate-vapid-keys`, then put `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT=mailto:…` in `.env` and in production.
+2. Apply migration `20261124120000_push_subscriptions` (`npm run db:deploy` in packages/database).
+3. Test on a production build over HTTPS. On iOS 16.4+ the app must be added to the home screen first.
+
+**Still open**
+- **Hosting:** the week-3 go-live work: API build output, Docker, HTTPS, backups and Sentry.
+- **Phone test:** nothing has been tested on a real phone yet.
+- **Company logo:** there's no logo field, so certificates print the company name only.
